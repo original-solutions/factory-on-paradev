@@ -18,8 +18,10 @@ expected="$(seq 1 "$(printf '%s\n' "$numbers" | wc -l)")"
 
 grep -q '/factory retro.*references/retro\.md' SKILL.md || { echo "SKILL.md: no line routes /factory retro to references/retro.md"; exit 1; }
 [ -f references/retro.md ] || { echo "references/retro.md: missing"; exit 1; }
-for needle in '## Outcome' '## Acceptance criteria' '## Notes' '## Evidence' '## Measure' \
-  'softfac retro --json --since' 'factory:proposed' 'retro-report' \
+for heading in '## Outcome' '## Acceptance criteria' '## Notes' '## Evidence' '## Measure'; do
+  grep -qxF -- "$heading" references/retro.md || { echo "references/retro.md: the proposal has no $heading heading"; exit 1; }
+done
+for needle in 'softfac retro --json --since' 'factory:proposed' 'retro-report' \
   'FACTORY-DONE: <report issue URL>' 'FACTORY-STOP: stuck'; do
   grep -qF -- "$needle" references/retro.md || { echo "references/retro.md: no $needle"; exit 1; }
 done
