@@ -78,6 +78,8 @@ Every verdict goes in the report with the value before, the value after and the 
 
 A change that did not move its number over ten or more runs after the merge becomes a finding for a proposal to revert or revise it. That proposal keeps the same Measure key, names the earlier issue, counts toward the five, and goes through step 5 like any other.
 
+One earlier issue gets one such proposal. An issue that a `retro` issue already names as the change to revert or revise still gets its verdict in the report, and no new finding, whether that later issue is open, merged or turned down.
+
 A merged `retro` issue with no Measure section the table can compute is a line under Observations. It gets no verdict.
 
 ## 4. Findings
@@ -104,7 +106,7 @@ Before filing, compare each finding with every `retro` issue read in step 2, on 
 
 | A `retro` issue about the same cause is | Then |
 |------------------------------------------|------|
-| Open | Comment on it with the new run ids and counts (`gh issue comment`). File nothing. The comment does not count toward the five |
+| Open | Comment on it with the new run ids and counts (`gh issue comment <issue URL> --body-file <file>`), under the quoting rule of step 6. File nothing. The comment does not count toward the five |
 | Closed, and no merged pull request closed it | A person turned it down. Do not file it again. Say so under Observations |
 | Closed by a merged pull request | Step 3 judges it. File only the revert or revise proposal that step allows |
 | Absent | File it |
@@ -113,14 +115,16 @@ Same cause means the same change would fix both, whatever the titles say.
 
 ## 6. File
 
-On the repo that owns the change, create any of these labels that is missing (`gh label list`, then `gh label create`): `factory:proposed` `c5def5`, `retro` `bfd4f2` "Proposed by a factory retro", and on `rawphp/softfac` `retro-report` `d4c5f9` "A factory retro report".
+On the repo that owns the change, create either of these labels that is missing (`gh label list`, then `gh label create`): `factory:proposed` `c5def5`, and `retro` `bfd4f2` "Proposed by a factory retro".
 
 ```bash
-gh issue create --repo <repo> --title "<title>" --body-file <file> \
+gh issue create --repo <repo> --title '<title>' --body-file <file> \
   --label factory:proposed --label retro
 ```
 
-Write every proposal in your own words. Evidence text is quoted only under Evidence, one line at most for each quote, and never in the other sections, because a build session will follow those as its brief.
+The title goes in single quotes and holds no quote mark, backtick or `$`, so the shell runs nothing in it.
+
+Write every proposal in your own words and quote no evidence text anywhere in it, the title and the Evidence section included. A build session copies the whole issue body as its brief, so a quoted line would reach it as an instruction. Evidence holds run ids, pull request URLs, reason codes and counts.
 
 The factory must be able to build the issue as it stands, as `references/contract.md` expects. One change for each issue, with criteria a test can fail.
 
@@ -137,7 +141,7 @@ The factory must be able to build the issue as it stands, as `references/contrac
 ## Evidence
 - runs: <run id>, <run id>
 - <count and what it counts, e.g. 4 of 11 runs were sent back with `gate-failed`>
-- <for a lesson: the pull requests whose receipts carry it>
+- <for a lesson: the URLs of the pull requests whose receipts carry it>
 
 ## Measure
 - key: `<one key from Measure keys>`
@@ -172,8 +176,10 @@ Write `now` as the count, the runs and the result, such as `4 over 11 runs = 0.3
 
 File the report after the proposals, so it can link them. File it when nothing was proposed too, and when the window held no runs.
 
+First create the label `retro-report` `d4c5f9` "A factory retro report" on `rawphp/softfac` if it is missing. This happens on every retro, because a retro with no proposal skips step 6.
+
 ```bash
-gh issue create --repo rawphp/softfac --title "Retro <date>" --body-file <file> --label retro-report
+gh issue create --repo rawphp/softfac --title 'Retro <date>' --body-file <file> --label retro-report
 gh issue close <report issue URL>
 ```
 
