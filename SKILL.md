@@ -4,7 +4,7 @@ description: >-
   Build one GitHub issue into a draft pull request with no tracker and no
   human in the chat. Read the issue, isolate, implement with TDD,
   persona-review, run the project gate, open a draft PR. Use for /factory,
-  factory build, build issue N, softfac session. Differentiator: copy of /dw
+  factory build, build issue N, softfac session, /factory retro. Differentiator: copy of /dw
   for the software factory; the factory owns issue state and the run record,
   so this skill never claims, labels, heartbeats or archives.
 ---
@@ -14,6 +14,8 @@ description: >-
 Build one GitHub issue. Dark: nobody is in the chat. A stop is a final message, not a question.
 
 Always read `references/field-lessons.md` before acting if it exists.
+
+`/factory retro [--since <AGE>]` builds nothing. Load `references/retro.md` and follow that file in place of the steps below.
 
 ```text
 1 Read → 2 Isolate → 3 Contract → 4 Make → 5 Check → 6 Gate → 7 Ship
