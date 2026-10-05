@@ -4,7 +4,7 @@ Load at step 2, before any product-code write.
 
 ## Worktree
 
-- Already in a linked worktree (the factory launched this session in one) → stay. Keep its branch. Do not remove it at the end: the factory runs its gate there.
+- Already in a linked worktree (the factory launched this session in one) → stay. Keep its branch and its name, including on push; the `issue-<n>-<short-slug>` name below is only for a worktree this run creates. Do not remove it at the end: the factory runs its gate there.
 - Primary checkout → read and follow the `git-worktree` skill. Create a worktree from `factory.base` on branch `issue-<n>-<short-slug>`. This run owns it and removes it after the PR URL. Keep the branch.
 - Primary dirty → stop `stuck`. Never stash.
 

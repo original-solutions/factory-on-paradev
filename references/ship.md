@@ -15,6 +15,8 @@ git push -u origin HEAD
 gh pr create --draft --base <factory.base> --title "<issue title>" --body-file <receipt path>
 ```
 
+Push the worktree's branch under its own name. Never rename it on push (`HEAD:<other>`) and never pass `--head` with another name: the factory binds the PR by its head branch and stops `stuck` on any other.
+
 Receipt: `references/receipt.md`. It starts with `Closes #<n>`.
 
 Always a draft. The factory marks it ready after its own gate passes. Never merge.

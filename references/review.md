@@ -35,6 +35,18 @@ Maker session does not play a persona.
 
 One worktree → at most **one** reviewer (usually `testing`) may edit files; it restores with `git checkout` and ends on a clean `git status`. Every other persona is strictly read-only (read `git show HEAD:<path>` if code looks changed). After cycle 1, drop the read-only reviewers and keep the mutating one; its re-check is "re-run your surviving mutants." If the maker model changes, keep at least one reviewer on a different model.
 
+## Testing review budget
+
+The mutating review must not hold up a ship. It gets 20 minutes of wall clock, and the brief says so.
+
+- **Once per issue.** Run it after the read-only reviewers approve, on the tip that is about to ship. Not on every cycle, and never on a tip the maker is about to rework.
+- **At most 12 mutants.** The orchestrator names them in the brief, picked from the diff's riskiest decisions (a skipped check, a wrong order, a leak into public text). The reviewer does not invent a long list.
+- **Filtered tests only.** Per mutant, run the tests that can see it with a name filter and a timeout. Never the whole suite per mutant.
+- **No repeats of the gate.** No flake loops and no gate commands. The maker runs the gate, and the orchestrator runs it again in a fresh clone.
+- **Short commands.** One mutant per command, so the reviewer can read a message between them. A single long script cannot be interrupted.
+- **Stop at the limit.** Report survivors and what was not reached. Unreached mutants are listed on the receipt, not chased.
+- **Small final batches skip it.** When the last fix cycle is a few lines the orchestrator can read, read the diff and ship.
+
 ## Merge
 
 Each reviewer returns:
