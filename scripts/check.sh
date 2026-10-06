@@ -33,8 +33,9 @@ grep -qF -- 'git push -u origin <branch>' references/commits.md || { echo "refer
 grep -qF -- 'retried once' references/commits.md || { echo "references/commits.md: a failed push is not retried once"; exit 1; }
 grep -qF -- 'the branch pushes, the draft PR, and the repo labels' SKILL.md || { echo "SKILL.md: the outside-writes line does not read branch pushes"; exit 1; }
 grep -qF -- 'push it and open the draft PR' SKILL.md && { echo "SKILL.md: the stuck path still has its own push instruction"; exit 1; }
-grep -qF -- 'git push -u origin HEAD' references/ship.md && { echo "references/ship.md: Ship still introduces the first push"; exit 1; }
-grep -qF -- 'origin/<branch>' references/ship.md || { echo "references/ship.md: Ship does not check origin/<branch> against HEAD"; exit 1; }
+grep -qF -- 'until one succeeds' references/commits.md || { echo "references/commits.md: the -u push is not repeated until one succeeds"; exit 1; }
+grep -qF -- 'git push' references/ship.md && { echo "references/ship.md: Ship still pushes"; exit 1; }
+grep -qF -- 'git rev-parse HEAD origin/<branch>' references/ship.md || { echo "references/ship.md: Ship does not check origin/<branch> against HEAD"; exit 1; }
 
 missing=0
 for path in $(grep -ohE 'references/[A-Za-z0-9_./-]+\.md' SKILL.md references/*.md references/reviewers/*.md | sort -u); do
