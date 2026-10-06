@@ -10,8 +10,17 @@ Never squash Make or Check commits. Never `git add -A` or `git add .`. Never co-
 
 ## PR
 
+Every commit was pushed as it was made (`references/commits.md`). Check that the branch is up to date before opening the PR:
+
 ```bash
-git push -u origin HEAD
+git status --porcelain                # prints nothing
+git fetch origin <branch>
+git rev-parse HEAD origin/<branch>    # prints the same sha twice
+```
+
+Anything uncommitted, or a tip that `origin/<branch>` does not have → commit and push it first (`references/commits.md`), then check again.
+
+```bash
 gh pr create --draft --base <factory.base> --title "<issue title>" --body-file <receipt path>
 ```
 
