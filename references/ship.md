@@ -18,7 +18,7 @@ git fetch origin <branch>
 git rev-parse HEAD origin/<branch>    # prints the same sha twice
 ```
 
-Anything uncommitted, or a tip that `origin/<branch>` does not have → commit and push it first (`references/commits.md`), then check again.
+Anything uncommitted, a tip that `origin/<branch>` does not have, or no such branch on `origin` at all → commit and push it first (`references/commits.md`), then check again.
 
 ```bash
 gh pr create --draft --base <factory.base> --title "<issue title>" --body-file <receipt path>
