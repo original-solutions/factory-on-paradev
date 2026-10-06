@@ -42,6 +42,17 @@ EOF
 
 Match the repo's existing commit style if it differs. Do not commit `.dw/` artifacts other than the tracked `config.yml`, review packets, or paths outside the contract `files:` (plus tests those files require).
 
+## Push
+
+After every commit this session makes or accepts from a worker, push the branch, so everything committed is on `origin` the moment it exists. A run that stops at the time limit, crashes, or is resumed on another machine then loses nothing that was committed.
+
+```bash
+git push -u origin <branch>   # until one succeeds: sets the upstream
+git push                      # every push after that
+```
+
+Workers commit; the orchestrating session pushes. A push that fails is retried once. A push that still fails is reported in the session's final message and does not stop the work: carry on, and the next commit's push tries again. Keep the `-u` form until a push has succeeded, so a failed first push does not leave the later plain pushes without an upstream.
+
 ## Do not
 
 - Hold the whole issue uncommitted until Ship
