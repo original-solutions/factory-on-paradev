@@ -49,18 +49,26 @@ The mutating review must not hold up a ship. It gets 20 minutes of wall clock, a
 
 ## Merge
 
-Each reviewer returns:
+Each reviewer writes its findings to the scratch file the packet names (absolute path, outside the worktree and the skill directory, e.g. a run temp dir) and returns only this as its final message:
 
 ```text
-## Findings
+## Verdict
+Approve | Request changes
+blockers: <n> actions: <n> nits: <n>
+findings: <absolute path>
+```
+
+The file holds the findings:
+
+```text
 - id: <persona>-<n>
   severity: blocker | action | nit
   file: <path:line>
   problem: <one sentence>
   fix: <one sentence>
-## Verdict
-Approve | Request changes
 ```
+
+Long reports are cut off in transit; the file never is. The orchestrator reads the file, not the message, for findings.
 
 **blocker** / **action** → Make. **nit** → drop unless cheap and in `files`. Duplicate findings: keep one.
 
