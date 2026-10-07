@@ -95,11 +95,13 @@ cd <worktree> && mkdir -p .factory && printf '*\n' > .factory/.gitignore
 
 That one file keeps `.factory/` out of every commit and the pull request without touching the repo's `.gitignore`, and it works in a linked worktree, where `.git` is a file and `info/exclude` is shared. After Check and after Ship, `git status --porcelain` shows nothing from `.factory/`; if it does, the ignore file is missing, so put it back and never `git add` the path.
 
-A review copy of the tree is made inside `.factory/` and excludes `.factory/`, `target/` and `node_modules/`, so a copy never nests a copy:
+A review copy of the tree is made inside `.factory/` and excludes `.factory/`, `target/` and `node_modules/` at the root, so a copy never nests a copy, and `.git`, which in a linked worktree is a file pointing at the real worktree's index and HEAD, so git run in the copy never touches the run's worktree:
 
 ```bash
-rsync -a --exclude .factory/ --exclude target/ --exclude node_modules/ <worktree>/ <worktree>/.factory/<name>/
+rsync -a --exclude /.factory/ --exclude /.git --exclude /target/ --exclude /node_modules/ <worktree>/ <worktree>/.factory/<name>/
 ```
+
+The copy is plain files with no repository; run tests in it, not git.
 
 Workers and reviewers get absolute paths under `<worktree>/.factory/` for anything they write for the run.
 
