@@ -70,7 +70,7 @@ for path in references/receipt.md references/ship.md references/review.md refere
   grep -qF -- '.factory/' "$path" || { echo "$path: does not point at .factory/"; exit 1; }
 done
 if grep -HE '/tmp|\$TMPDIR|temp dir|tempfile' SKILL.md references/reviewers/*.md \
-  $(ls references/*.md | grep -v field-lessons) | grep -vE 'never|Never|nothing|Nothing'; then
+  $(ls references/*.md | grep -v field-lessons) | grep -vE 'never (in|into|under) |Nothing of a run goes under '; then
   echo "a skill file names /tmp, \$TMPDIR or a temp dir outside a never rule"; exit 1
 fi
 
