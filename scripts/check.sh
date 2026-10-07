@@ -69,9 +69,9 @@ done
 for path in references/receipt.md references/ship.md references/review.md references/isolate.md; do
   grep -qF -- '.factory/' "$path" || { echo "$path: does not point at .factory/"; exit 1; }
 done
-if grep -HE '/tmp|\$TMPDIR|outside the worktree' SKILL.md references/reviewers/*.md \
-  $(ls references/*.md | grep -v field-lessons) | grep -vE 'never|Never|nothing'; then
-  echo "a skill file names /tmp, \$TMPDIR or 'outside the worktree' outside a never rule"; exit 1
+if grep -HE '/tmp|\$TMPDIR|temp dir|tempfile' SKILL.md references/reviewers/*.md \
+  $(ls references/*.md | grep -v field-lessons) | grep -vE 'never|Never|nothing|Nothing'; then
+  echo "a skill file names /tmp, \$TMPDIR or a temp dir outside a never rule"; exit 1
 fi
 
 missing=0
