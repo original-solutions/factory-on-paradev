@@ -36,6 +36,8 @@ Closes #<n>
 - path — why
 ```
 
+The first line is `Closes #<n>` for a GitHub issue. A Linear issue writes `Closes <KEY-n>`.
+
 ## What goes under Lessons
 
 Every receipt has `## Lessons`, including the receipt of a draft pull request opened on a `stuck` stop. A run that ends with no pull request puts the same section in its final message, above the result line.

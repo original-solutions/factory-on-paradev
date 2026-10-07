@@ -24,9 +24,11 @@ Anything uncommitted, a tip that `origin/<branch>` does not have, or no such bra
 gh pr create --draft --base <factory.base> --title "<issue title>" --body-file <receipt path>
 ```
 
+A Linear issue: the title starts with the identifier, `ENG-42: <issue title>`, so Linear links the pull request to the issue. A GitHub issue keeps `<issue title>`.
+
 Push the worktree's branch under its own name. Never rename it on push (`HEAD:<other>`) and never pass `--head` with another name: the factory binds the PR by its head branch and stops `stuck` on any other.
 
-Receipt: `references/receipt.md`. It starts with `Closes #<n>`.
+Receipt: `references/receipt.md`. It starts with `Closes #<n>`. For a Linear issue it starts with `Closes ENG-42`, Linear's magic word, so the issue completes on merge as `Closes #<n>` does on GitHub.
 
 Always a draft. The factory marks it ready after its own gate passes. Never merge.
 
