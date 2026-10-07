@@ -60,6 +60,20 @@ grep -qF -- 'comments(first: 100, after: $after)' SKILL.md || { echo "SKILL.md: 
 grep -qF -- '.errors // .data.issue' SKILL.md || { echo "SKILL.md: the Linear read hides errors"; exit 1; }
 grep -qF -- 'a worktree the factory launched keeps its branch' references/isolate.md || { echo "references/isolate.md: the Linear branch name is not scoped to a worktree this run creates (a launched worktree keeps its branch)"; exit 1; }
 
+# Scratch lives in .factory/ at the worktree root, never in /tmp, and never reaches a commit.
+grep -qx '## Scratch' SKILL.md || { echo "SKILL.md: no ## Scratch heading"; exit 1; }
+for needle in '`.factory/`' '`/tmp`' '`$TMPDIR`' '.factory/.gitignore' 'node_modules/' 'target/' \
+  'the factory removes the worktree'; do
+  grep -qF -- "$needle" SKILL.md || { echo "SKILL.md: no $needle"; exit 1; }
+done
+for path in references/receipt.md references/ship.md references/review.md references/isolate.md; do
+  grep -qF -- '.factory/' "$path" || { echo "$path: does not point at .factory/"; exit 1; }
+done
+if grep -HE '/tmp|\$TMPDIR|temp dir|tempfile' SKILL.md references/reviewers/*.md \
+  $(ls references/*.md | grep -v field-lessons) | grep -vE 'never (in|into|under) |Nothing of a run goes under '; then
+  echo "a skill file names /tmp, \$TMPDIR or a temp dir outside a never rule"; exit 1
+fi
+
 missing=0
 for path in $(grep -ohE 'references/[A-Za-z0-9_./-]+\.md' SKILL.md references/*.md references/reviewers/*.md | sort -u); do
   [ -f "$path" ] || { echo "missing: $path"; missing=1; }

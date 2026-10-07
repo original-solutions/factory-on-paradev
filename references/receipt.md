@@ -1,6 +1,6 @@
 # Receipt
 
-Write to a tempfile and pass `--body-file`. This is the change receipt.
+Write it to `.factory/receipt.md` in the worktree (`SKILL.md` § Scratch) and pass `--body-file` that path. This is the change receipt. It is never committed.
 
 ```markdown
 Closes #<n>

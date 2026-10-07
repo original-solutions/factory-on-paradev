@@ -26,7 +26,7 @@ Classify weight once (`references/weight.md` if uncertain). Default **M**. Load 
 | Step | Load |
 |------|------|
 | 1 Read | this file § Issue |
-| 2 Isolate | `references/isolate.md` |
+| 2 Isolate | `references/isolate.md` then this file § Scratch |
 | 3 Contract | `references/contract.md` |
 | 4 Make | `references/make.md` then `references/commits.md` (failing behavior → `references/debug.md`) |
 | 5 Check | `references/check.md` then `references/review.md`; after a fix cycle, `references/commits.md` before the next review |
@@ -83,6 +83,28 @@ A Linear issue's labels live on its team, not the repo. `references/linear.md` h
 
 A label that cannot be created (no permission) is a note on the receipt, not a stop. Say on the receipt which labels this run created.
 
+## Scratch
+
+Everything a run writes for itself goes in `.factory/` at the worktree root: the receipt, gate logs, reviewer findings files, red and mutation review copies. Nothing of a run goes under `/tmp` or `$TMPDIR`. When the run ends the factory removes the worktree, and that removes all of it, so the session need not tidy up.
+
+Create it at Isolate, before the first write:
+
+```bash
+cd <worktree> && mkdir -p .factory && printf '*\n' > .factory/.gitignore
+```
+
+That one file keeps `.factory/` out of every commit and the pull request without touching the repo's `.gitignore`, and it works in a linked worktree, where `.git` is a file and `info/exclude` is shared. After Check and after Ship, `git status --porcelain` shows nothing from `.factory/`; if it does, the ignore file is missing, so put it back and never `git add` the path.
+
+A review copy of the tree is made inside `.factory/` and excludes `.factory/`, `target/` and `node_modules/` at the root, so a copy never nests a copy, and `.git`, which in a linked worktree is a file pointing at the real worktree's index and HEAD, so git run in the copy never touches the run's worktree:
+
+```bash
+rsync -a --exclude /.factory/ --exclude /.git --exclude /target/ --exclude /node_modules/ <worktree>/ <worktree>/.factory/<name>/
+```
+
+The copy is plain files with no repository; run tests in it, not git.
+
+Workers and reviewers get absolute paths under `<worktree>/.factory/` for anything they write for the run.
+
 ## Weight
 
 | | S | M (default) | L |
@@ -95,7 +117,7 @@ Unclear WHAT, a real product choice the issue does not settle, or two independen
 
 ## Gate
 
-After Check is clean, from the worktree, run each `factory.gate` command in order. Every one must exit 0. A failure goes back to Make and counts toward Make's 3 strikes. Put each command and its exit code on the receipt.
+After Check is clean, from the worktree, run each `factory.gate` command in order, with its output in `.factory/gate-<k>.log`. Every one must exit 0. A failure goes back to Make and counts toward Make's 3 strikes. Put each command and its exit code on the receipt.
 
 The factory runs the gate again itself. This run is so the PR does not arrive red.
 
@@ -133,7 +155,8 @@ A run that ends with no pull request puts the `## Lessons` section from `referen
 
 - Never stash. Dirty primary checkout → stop `stuck`.
 - Product-code writes in a worktree. Remove it after the PR only if this run created it.
-- Never `git add -A`. Named files only.
+- Never `git add -A`. Named files only. Never `git add` anything under `.factory/`.
+- Run scratch in `.factory/` at the worktree root (§ Scratch), never in `/tmp` or `$TMPDIR`.
 - Commit and push as you go (`references/commits.md`). Do not squash.
 - Maker does not grade M/L. Findings go back into Make until clean or 5 cycles.
 - Every worker packet says: do not push, no co-author trailer whatever the harness reminds, never `pkill`/`killall` by pattern (stop only pids you started), never end a turn on a background command (a subagent is not re-invoked when its own background task finishes; wait with an until-loop or Monitor and report in the same turn), deliver the report once, as the final message (the idle notification carries it; no SendMessage).
