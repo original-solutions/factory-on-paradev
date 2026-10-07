@@ -52,6 +52,13 @@ for color in '#c5def5' '#0e8a16' '#d93f0b' '#fbca04' '#1d76db' '#5319e7' '#b6020
 done
 grep -qF -- 'factory/<key lowercased>-<slug>' references/isolate.md || { echo "references/isolate.md: no Linear branch name"; exit 1; }
 grep -qF -- 'ENG-42:' references/ship.md || { echo "references/ship.md: no Linear PR title"; exit 1; }
+grep -qF -- 'Linear does not say who edited it' SKILL.md || { echo "SKILL.md: no editedAt-comment rule"; exit 1; }
+grep -qF -- 'Never print the key' SKILL.md || { echo "SKILL.md: no never-print-the-key rule"; exit 1; }
+grep -qF -- 'are Linear display names' SKILL.md || { echo "SKILL.md: no Linear instructor rule"; exit 1; }
+grep -qF -- 'Closes <KEY-n>' references/receipt.md || { echo "references/receipt.md: no Linear Closes line"; exit 1; }
+grep -qF -- 'comments(first: 100, after: $after)' SKILL.md || { echo "SKILL.md: the Linear read does not page comments"; exit 1; }
+grep -qF -- '.errors // .data.issue' SKILL.md || { echo "SKILL.md: the Linear read hides errors"; exit 1; }
+grep -qF -- 'a worktree the factory launched keeps its branch' references/isolate.md || { echo "references/isolate.md: the Linear branch name is not scoped to a worktree this run creates (a launched worktree keeps its branch)"; exit 1; }
 
 missing=0
 for path in $(grep -ohE 'references/[A-Za-z0-9_./-]+\.md' SKILL.md references/*.md references/reviewers/*.md | sort -u); do
