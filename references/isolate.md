@@ -11,6 +11,8 @@ Load at step 2, before any product-code write.
 
 Every later `git`, test, and install command starts with `cd <absolute-worktree-path> &&`.
 
+Then make the scratch directory (`SKILL.md` § Scratch): `mkdir -p .factory && printf '*\n' > .factory/.gitignore`. Every file the run writes for itself goes under `.factory/`.
+
 ## Provision
 
 Run each `factory.provision` command in the worktree, in order. A failure → stop `stuck` with the command and its output. Skip a command the factory already ran only if the launch message says so.

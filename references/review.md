@@ -33,7 +33,7 @@ One concurrent batch of host parallel subagents. Checker model from `references/
 
 Maker session does not play a persona.
 
-One worktree → at most **one** reviewer (usually `testing`) may edit files; it restores with `git checkout` and ends on a clean `git status`. Every other persona is strictly read-only (read `git show HEAD:<path>` if code looks changed). After cycle 1, drop the read-only reviewers and keep the mutating one; its re-check is "re-run your surviving mutants." If the maker model changes, keep at least one reviewer on a different model.
+A reviewer that needs its own tree (a mutation pass, a red check) copies it as `SKILL.md` § Scratch says, into `<worktree>/.factory/<name>/`, never into `/tmp`. One worktree → at most **one** reviewer (usually `testing`) may edit files; it restores with `git checkout` and ends on a clean `git status`. Every other persona is strictly read-only (read `git show HEAD:<path>` if code looks changed). After cycle 1, drop the read-only reviewers and keep the mutating one; its re-check is "re-run your surviving mutants." If the maker model changes, keep at least one reviewer on a different model.
 
 ## Testing review budget
 
@@ -49,7 +49,7 @@ The mutating review must not hold up a ship. It gets 20 minutes of wall clock, a
 
 ## Merge
 
-Each reviewer writes its findings to the scratch file the packet names (absolute path, outside the worktree and the skill directory, e.g. a run temp dir) and returns only this as its final message:
+Each reviewer writes its findings to the file the packet names, an absolute path under `<worktree>/.factory/` (`SKILL.md` § Scratch), for example `<worktree>/.factory/review-<persona>-<cycle>.md`, and returns only this as its final message:
 
 ```text
 ## Verdict
