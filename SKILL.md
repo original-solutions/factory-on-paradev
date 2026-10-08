@@ -38,6 +38,8 @@ Classify weight once (`references/weight.md` if uncertain). Default **M**. Load 
 
 Input: an issue number (`/factory 12`), `owner/repo#12`, an issue URL, or `owner/repo KEY-n` for a Linear issue. No issue named → stop `stuck`. Do not pick one.
 
+**GitHub account.** Several `gh` accounts can be logged in, and the active one is shared with every other session on the machine, so it may not be the one that can see this repo. Before any other `gh` or `git` call, run `gh api repos/<owner/repo> --silent`. On a 404, try each other account that `gh auth status` lists: `GH_TOKEN=$(gh auth token --user <login>) gh api repos/<owner/repo> --silent`. When one works, prefix every `gh` and `git` command that reaches GitHub for the rest of the run with `GH_TOKEN=$(gh auth token --user <login>)`. Git's helper (`gh auth git-credential`) reads it, so pushes go out as that account too. Never run `gh auth switch`. No account sees the repo → stop `stuck`, naming each account and the orgs it sees (`gh api user/orgs --jq '.[].login'`).
+
 ```bash
 gh issue view <n> --repo <owner/repo> --json number,title,body,author,comments,url
 ```

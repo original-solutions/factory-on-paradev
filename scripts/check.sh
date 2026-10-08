@@ -74,6 +74,10 @@ if grep -HE '/tmp|\$TMPDIR|temp dir|tempfile' SKILL.md references/reviewers/*.md
   echo "a skill file names /tmp, \$TMPDIR or a temp dir outside a never rule"; exit 1
 fi
 
+grep -qF -- 'gh api repos/<owner/repo> --silent' SKILL.md || { echo "SKILL.md: Read does not check repo access first"; exit 1; }
+grep -qF -- 'GH_TOKEN=$(gh auth token --user <login>)' SKILL.md || { echo "SKILL.md: no fallback to another logged-in gh account"; exit 1; }
+grep -qF -- 'Never run `gh auth switch`' SKILL.md || { echo "SKILL.md: no never-switch-the-active-account rule"; exit 1; }
+
 missing=0
 for path in $(grep -ohE 'references/[A-Za-z0-9_./-]+\.md' SKILL.md references/*.md references/reviewers/*.md | sort -u); do
   [ -f "$path" ] || { echo "missing: $path"; missing=1; }
