@@ -27,7 +27,7 @@ A `test:` commit is expected to be red. Say in the commit body what fails. Befor
 
 ## How
 
-From the worktree. Named files only. Never `git add -A` or `git add .`. Never co-author trailers. Never amend a commit that was pushed.
+From the worktree. Named files only. Never `git add -A` or `git add .`. Never co-author trailers. Never a `Generated with Claude Code` byline or `claude.com/claude-code` link in the message, the PR body, or the files. Never amend a commit that was pushed. A trailer or that byline on an unpushed tip: `git reset --soft HEAD~1` and recommit the same tree before review or push.
 
 ```bash
 cd <worktree> && git status && git diff && git log -5 --oneline
