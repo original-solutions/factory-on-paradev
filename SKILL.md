@@ -85,7 +85,7 @@ A label that cannot be created (no permission) is a note on the receipt, not a s
 
 ## Scratch
 
-Everything a run writes for itself goes in `.factory/` at the worktree root: the receipt, gate logs, reviewer findings files, red and mutation review copies. Nothing of a run goes under `/tmp` or `$TMPDIR`. When the run ends the factory removes the worktree, and that removes all of it, so the session need not tidy up.
+Everything a run writes for itself goes in `.factory/` at the worktree root: the receipt, gate logs, reviewer findings files, the mutation pass's detached worktree. Nothing of a run goes under `/tmp` or `$TMPDIR`. When the run ends the factory removes the worktree, and that removes all of it, so the session need not tidy up.
 
 Create it at Isolate, before the first write:
 
@@ -95,13 +95,13 @@ cd <worktree> && mkdir -p .factory && printf '*\n' > .factory/.gitignore
 
 That one file keeps `.factory/` out of every commit and the pull request without touching the repo's `.gitignore`, and it works in a linked worktree, where `.git` is a file and `info/exclude` is shared. After Check and after Ship, `git status --porcelain` shows nothing from `.factory/`; if it does, the ignore file is missing, so put it back and never `git add` the path.
 
-A review copy of the tree is made inside `.factory/` and excludes `.factory/`, `target/` and `node_modules/` at the root, so a copy never nests a copy, and `.git`, which in a linked worktree is a file pointing at the real worktree's index and HEAD, so git run in the copy never touches the run's worktree:
+A pass that executes code on its own copy (the mutation pass, the red-then-green check, a live run) gets a detached worktree at the tip inside `.factory/`, never a plain copy: it needs git to restore what it mutates, and the `*` ignore keeps it out of the run's status:
 
 ```bash
-rsync -a --exclude /.factory/ --exclude /.git --exclude /target/ --exclude /node_modules/ <worktree>/ <worktree>/.factory/<name>/
+cd <worktree> && git worktree add --detach .factory/<name> "$(git branch --show-current)"
 ```
 
-The copy is plain files with no repository; run tests in it, not git.
+Give it its own `target/` and dependency directory: copy `vendor` and dump the autoloader, symlink only `node_modules/` (a symlinked `vendor` makes the runner resolve the app root through the link), and run the suite once for green before handing it over. Remove it with `git worktree remove .factory/<name>` when the pass reports.
 
 Workers and reviewers get absolute paths under `<worktree>/.factory/` for anything they write for the run.
 
@@ -110,7 +110,7 @@ Workers and reviewers get absolute paths under `<worktree>/.factory/` for anythi
 | | S | M (default) | L |
 |---|---|---|---|
 | Shape | Mechanical, no behavior | Behavior, one approach | Auth, schema, payments, secrets, prod |
-| Check | Tests if needed | Review → fix (commit) → review, max 5 | Same |
+| Check | Tests if needed | Review cycle → fix (commit) → cycle, until score 5, max 5 | Same |
 | Ship | Draft PR | Draft PR | Draft PR, `risk:` named on the receipt |
 
 Unclear WHAT, a real product choice the issue does not settle, or two independent units in one issue → stop `needs-info`.
@@ -141,7 +141,7 @@ No questions in chat. End the run with one of these as the **last line** of the 
 | `FACTORY-STOP: needs-info` | The issue cannot be built as written | Every question, numbered, each answerable in a sentence |
 | `FACTORY-STOP: stuck` | 3 failed attempts, review cap at 5, gate still red, dirty primary checkout, missing config, anything irreversible | What was tried, where it failed, what is on the branch |
 
-**Never end a message before the result line.** The factory reads the last line of every message that ends a turn. A message such as "review is running, I am waiting" ends the turn with no result line, and the factory reads that as a failure and releases the issue. Run every subagent in the foreground (`run_in_background: false`) and wait for it inside the same turn. Do not start background work and stop. If a turn must end before the work is done, that is `FACTORY-STOP: stuck`.
+**Never end a message before the result line.** The factory reads the last line of every message that ends a turn. A message such as "review is running, I am waiting" ends the turn with no result line, and the factory reads that as a failure and releases the issue. Run every subagent in the foreground (`run_in_background: false`) and wait for it inside the same turn. Do not start background work and stop. A message to a finished worker returns at once and the worker reports later: wait in a foreground loop (poll the tip and `git status --porcelain` for about 2.5 minutes of no change, capped at 9 minutes, repeated until the report arrives), or spawn a fresh worker with the packet when the work must be foreground. If a turn must end before the work is done, that is `FACTORY-STOP: stuck`.
 
 **A vague issue is `needs-info`, not a guess.** When the outcome or the acceptance criteria are missing, or two readings would give different code, stop and ask. Do not pick a reading and build it.
 
@@ -158,8 +158,8 @@ A run that ends with no pull request puts the `## Lessons` section from `referen
 - Never `git add -A`. Named files only. Never `git add` anything under `.factory/`.
 - Run scratch in `.factory/` at the worktree root (§ Scratch), never in `/tmp` or `$TMPDIR`.
 - Commit and push as you go (`references/commits.md`). Do not squash.
-- Maker does not grade M/L. Findings go back into Make until clean or 5 cycles.
-- Every worker packet says: do not push, no co-author trailer whatever the harness reminds, never `pkill`/`killall` by pattern (stop only pids you started), never end a turn on a background command (a subagent is not re-invoked when its own background task finishes; wait with an until-loop or Monitor and report in the same turn), deliver the report once, as the final message (the idle notification carries it; no SendMessage).
+- Maker does not grade M/L. Findings go back into Make until score 5, 5 cycles, or two cycles without progress.
+- Every worker packet says: do not push, no co-author trailer whatever the harness reminds, never `pkill`/`killall` by pattern (stop only pids you started; give a suite's long-running helper a distinctive marker such as an unusual duration or argument, find strays by that marker, and check a process's parent and working directory before stopping it), never end a turn on a background command (a subagent is not re-invoked when its own background task finishes; wait with an until-loop or Monitor and report in the same turn), deliver the report once, as the final message (the idle notification carries it; no SendMessage).
 - A worker's idle notification with no report in hand means the worker ended its turn without reporting, not that it is still working. Resume it with `report now` at once, not after a wait.
 - Brief is copied, not improved.
 - Never write to the directory the skill was loaded from. Lessons go on the receipt.

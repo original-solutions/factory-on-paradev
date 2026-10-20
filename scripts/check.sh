@@ -13,7 +13,7 @@ grep -qx 'name: factory' SKILL.md || { echo "SKILL.md: name is not factory"; exi
 grep -qx '## Lessons' references/receipt.md || { echo "references/receipt.md: no ## Lessons heading"; exit 1; }
 
 numbers="$(grep -oE '^[0-9]+\.' references/field-lessons.md | tr -d '.' || true)"
-expected="$(seq 1 "$(printf '%s\n' "$numbers" | wc -l)")"
+expected="$( [ -n "$numbers" ] && seq 1 "$(printf '%s\n' "$numbers" | wc -l)" || true )"
 [ "$numbers" = "$expected" ] || { echo "references/field-lessons.md: lesson numbers are not 1 to n in order"; exit 1; }
 
 grep -q '/factory retro.*references/retro\.md' SKILL.md || { echo "SKILL.md: no line routes /factory retro to references/retro.md"; exit 1; }
@@ -73,6 +73,17 @@ if grep -HE '/tmp|\$TMPDIR|temp dir|tempfile' SKILL.md references/reviewers/*.md
   $(ls references/*.md | grep -v field-lessons) | grep -vE 'never (in|into|under) |Nothing of a run goes under '; then
   echo "a skill file names /tmp, \$TMPDIR or a temp dir outside a never rule"; exit 1
 fi
+
+# Review: a gate call, an independent blind reader, a finding that states its failure, and a stop on no progress.
+for needle in '## 1. Gate call' '`blind-reader`' '`traceability`' 'scenario:' 'No scenario, no site, no evidence' \
+  'Two consecutive cycles that do not improve' 'A blocker is never settled by a run' 'references/reviewers/mutation.md'; do
+  grep -qF -- "$needle" references/review.md || { echo "references/review.md: no $needle"; exit 1; }
+done
+for seat in correctness blind-reader traceability testing security api-contract reliability maintainability docs adversarial mutation; do
+  [ -f "references/reviewers/$seat.md" ] || { echo "references/reviewers/$seat.md: missing"; exit 1; }
+done
+grep -qF -- 'no issue, no contract, no commit messages' references/reviewers/blind-reader.md || { echo "references/reviewers/blind-reader.md: the blind reader is told the story"; exit 1; }
+grep -qF -- '- settled:' references/receipt.md || { echo "references/receipt.md: no settled line under Review"; exit 1; }
 
 missing=0
 for path in $(grep -ohE 'references/[A-Za-z0-9_./-]+\.md' SKILL.md references/*.md references/reviewers/*.md | sort -u); do

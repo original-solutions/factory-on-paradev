@@ -22,8 +22,14 @@ Closes #<n>
 - checker: <id> | default (peer unavailable)
 
 ## Review
-- cycles: n
+- door: one-way | two-way — <reason>
+- risk: high | low — <reason>
+- cycles: n — cycle 1: <score>/5 (b/a) → cycle n: <score>/5 (b/a)
 - fixed: …
+- settled: none | <id> — <reason>
+- dropped: none | <seat>: n
+- incomplete: none | <seat>
+- mutation: skipped (<reason>) | killed n, survived n, unreached n
 - leftovers: none | list (non-blockers only)
 
 ## Lessons
