@@ -6,7 +6,7 @@ Load at step 7 after Check is clean and the gate passed here.
 
 Make and Check already committed (`references/commits.md`). Ship only commits leftover named files (format, lockfile). If the tree is clean, skip commit.
 
-Never squash Make or Check commits. Never `git add -A` or `git add .`. Never co-author trailers.
+Never squash Make or Check commits. Never `git add -A` or `git add .`. Never co-author trailers. Never put `Generated with Claude Code` or a `claude.com/claude-code` link in the PR body. Strip it if a tool appended it.
 
 ## PR
 
@@ -21,8 +21,10 @@ git rev-parse HEAD origin/<branch>    # prints the same sha twice
 Anything uncommitted, a tip that `origin/<branch>` does not have, or no such branch on `origin` at all → commit and push it first (`references/commits.md`), then check again.
 
 ```bash
-gh pr create --draft --base <factory.base> --title "<issue title>" --body-file .factory/receipt.md
+gh pr create --draft --base <base> --title "<issue title>" --body-file .factory/receipt.md
 ```
+`<base>` is the branch named under the issue's `## Base` heading when it has one, else `factory.base`. The factory refuses a pull request whose base is any other branch.
+
 
 A Linear issue: the title starts with the identifier, `ENG-42: <issue title>`, so Linear links the pull request to the issue. A GitHub issue keeps `<issue title>`.
 
