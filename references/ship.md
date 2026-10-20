@@ -40,7 +40,7 @@ No remote / `gh` missing → stop `stuck`. A local-only commit is not a result t
 
 ## Teardown
 
-The factory removes the worktree it launched this session in when the run ends, and `.factory/` goes with it; the session does not tidy up. Remove the worktree only if this run created it (`references/isolate.md`). Keep the branch.
+The factory removes the worktree it launched this session in when the run ends, and `.factory/` goes with it; the session does not tidy up. Remove the worktree only if this run created it (`references/isolate.md`), with `cd` to the primary checkout in the same command, so no later command runs from a directory that is gone. Keep the branch.
 
 ## Last line
 
