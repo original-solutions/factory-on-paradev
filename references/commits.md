@@ -6,7 +6,7 @@ The branch is the audit log. Do not wait for Ship to make the first commit. Do n
 
 ## Issue type
 
-The issue's type is the `<type>: ` prefix on its title (`feat`, `fix`, `refactor`, `docs`, `chore`), else its `type:*` label, else `fix` for a bug report and `feat` for anything else. Make commits and the pull request title (`references/ship.md`) both use it.
+The issue's type is the `<type>: ` prefix on its title (`feat`, `fix`, `refactor`, `docs`, `test`, `chore`), else its `type:*` label, else `fix` for a bug report and `feat` for anything else. Make commits and the pull request title (`references/ship.md`) both use it.
 
 ## When
 
