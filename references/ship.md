@@ -21,12 +21,11 @@ git rev-parse HEAD origin/<branch>    # prints the same sha twice
 Anything uncommitted, a tip that `origin/<branch>` does not have, or no such branch on `origin` at all → commit and push it first (`references/commits.md`), then check again.
 
 ```bash
-gh pr create --draft --base <base> --title "<issue title>" --body-file .factory/receipt.md
+gh pr create --draft --base <base> --title "<pr title>" --body-file .factory/receipt.md
 ```
 `<base>` is the branch named under the issue's `## Base` heading when it has one, else `factory.base`. The factory refuses a pull request whose base is any other branch.
 
-
-A Linear issue: the title starts with the identifier, `ENG-42: <issue title>`, so Linear links the pull request to the issue. A GitHub issue keeps `<issue title>`.
+`<pr title>` is the issue title when it already starts with `<type>: `, else `<issue type>: <issue title>` (`references/commits.md`). The issue's own title and labels stay as they are. A Linear issue puts the identifier first, `ENG-42: fix: <title>`, so Linear links the pull request to the issue.
 
 Push the worktree's branch under its own name. Never rename it on push (`HEAD:<other>`) and never pass `--head` with another name: the factory binds the PR by its head branch and stops `stuck` on any other.
 
