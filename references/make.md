@@ -4,7 +4,7 @@ Load at step 4, and again when Check or the gate feeds findings back.
 
 ## Rules
 
-- Behavior change: write a failing test first, then the code. Make the order provable: commit the failing tests alone as `test:` (red, or not compiling), then the change as `feat:` or `fix:` (`references/commits.md`).
+- Behavior change: write a failing test first, then the code. Make the order provable: commit the failing tests alone as `test:` (red, or not compiling), then the change under the issue type (`references/commits.md`).
 - Edit only the contract `files` (plus tests those files require).
 - Follow existing patterns. No drive-by refactors.
 - `cd` into the worktree on every command.

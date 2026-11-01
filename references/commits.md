@@ -4,13 +4,17 @@ Load at Make, after each Check-fix cycle, and at Ship.
 
 The branch is the audit log. Do not wait for Ship to make the first commit. Do not squash Make or Check commits.
 
+## Issue type
+
+The issue's type is the `<type>: ` prefix on its title (`feat`, `fix`, `refactor`, `docs`, `test`, `chore`), else its `type:*` label, else `fix` for a bug report and `feat` for anything else. Make commits and the pull request title (`references/ship.md`) both use it.
+
 ## When
 
 | Moment | What to commit | Type |
 |---|---|---|
 | Make: a slice's tests are written and failing | the test files only | `test:` |
-| Make: that slice is green | the product files for that slice | `feat:` |
-| Make: the issue is green and the branch has no commit yet | named files for the issue | `feat:` |
+| Make: that slice is green | the product files for that slice | issue type |
+| Make: the issue is green and the branch has no commit yet | named files for the issue | issue type |
 | Check or Gate: a finding changes behavior | the failing tests first as `test:`, then the change | `test:` then `fix:` |
 | Check: a finding only adds tests for behavior that already works | those tests, one commit | `test:` |
 | Ship: leftover named files only (format, lockfile) | those files | `style:` or `chore:` |
@@ -27,7 +31,7 @@ A `test:` commit is expected to be red. Say in the commit body what fails. Befor
 
 ## How
 
-From the worktree. Named files only. Never `git add -A` or `git add .`. Never co-author trailers. Never amend a commit that was pushed.
+From the worktree. Named files only. Never `git add -A` or `git add .`. Never co-author trailers. Never a `Generated with Claude Code` byline or `claude.com/claude-code` link in the message, the PR body, or the files. Never amend a commit that was pushed. A trailer or that byline on an unpushed tip: `git reset --soft HEAD~1` and recommit the same tree before review or push.
 
 ```bash
 cd <worktree> && git status && git diff && git log -5 --oneline
