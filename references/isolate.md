@@ -11,6 +11,8 @@ Load at step 2, before any product-code write.
 
 Before reading code, `git fetch origin` and compare `HEAD` with `origin/<base>`: a worktree cut from a stale local base is missing the code the issue depends on. When `HEAD` is an ancestor and the tree is clean, `git merge --ff-only origin/<base>` and say so on the receipt.
 
+When Read picked a login other than the active one, `git fetch` runs as `SKILL.md` § GitHub account says.
+
 Every later `git`, test, and install command starts with `cd <absolute-worktree-path> &&`.
 
 Then make the scratch directory (`SKILL.md` § Scratch): `mkdir -p .factory && printf '*\n' > .factory/.gitignore`. Every file the run writes for itself goes under `.factory/`.

@@ -55,7 +55,7 @@ git push -u origin <branch>   # until one succeeds: sets the upstream
 git push                      # every push after that
 ```
 
-Workers commit; the orchestrating session pushes. A push that fails is retried once. A push that still fails is reported in the session's final message and does not stop the work: carry on, and the next commit's push tries again. Keep the `-u` form until a push has succeeded, so a failed first push does not leave the later plain pushes without an upstream.
+When Read picked a login other than the active one, every push here runs as `SKILL.md` § GitHub account says. Workers commit; the orchestrating session pushes. A push that fails is retried once. A push that still fails is reported in the session's final message and does not stop the work: carry on, and the next commit's push tries again. Keep the `-u` form until a push has succeeded, so a failed first push does not leave the later plain pushes without an upstream.
 
 ## Do not
 

@@ -84,9 +84,16 @@ for seat in correctness blind-reader traceability testing security api-contract 
 done
 grep -qF -- 'no issue, no contract, no commit messages' references/reviewers/blind-reader.md || { echo "references/reviewers/blind-reader.md: the blind reader is told the story"; exit 1; }
 grep -qF -- '- settled:' references/receipt.md || { echo "references/receipt.md: no settled line under Review"; exit 1; }
-grep -qF -- 'gh api repos/<owner/repo> --silent' SKILL.md || { echo "SKILL.md: Read does not check repo access first"; exit 1; }
-grep -qF -- 'GH_TOKEN=$(gh auth token --user <login>)' SKILL.md || { echo "SKILL.md: no fallback to another logged-in gh account"; exit 1; }
-grep -qF -- 'Never run `gh auth switch`' SKILL.md || { echo "SKILL.md: no never-switch-the-active-account rule"; exit 1; }
+# GitHub account: pick by write access, fall back to another login without switching, and stop naming every login's orgs.
+for needle in '## GitHub account' 'gh api repos/<owner/repo> --jq .permissions.push' 'GH_TOKEN=$(gh auth token --user <login>)' \
+  "credential.helper=!gh auth git-credential" 'Never run `gh auth switch`' 'never print, echo or export its value' \
+  'No login prints `true` → stop `stuck`' "GH_TOKEN=\$(gh auth token --user <login>) gh api user/orgs --jq '.[].login'"; do
+  grep -qF -- "$needle" SKILL.md || { echo "SKILL.md: no $needle"; exit 1; }
+done
+for f in $(grep -lE '(^|[ `(])gh (api|pr|issue|label|run|repo)|git (push|fetch|clone|ls-remote|pull)' references/*.md); do
+  grep -qF -- '`SKILL.md` § GitHub account' "$f" || { echo "$f: a GitHub command with no pointer to SKILL.md § GitHub account"; exit 1; }
+done
+grep -qF -- '- account: <login>' references/receipt.md || { echo "references/receipt.md: no account line under Gate"; exit 1; }
 
 missing=0
 for path in $(grep -ohE 'references/[A-Za-z0-9_./-]+\.md' SKILL.md references/*.md references/reviewers/*.md | sort -u); do
