@@ -25,7 +25,7 @@ Classify weight once (`references/weight.md` if uncertain). Default **M**. Load 
 
 | Step | Load |
 |------|------|
-| 1 Read | this file § Issue |
+| 1 Read | this file § GitHub account, then § Issue |
 | 2 Isolate | `references/isolate.md` then this file § Scratch |
 | 3 Contract | `references/contract.md` |
 | 4 Make | `references/make.md` then `references/commits.md` (failing behavior → `references/debug.md`) |
@@ -33,6 +33,22 @@ Classify weight once (`references/weight.md` if uncertain). Default **M**. Load 
 | 6 Gate | this file § Gate |
 | 7 Ship | `references/ship.md` + `references/commits.md` + `references/receipt.md` |
 | Models | `references/models.md` before Make and Check |
+
+## GitHub account
+
+Several `gh` accounts can be logged in, and the active one is shared with every other session on the machine, so it may not be the one that can write to this repo. Before any other `gh` or `git` call that reaches the repo, pick its account:
+
+```bash
+gh api repos/<owner/repo> --jq .permissions.push
+GH_TOKEN=$(gh auth token --user <login>) gh api repos/<owner/repo> --jq .permissions.push   # each other login in `gh auth status`
+```
+
+- The first login that prints `true` is the run's account. An error, a 404, a 403 or `false` means try the next login. A repo the run only reads (a retro's evidence) takes `.permissions.pull` in place of `.permissions.push`.
+- The active login printed `true` → run every command as written.
+- Another login printed `true` → prefix every `gh` and `git` command that reaches GitHub for the rest of the run with `GH_TOKEN=$(gh auth token --user <login>)`, the ones written bare in the reference files included. Git reads that token only through gh's helper, so those `git` commands also take `-c credential.helper= -c 'credential.helper=!gh auth git-credential'`. An `origin` that is not an `https://github.com/` URL ignores the token → stop `stuck`.
+- Never run `gh auth switch`. Pass the token only inline as `$(gh auth token --user <login>)`: never print, echo or export its value, and never put it in a commit, the receipt, the PR or a log.
+- The receipt names the run's login under `## Gate` (`references/receipt.md`).
+- No login prints `true` → stop `stuck`, naming each login and the orgs it sees: `GH_TOKEN=$(gh auth token --user <login>) gh api user/orgs --jq '.[].login'`, once per login.
 
 ## Issue
 

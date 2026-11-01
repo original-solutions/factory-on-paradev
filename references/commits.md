@@ -4,13 +4,17 @@ Load at Make, after each Check-fix cycle, and at Ship.
 
 The branch is the audit log. Do not wait for Ship to make the first commit. Do not squash Make or Check commits.
 
+## Issue type
+
+The issue's type is the `<type>: ` prefix on its title (`feat`, `fix`, `refactor`, `docs`, `test`, `chore`), else its `type:*` label, else `fix` for a bug report and `feat` for anything else. Make commits and the pull request title (`references/ship.md`) both use it.
+
 ## When
 
 | Moment | What to commit | Type |
 |---|---|---|
 | Make: a slice's tests are written and failing | the test files only | `test:` |
-| Make: that slice is green | the product files for that slice | `feat:` |
-| Make: the issue is green and the branch has no commit yet | named files for the issue | `feat:` |
+| Make: that slice is green | the product files for that slice | issue type |
+| Make: the issue is green and the branch has no commit yet | named files for the issue | issue type |
 | Check or Gate: a finding changes behavior | the failing tests first as `test:`, then the change | `test:` then `fix:` |
 | Check: a finding only adds tests for behavior that already works | those tests, one commit | `test:` |
 | Ship: leftover named files only (format, lockfile) | those files | `style:` or `chore:` |
@@ -51,7 +55,7 @@ git push -u origin <branch>   # until one succeeds: sets the upstream
 git push                      # every push after that
 ```
 
-Workers commit; the orchestrating session pushes. A push that fails is retried once. A push that still fails is reported in the session's final message and does not stop the work: carry on, and the next commit's push tries again. Keep the `-u` form until a push has succeeded, so a failed first push does not leave the later plain pushes without an upstream.
+When Read picked a login other than the active one, every push here runs as `SKILL.md` § GitHub account says. Workers commit; the orchestrating session pushes. A push that fails is retried once. A push that still fails is reported in the session's final message and does not stop the work: carry on, and the next commit's push tries again. Keep the `-u` form until a push has succeeded, so a failed first push does not leave the later plain pushes without an upstream.
 
 ## Do not
 

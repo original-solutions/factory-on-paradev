@@ -16,6 +16,7 @@ Closes #<n>
 
 ## Gate
 - `<command>` → exit <code>
+- account: <login> — active | other logged-in account (`SKILL.md` § GitHub account)
 
 ## Models
 - maker: <id>
