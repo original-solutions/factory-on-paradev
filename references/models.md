@@ -2,7 +2,7 @@
 
 Load before Make and Check.
 
-Read `models` from `{repo}/.dw/config.yml`.
+Read `models` from the run's config file: `{repo}/.dw/config.yml`, or the file the launch message names (`SKILL.md` § Issue).
 
 ```yaml
 models:

@@ -60,6 +60,10 @@ grep -qF -- 'comments(first: 100, after: $after)' SKILL.md || { echo "SKILL.md: 
 grep -qF -- '.errors // .data.issue' SKILL.md || { echo "SKILL.md: the Linear read hides errors"; exit 1; }
 grep -qF -- 'a worktree the factory launched keeps its branch' references/isolate.md || { echo "references/isolate.md: the Linear branch name is not scoped to a worktree this run creates (a launched worktree keeps its branch)"; exit 1; }
 
+# A repo with project_config: softfac's launch message names the config file, and the run reads every key from it.
+grep -qF -- 'on this machine, not in .dw/config.yml: read `factory` from that file' SKILL.md || { echo "SKILL.md: no launch-named config file sentence"; exit 1; }
+grep -qF -- 'the file the launch message names' references/models.md || { echo "references/models.md: models is not read from the launch-named config file"; exit 1; }
+
 # Scratch lives in .factory/ at the worktree root, never in /tmp, and never reaches a commit.
 grep -qx '## Scratch' SKILL.md || { echo "SKILL.md: no ## Scratch heading"; exit 1; }
 for needle in '`.factory/`' '`/tmp`' '`$TMPDIR`' '.factory/.gitignore' 'node_modules/' 'target/' \
