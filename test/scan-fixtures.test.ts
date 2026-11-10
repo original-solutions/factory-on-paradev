@@ -110,3 +110,22 @@ test("flags a personal email next to an allowed one", () => {
   fixture("mixed.txt", "dev" + "@example.com, " + secret("personal email") + "\n");
   expect(scan()).toEqual({ status: 1, output: "spike/fixtures/mixed.txt:1: email address\n" });
 });
+
+// Recorded URLs and JSON encode separators: "%40" or "\u0040" for "@",
+// "%20" or "+" for the space after Bearer.
+test.each([
+  ["URL-encoded @", "email address", "jane.doe" + "%40" + "gmail.com"],
+  ["JSON-escaped @", "email address", "jane.doe" + "\\u0040" + "gmail.com"],
+  ["URL-encoded space after Bearer", "Bearer token", "Bear" + "er%20" + "t".repeat(20)],
+  ["plus after Bearer", "Bearer token", "Bear" + "er+" + "t".repeat(20)],
+  ["JSON-escaped space after Bearer", "Bearer token", "Bear" + "er\\u0020" + "t".repeat(20)],
+  ["URL-encoded dot after an allowed domain", "email address", "dev" + "@example.com" + "%2E" + "evil.io"],
+])("catches a %s", (_label, pattern, line) => {
+  fixture("encoded.txt", line + "\n");
+  expect(scan()).toEqual({ status: 1, output: `spike/fixtures/encoded.txt:1: ${pattern}\n` });
+});
+
+test("passes the allowed email domains behind an encoded @", () => {
+  fixture("emails.txt", ["dev" + "%40" + "example.com", "123+dev" + "\\u0040" + "users.noreply.github.com"].join("\n"));
+  expect(scan()).toEqual({ status: 0, output: "" });
+});

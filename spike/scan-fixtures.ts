@@ -17,7 +17,7 @@ const patterns: [name: string, test: (line: string) => boolean][] = [
   ["Anthropic key", matches(/sk-ant-[A-Za-z0-9_-]+/)],
   ["GitHub token", matches(/(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/)],
   ["Slack token", matches(/xox[a-z]*-[A-Za-z0-9-]+/)],
-  ["Bearer token", matches(/bearer [A-Za-z0-9._~+/=\\-]{20,}/i)],
+  ["Bearer token", matches(/bearer[ +][A-Za-z0-9._~+/=\\-]{20,}/i)],
   ["JWT", matches(/eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/)],
   [
     "email address",
@@ -30,6 +30,14 @@ const patterns: [name: string, test: (line: string) => boolean][] = [
 
 function matches(pattern: RegExp): (line: string) => boolean {
   return (line) => pattern.test(line);
+}
+
+// Recorded URLs and JSON encode separators ("%40", "\u0040"), so each line is
+// also tested with its %XX and \uXXXX escapes decoded.
+function decode(line: string): string {
+  return line
+    .replace(/\\u([0-9A-Fa-f]{4})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/%([0-9A-Fa-f]{2})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
 }
 
 function files(dir: string): string[] {
@@ -49,8 +57,9 @@ if (existsSync(root)) {
     readFileSync(file, "utf8")
       .split(/\r?\n/)
       .forEach((line, index) => {
+        const decoded = decode(line);
         for (const [name, test] of patterns) {
-          if (!test(line)) continue;
+          if (!test(line) && !test(decoded)) continue;
           console.log(`${file}:${index + 1}: ${name}`);
           found = true;
         }
