@@ -7,7 +7,7 @@
 // Exit 2, with nothing written, on bad input.
 
 import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 
 const usage = "usage: node spike/scaffold.ts <dir> --repo <owner/name> --skill <path>";
@@ -187,7 +187,13 @@ function main(argv: string[]) {
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, content);
   }
-  cpSync(skill, join(dir, ".claude/skills/factory"), { recursive: true, dereference: true });
+  // A skill source is often a git checkout; its .git would make the test repo
+  // record the skill as an embedded repo instead of its files.
+  cpSync(skill, join(dir, ".claude/skills/factory"), {
+    recursive: true,
+    dereference: true,
+    filter: (src) => ![".git", ".worktrees"].includes(basename(src)),
+  });
 }
 
 main(process.argv.slice(2));
