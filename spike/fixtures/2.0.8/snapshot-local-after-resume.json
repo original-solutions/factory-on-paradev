@@ -1,0 +1,88 @@
+{
+  "workspaces": [
+    {
+      "id": "9a9a5fef-ec66-4036-9bf0-d8302e8bb39f",
+      "name": "fac #2 subtract",
+      "project": "factory-paradev-spike",
+      "branch": "fac/2-1",
+      "terminals": [
+        {
+          "id": "5e3b1255-4f81-40c6-b003-e42416740258",
+          "title": "tomkaczocha@personal-mac:~/.paradev/worktrees/factory-paradev-spike/fac/2-1",
+          "agent": {
+            "id": "claude",
+            "state": "working"
+          }
+        },
+        {
+          "id": "58426e6d-e788-40de-8ba1-ab6a4e752482",
+          "title": "◐ factory-paradev-spike issue #2",
+          "agent": {
+            "id": "claude",
+            "state": "idle"
+          }
+        }
+      ],
+      "layout": {
+        "activeTabId": "tab-90b2a14d-d2b2-4c7e-9ff0-5a12074352dd",
+        "tabs": [
+          {
+            "id": "tab-ad6891c9-3e92-43d3-987f-5688b76cff41",
+            "title": null,
+            "active": false,
+            "activePaneId": "pane-337bcfd4-05a4-4fb5-b3c9-2f691e01035b",
+            "layout": {
+              "type": "pane",
+              "paneId": "pane-337bcfd4-05a4-4fb5-b3c9-2f691e01035b"
+            },
+            "panes": [
+              {
+                "id": "pane-337bcfd4-05a4-4fb5-b3c9-2f691e01035b",
+                "kind": "terminal",
+                "title": null,
+                "terminalId": "5e3b1255-4f81-40c6-b003-e42416740258",
+                "active": true,
+                "terminalTitle": "tomkaczocha@personal-mac:~/.paradev/worktrees/factory-paradev-spike/fac/2-1",
+                "agent": {
+                  "id": "claude",
+                  "state": "working"
+                }
+              }
+            ]
+          },
+          {
+            "id": "tab-90b2a14d-d2b2-4c7e-9ff0-5a12074352dd",
+            "title": null,
+            "active": true,
+            "activePaneId": "pane-dc30d11b-fb45-4e17-9b94-cabfce963a9d",
+            "layout": {
+              "type": "pane",
+              "paneId": "pane-dc30d11b-fb45-4e17-9b94-cabfce963a9d"
+            },
+            "panes": [
+              {
+                "id": "pane-dc30d11b-fb45-4e17-9b94-cabfce963a9d",
+                "kind": "terminal",
+                "title": null,
+                "terminalId": "58426e6d-e788-40de-8ba1-ab6a4e752482",
+                "active": true,
+                "terminalTitle": "factory-paradev-spike issue #2",
+                "agent": {
+                  "id": "claude",
+                  "state": "idle"
+                }
+              }
+            ]
+          }
+        ],
+        "sidebar": {
+          "open": false,
+          "fullScreen": false,
+          "activeTabId": null,
+          "tabs": []
+        }
+      },
+      "layoutError": null
+    }
+  ]
+}

@@ -1,0 +1,422 @@
+[
+  {
+    "id": "e72c7d9b-7697-44de-8dc5-bc78f18796f5",
+    "presetId": "claude",
+    "iconId": null,
+    "label": "Claude",
+    "command": "claude",
+    "args": [
+      "--dangerously-skip-permissions"
+    ],
+    "promptTransport": "argv",
+    "promptArgs": [],
+    "resumeArgs": [
+      "--resume"
+    ],
+    "forkArgs": [
+      "--resume",
+      "{sessionId}",
+      "--fork-session"
+    ],
+    "env": {},
+    "order": 0
+  },
+  {
+    "id": "1973d085-5c84-42f6-bf5f-2eca8e25d21a",
+    "presetId": "amp",
+    "iconId": null,
+    "label": "Amp",
+    "command": "amp",
+    "args": [],
+    "promptTransport": "stdin",
+    "promptArgs": [],
+    "resumeArgs": [
+      "threads",
+      "continue"
+    ],
+    "forkArgs": [],
+    "env": {},
+    "order": 1
+  },
+  {
+    "id": "ee8ea213-8904-4b8f-810b-6a8e4558ffa0",
+    "presetId": "codex",
+    "iconId": null,
+    "label": "Codex",
+    "command": "codex",
+    "args": [
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--dangerously-bypass-hook-trust"
+    ],
+    "promptTransport": "argv",
+    "promptArgs": [
+      "--"
+    ],
+    "resumeArgs": [
+      "resume"
+    ],
+    "forkArgs": [
+      "fork",
+      "{sessionId}"
+    ],
+    "env": {},
+    "order": 2
+  },
+  {
+    "id": "d0878032-c2b4-48b4-8516-13281e3beb80",
+    "presetId": "gemini",
+    "iconId": null,
+    "label": "Gemini",
+    "command": "gemini",
+    "args": [
+      "--approval-mode=auto_edit"
+    ],
+    "promptTransport": "argv",
+    "promptArgs": [],
+    "resumeArgs": [
+      "--resume"
+    ],
+    "forkArgs": [],
+    "env": {},
+    "order": 3
+  },
+  {
+    "id": "d6d9fe96-8871-4151-8ea2-aa9b6aad1b39",
+    "presetId": "mastracode",
+    "iconId": null,
+    "label": "Mastracode",
+    "command": "mastracode",
+    "args": [],
+    "promptTransport": "argv",
+    "promptArgs": [
+      "--prompt"
+    ],
+    "resumeArgs": [
+      "--thread"
+    ],
+    "forkArgs": [],
+    "env": {},
+    "order": 4
+  },
+  {
+    "id": "9f6cba88-da8e-4009-88e0-3de6765402f3",
+    "presetId": "opencode",
+    "iconId": null,
+    "label": "OpenCode",
+    "command": "opencode",
+    "args": [],
+    "promptTransport": "argv",
+    "promptArgs": [
+      "--prompt"
+    ],
+    "resumeArgs": [
+      "--session"
+    ],
+    "forkArgs": [
+      "--session",
+      "{sessionId}",
+      "--fork"
+    ],
+    "env": {},
+    "order": 5
+  },
+  {
+    "id": "07e19fa1-ab85-45ac-8030-677bfb28f1f4",
+    "presetId": "omp",
+    "iconId": null,
+    "label": "Oh My Pi",
+    "command": "omp",
+    "args": [],
+    "promptTransport": "argv",
+    "promptArgs": [],
+    "resumeArgs": [],
+    "forkArgs": [],
+    "env": {},
+    "order": 6
+  },
+  {
+    "id": "c3be4195-3a92-43f1-857b-7abfd01cb95c",
+    "presetId": "pi",
+    "iconId": null,
+    "label": "Pi",
+    "command": "pi",
+    "args": [],
+    "promptTransport": "argv",
+    "promptArgs": [],
+    "resumeArgs": [
+      "--session"
+    ],
+    "forkArgs": [
+      "--fork",
+      "{sessionId}"
+    ],
+    "env": {},
+    "order": 7
+  },
+  {
+    "id": "bc4eac0e-bfc8-4615-b986-d15d2b6c3bf4",
+    "presetId": "copilot",
+    "iconId": null,
+    "label": "Copilot",
+    "command": "copilot",
+    "args": [
+      "--allow-tool=write"
+    ],
+    "promptTransport": "argv",
+    "promptArgs": [
+      "-i"
+    ],
+    "resumeArgs": [
+      "--resume"
+    ],
+    "forkArgs": [],
+    "env": {},
+    "order": 8
+  },
+  {
+    "id": "328a8213-9045-4628-8bc8-3c6b4468aef8",
+    "presetId": "vibe",
+    "iconId": null,
+    "label": "Mistral Vibe",
+    "command": "vibe",
+    "args": [
+      "--trust",
+      "--auto-approve"
+    ],
+    "promptTransport": "argv",
+    "promptArgs": [],
+    "resumeArgs": [
+      "--resume"
+    ],
+    "forkArgs": [],
+    "env": {},
+    "order": 9
+  },
+  {
+    "id": "31604704-875e-47fe-97a6-3429d3a5a1ba",
+    "presetId": "kimi",
+    "iconId": null,
+    "label": "Kimi Code",
+    "command": "kimi",
+    "args": [],
+    "promptTransport": "argv",
+    "promptArgs": [
+      "-p"
+    ],
+    "resumeArgs": [
+      "--session"
+    ],
+    "forkArgs": [],
+    "env": {},
+    "order": 10
+  },
+  {
+    "id": "0dd3db6b-20cc-45f8-bf70-32b8812d6dd7",
+    "presetId": "grok",
+    "iconId": null,
+    "label": "Grok",
+    "command": "grok",
+    "args": [
+      "--always-approve"
+    ],
+    "promptTransport": "argv",
+    "promptArgs": [],
+    "resumeArgs": [
+      "--resume"
+    ],
+    "forkArgs": [
+      "--resume",
+      "{sessionId}",
+      "--fork-session"
+    ],
+    "env": {},
+    "order": 11
+  },
+  {
+    "id": "eacf159a-8d39-4de2-a00f-f5fa1b63960c",
+    "presetId": "cursor-agent",
+    "iconId": null,
+    "label": "Cursor Agent",
+    "command": "cursor-agent",
+    "args": [],
+    "promptTransport": "argv",
+    "promptArgs": [],
+    "resumeArgs": [
+      "--resume"
+    ],
+    "forkArgs": [],
+    "env": {},
+    "order": 12
+  },
+  {
+    "id": "063eb273-d734-458f-aac9-a7aaae6f8407",
+    "presetId": "droid",
+    "iconId": null,
+    "label": "Droid",
+    "command": "droid",
+    "args": [],
+    "promptTransport": "argv",
+    "promptArgs": [],
+    "resumeArgs": [
+      "--resume"
+    ],
+    "forkArgs": [
+      "--fork",
+      "{sessionId}"
+    ],
+    "env": {},
+    "order": 13
+  },
+  {
+    "id": "0207696b-8e58-41c8-90c3-491220b9ebee",
+    "presetId": "polygraph",
+    "iconId": null,
+    "label": "Polygraph",
+    "command": "polygraph",
+    "args": [
+      "session",
+      "start"
+    ],
+    "promptTransport": "argv",
+    "promptArgs": [
+      "--"
+    ],
+    "resumeArgs": [],
+    "forkArgs": [],
+    "env": {},
+    "order": 14
+  },
+  {
+    "id": "138c162b-afe5-489f-ad43-bd1b79decf40",
+    "presetId": "kiro",
+    "iconId": null,
+    "label": "Kiro",
+    "command": "kiro-cli",
+    "args": [
+      "chat",
+      "--trust-all-tools"
+    ],
+    "promptTransport": "argv",
+    "promptArgs": [],
+    "resumeArgs": [
+      "--resume-id"
+    ],
+    "forkArgs": [],
+    "env": {},
+    "order": 15
+  },
+  {
+    "id": "fb185cd0-8356-4873-b734-1ba5fd04aba3",
+    "presetId": "agy",
+    "iconId": null,
+    "label": "Antigravity",
+    "command": "agy",
+    "args": [
+      "--mode",
+      "accept-edits"
+    ],
+    "promptTransport": "argv",
+    "promptArgs": [
+      "-i"
+    ],
+    "resumeArgs": [
+      "--conversation"
+    ],
+    "forkArgs": [],
+    "env": {},
+    "order": 16
+  },
+  {
+    "id": "490a3e66-6170-424c-a791-d6421703985b",
+    "presetId": "fx",
+    "iconId": null,
+    "label": "fx",
+    "command": "fx",
+    "args": [],
+    "promptTransport": "argv",
+    "promptArgs": [
+      "ask",
+      "--auto"
+    ],
+    "resumeArgs": [
+      "resume"
+    ],
+    "forkArgs": [],
+    "env": {},
+    "order": 17
+  },
+  {
+    "id": "8552f051-393f-43da-9fda-ac869b30efd9",
+    "presetId": "hermes",
+    "iconId": null,
+    "label": "Hermes",
+    "command": "hermes",
+    "args": [
+      "chat",
+      "--yolo"
+    ],
+    "promptTransport": "argv",
+    "promptArgs": [
+      "-q"
+    ],
+    "resumeArgs": [
+      "-r"
+    ],
+    "forkArgs": [],
+    "env": {},
+    "order": 18
+  },
+  {
+    "id": "1df3fff2-595f-49d7-b166-a496c3ca8529",
+    "presetId": "muse",
+    "iconId": null,
+    "label": "Muse Code",
+    "command": "muse",
+    "args": [],
+    "promptTransport": "argv",
+    "promptArgs": [],
+    "resumeArgs": [
+      "resume"
+    ],
+    "forkArgs": [],
+    "env": {},
+    "order": 19
+  },
+  {
+    "id": "12cfdd88-3ab7-440f-8989-ad40f57e422e",
+    "presetId": "devin",
+    "iconId": null,
+    "label": "Devin",
+    "command": "devin",
+    "args": [
+      "--permission-mode",
+      "dangerous"
+    ],
+    "promptTransport": "argv",
+    "promptArgs": [
+      "--"
+    ],
+    "resumeArgs": [
+      "--resume"
+    ],
+    "forkArgs": [],
+    "env": {},
+    "order": 20
+  },
+  {
+    "id": "b653d14d-54d4-4f23-a323-ff1d32034f04",
+    "presetId": "ufo",
+    "iconId": null,
+    "label": "UFO",
+    "command": "ufo",
+    "args": [],
+    "promptTransport": "argv",
+    "promptArgs": [],
+    "resumeArgs": [
+      "--resume"
+    ],
+    "forkArgs": [],
+    "env": {},
+    "order": 21
+  }
+]

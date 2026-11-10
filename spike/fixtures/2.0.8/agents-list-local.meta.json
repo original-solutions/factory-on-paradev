@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "agents",
+    "list",
+    "--local",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794343318613,
+  "durationMs": 407,
+  "stderr": ""
+}

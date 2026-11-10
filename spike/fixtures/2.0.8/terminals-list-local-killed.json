@@ -1,0 +1,14 @@
+{
+  "sessions": [
+    {
+      "terminalId": "5e3b1255-4f81-40c6-b003-e42416740258",
+      "workspaceId": "9a9a5fef-ec66-4036-9bf0-d8302e8bb39f",
+      "createdAt": 1794343332265,
+      "exited": false,
+      "exitCode": 0,
+      "attached": false,
+      "title": "tomkaczocha@personal-mac:~/.paradev/worktrees/factory-paradev-spike/fac/2-1",
+      "customTitle": null
+    }
+  ]
+}
