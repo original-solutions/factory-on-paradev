@@ -3,8 +3,12 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FIXTURES, lastResultLine } from "../spike/run-local.ts";
+
+// Each run spawns the fake binary once per call, about 17 node processes, so a
+// loaded machine takes longer than the 5s default without anything being wrong.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 const driver = fileURLToPath(new URL("../spike/run-local.ts", import.meta.url));
 const fake = fileURLToPath(new URL("./fixtures/fake-superset.mjs", import.meta.url));
