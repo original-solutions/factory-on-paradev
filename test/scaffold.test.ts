@@ -157,7 +157,7 @@ describe("refusals", () => {
     "refuses --repo %j",
     (repo) => {
       const out = join(root, "out");
-      expectRefusal(scaffold(out, "--repo", repo, "--skill", skill), /--repo/);
+      expectRefusal(scaffold(out, "--repo", repo, "--skill", skill), /--repo must be/);
       expect(existsSync(out)).toBe(false);
     },
   );
@@ -166,26 +166,26 @@ describe("refusals", () => {
     const out = join(root, "out");
     const bare = join(root, "bare");
     mkdirSync(bare);
-    expectRefusal(scaffold(out, "--repo", "acme/spike", "--skill", bare), /--skill/);
+    expectRefusal(scaffold(out, "--repo", "acme/spike", "--skill", bare), /--skill must be/);
     expect(existsSync(out)).toBe(false);
   });
 
   test("refuses a --skill path that is a file", () => {
     const out = join(root, "out");
-    expectRefusal(scaffold(out, "--repo", "acme/spike", "--skill", join(skill, "SKILL.md")), /--skill/);
+    expectRefusal(scaffold(out, "--repo", "acme/spike", "--skill", join(skill, "SKILL.md")), /--skill must be/);
     expect(existsSync(out)).toBe(false);
   });
 
   test("refuses a --skill path that does not exist", () => {
     const out = join(root, "out");
-    expectRefusal(scaffold(out, "--repo", "acme/spike", "--skill", join(root, "missing")), /--skill/);
+    expectRefusal(scaffold(out, "--repo", "acme/spike", "--skill", join(root, "missing")), /--skill must be/);
     expect(existsSync(out)).toBe(false);
   });
 
   test("refuses a missing dir or flag", () => {
-    expectRefusal(scaffold("--repo", "acme/spike", "--skill", skill), /usage/);
-    expectRefusal(scaffold(join(root, "out"), "--skill", skill), /--repo/);
-    expectRefusal(scaffold(join(root, "out"), "--repo", "acme/spike"), /--skill/);
+    expectRefusal(scaffold("--repo", "acme/spike", "--skill", skill), /expected one <dir>/);
+    expectRefusal(scaffold(join(root, "out"), "--skill", skill), /--repo must be/);
+    expectRefusal(scaffold(join(root, "out"), "--repo", "acme/spike"), /--skill must be/);
     expect(existsSync(join(root, "out"))).toBe(false);
   });
 });
