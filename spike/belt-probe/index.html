@@ -67,18 +67,25 @@
       "<tbody>" + rows + "</tbody></table>";
   }
 
+  // Gets can overlap (the first load and a change, or a slow poll); only the
+  // latest one may render, so an older value never replaces a newer one.
+  let latest = 0;
+
   async function load(storage, via) {
+    const call = ++latest;
     try {
       let value = await storage.get(KEY, OPTS);
+      if (call !== latest) return;
       if (typeof value === "string") value = JSON.parse(value);
       render(value, via);
       errorEl.textContent = "";
     } catch (e) {
+      if (call !== latest) return;
       errorEl.textContent = "storage.get failed (" + via + "): " + (e && e.message ? e.message : String(e));
     }
   }
 
-  function start() {
+  async function start() {
     const superset = window.superset;
     if (!superset) {
       say("window.superset is not available");
@@ -94,7 +101,8 @@
     load(storage, "get");
     if (hasSubscribe) {
       try {
-        storage.subscribe(KEY, () => load(storage, "subscribe"), OPTS);
+        // Awaited so a subscribe that returns a rejected promise also falls back.
+        await storage.subscribe(KEY, () => load(storage, "subscribe"), OPTS);
         say("Subscribed to shared \"belt\".");
         return;
       } catch (e) {

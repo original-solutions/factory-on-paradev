@@ -50,6 +50,11 @@ function run(i: number): Run {
   };
 }
 
+const ref = (r: Run) => `${r.repo}#${r.issue}`;
+// Both are among the first runs, so every sample holds them.
+const waiting = run(3);
+const stuck = run(4);
+
 function belt(runs: Run[]): BeltV1 {
   const count = (s: Run["state"]) => runs.filter((r) => r.state === s).length;
   return {
@@ -73,8 +78,8 @@ function belt(runs: Run[]): BeltV1 {
     },
     runs,
     attention: [
-      { id: "att-1", kind: "stuck", text: "sample-co/api#104 is stuck at Gate.", since: iso(60) },
-      { id: "att-2", kind: "needs-info", text: "example-org/billing#103 is waiting on an answer.", since: iso(90) },
+      { id: "att-1", kind: "stuck", text: `${ref(stuck)} is stuck at ${stuck.step}.`, since: iso(60) },
+      { id: "att-2", kind: "needs-info", text: `${ref(waiting)} is waiting on an answer at ${waiting.step}.`, since: iso(90) },
     ],
   };
 }
