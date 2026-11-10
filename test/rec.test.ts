@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,8 +18,8 @@ afterEach(() => {
   rmSync(fix, { recursive: true, force: true });
 });
 
-function run(args: string[], fakeEnv: Record<string, string> = {}, fixtureDir = fix) {
-  return spawnSync(process.execPath, [rec, ...args], {
+function run(args: string[], fakeEnv: Record<string, string> = {}, fixtureDir = fix, script = rec) {
+  return spawnSync(process.execPath, [script, ...args], {
     encoding: "utf8",
     env: { ...process.env, SUPERSET: fake, FIX: fixtureDir, ...fakeEnv },
   });
@@ -33,6 +33,7 @@ test("success saves stdout and a meta sidecar, appending --json", () => {
   const before = Date.now();
   const out = '{"agents":[]}\n';
   const r = run(["agents-read-local", "agents", "read"], { FAKE_STDOUT: out, FAKE_DELAY_MS: "50" });
+  const after = Date.now();
 
   expect(r.status).toBe(0);
   expect(r.stdout).toBe("rec agents-read-local exit=0\n");
@@ -47,10 +48,11 @@ test("success saves stdout and a meta sidecar, appending --json", () => {
   expect(m.startedAt).toBeGreaterThanOrEqual(before);
   expect(Number.isInteger(m.durationMs)).toBe(true);
   expect(m.durationMs).toBeGreaterThanOrEqual(50);
+  expect(m.startedAt + 50).toBeLessThanOrEqual(after);
   expect(m.stderr).toBe('argv=["agents","read","--json"]\n');
 });
 
-test("failure keeps exit code and stderr, writes no stdout fixture", () => {
+test("failure with stderr only keeps exit code and stderr, writes no stdout fixture", () => {
   const r = run(["agents-read-missing", "agents", "read", "nope"], {
     FAKE_STDERR: "error: no such agent\n",
     FAKE_EXIT: "1",
@@ -78,6 +80,25 @@ test("--json is not doubled when already given", () => {
   run(["agents-read-local", "agents", "--json", "read"], { FAKE_STDOUT: "{}" });
 
   expect(meta("agents-read-local").argv).toEqual(["agents", "--json", "read"]);
+});
+
+test("a missing binary records exit 1 and the spawn error", () => {
+  const r = run(["missing-binary", "agents", "list"], { SUPERSET: join(fix, "nope") });
+
+  expect(r.status).toBe(1);
+  expect(r.stdout).toBe("rec missing-binary exit=1\n");
+  const m = meta("missing-binary");
+  expect(m.exit).toBe(1);
+  expect(m.stderr).toContain("ENOENT");
+});
+
+test("runs when started through a symlink", () => {
+  const link = join(fix, "rec-link.ts");
+  symlinkSync(rec, link);
+  const r = run(["via-link", "agents", "list"], { FAKE_STDOUT: "{}" }, fix, link);
+
+  expect(r.status).toBe(0);
+  expect(r.stdout).toBe("rec via-link exit=0\n");
 });
 
 test("creates the fixture folder when missing", () => {
