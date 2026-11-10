@@ -52,6 +52,7 @@ test("passes when spike/fixtures does not exist", () => {
 test("passes a clean folder", () => {
   fixture("a.json", '{ "ok": true, "token": "short" }\n');
   fixture("nested/deep/b.txt", "Bear" + "er short\n" + "Bear" + "er " + "t".repeat(19) + "\nsk_live_\nnothing here\n");
+  fixture("keys.json", '{ "laughs_count": 3, "graphs_total": 2, "sighs_per_minute": 1 }\n');
   expect(scan()).toEqual({ status: 0, output: "" });
 });
 
