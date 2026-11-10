@@ -51,7 +51,7 @@ test("passes when spike/fixtures does not exist", () => {
 
 test("passes a clean folder", () => {
   fixture("a.json", '{ "ok": true, "token": "short" }\n');
-  fixture("nested/deep/b.txt", "Bearer short\nsk_live_\nnothing here\n");
+  fixture("nested/deep/b.txt", "Bear" + "er short\n" + "Bear" + "er " + "t".repeat(19) + "\nsk_live_\nnothing here\n");
   expect(scan()).toEqual({ status: 0, output: "" });
 });
 
@@ -63,6 +63,33 @@ test("passes the allowed email domains", () => {
 test.each(samples)("catches a %s without printing it", (_label, pattern, secret) => {
   fixture("nested/sample.json", `{\n  "value": "${secret}"\n}\n`);
   expect(scan()).toEqual({ status: 1, output: `spike/fixtures/nested/sample.json:2: ${pattern}\n` });
+});
+
+// Recorded responses glue tokens to word characters: a JSON "\n" escape, a
+// URL-encoded "%3D", a snake_case prefix.
+test.each(
+  samples.flatMap(([label, pattern, secret]) =>
+    ["\\n", "%3D", "key_"].map((before) => [label, before, pattern, secret]),
+  ),
+)("catches a %s right after %s", (_label, before, pattern, secret) => {
+  fixture("glued.json", `{ "body": "line${before}${secret}" }\n`);
+  expect(scan()).toEqual({ status: 1, output: `spike/fixtures/glued.json:1: ${pattern}\n` });
+});
+
+test.each([
+  ["lowercase", "authorization: " + "bear" + "er " + "t".repeat(20)],
+  ["JSON-escaped slash", '"Bear' + 'er abc\\/' + "t".repeat(20) + '"'],
+])("catches a %s Bearer token", (_label, line) => {
+  fixture("header.txt", line + "\n");
+  expect(scan()).toEqual({ status: 1, output: "spike/fixtures/header.txt:1: Bearer token\n" });
+});
+
+test("flags lookalikes of the allowed email domains", () => {
+  fixture("lookalike.txt", "dev" + "@example.community\n" + "dev" + "@example.com.evil.io\n");
+  expect(scan()).toEqual({
+    status: 1,
+    output: "spike/fixtures/lookalike.txt:1: email address\nspike/fixtures/lookalike.txt:2: email address\n",
+  });
 });
 
 test("reports each match by path, line and pattern name", () => {
