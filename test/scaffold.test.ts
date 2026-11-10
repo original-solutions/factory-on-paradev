@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -170,6 +170,16 @@ describe("refusals", () => {
     const out = join(root, "out");
     expectRefusal(scaffold(out, "--repo", "acme/spike", "--skill", skill, "--bogus", "x"), /bogus/);
     expect(existsSync(out)).toBe(false);
+  });
+
+  test("copies a symlinked skill folder as real files", () => {
+    const out = join(root, "out");
+    const link = join(root, "skill-link");
+    symlinkSync(skill, link);
+    expect(scaffold(out, "--repo", "acme/spike", "--skill", link).status).toBe(0);
+    const copied = join(out, ".claude/skills/factory");
+    expect(lstatSync(copied).isSymbolicLink()).toBe(false);
+    expect(read(out, ".claude/skills/factory/SKILL.md")).toBe("# fake factory skill\n");
   });
 
   test("accepts a dir that exists and is empty", () => {
