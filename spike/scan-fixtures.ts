@@ -8,13 +8,17 @@ const root = "spike/fixtures";
 
 const allowedEmail = /@(?:example\.com|users\.noreply\.github\.com)$/i;
 
+// No leading \b: recorded responses glue tokens to word characters (a JSON
+// "\n" escape, a URL-encoded "%3D"), and a miss leaks a live token while a
+// false positive costs one hand redaction. GitHub token bodies need 20
+// characters so a key like "laughs_count" is not read as a ghs_ token.
 const patterns: [name: string, test: (line: string) => boolean][] = [
-  ["Stripe key", matches(/\bsk_(?:live|test)_[A-Za-z0-9]+/)],
-  ["Anthropic key", matches(/\bsk-ant-[A-Za-z0-9_-]+/)],
-  ["GitHub token", matches(/\b(?:gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+)/)],
-  ["Slack token", matches(/\bxox[a-z]*-[A-Za-z0-9-]+/)],
-  ["Bearer token", matches(/\bBearer [A-Za-z0-9._~+/=-]{20,}/)],
-  ["JWT", matches(/\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/)],
+  ["Stripe key", matches(/sk_(?:live|test)_[A-Za-z0-9]+/)],
+  ["Anthropic key", matches(/sk-ant-[A-Za-z0-9_-]+/)],
+  ["GitHub token", matches(/(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/)],
+  ["Slack token", matches(/xox[a-z]*-[A-Za-z0-9-]+/)],
+  ["Bearer token", matches(/bearer [A-Za-z0-9._~+/=\\-]{20,}/i)],
+  ["JWT", matches(/eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/)],
   [
     "email address",
     (line) =>
