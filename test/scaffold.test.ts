@@ -46,6 +46,10 @@ beforeEach(() => {
   mkdirSync(join(skill, "references"), { recursive: true });
   writeFileSync(join(skill, "SKILL.md"), "# fake factory skill\n");
   writeFileSync(join(skill, "references", "make.md"), "# fake make\n");
+  mkdirSync(join(skill, ".git"));
+  writeFileSync(join(skill, ".git", "HEAD"), "ref: refs/heads/main\n");
+  mkdirSync(join(skill, ".worktrees", "other"), { recursive: true });
+  writeFileSync(join(skill, ".worktrees", "other", ".git"), "gitdir: elsewhere\n");
 });
 
 afterEach(() => {
@@ -91,6 +95,10 @@ describe("a valid run", () => {
     expect(read(out, ".claude/skills/factory/references/make.md")).toBe("# fake make\n");
   });
 
+  test("leaves the skill's git metadata and worktrees behind", () => {
+    expect(readdirSync(join(out, ".claude/skills/factory")).sort()).toEqual(["SKILL.md", "references"]);
+  });
+
   test("writes six issue titles in order", () => {
     expect(JSON.parse(read(out, "issues/titles.json"))).toEqual(titles);
   });
@@ -100,6 +108,11 @@ describe("a valid run", () => {
     const headings = body.split("\n").filter((line) => line.startsWith("## "));
     expect(headings).toEqual(["## Outcome", "## Acceptance criteria", "## Depends on", "## Notes"]);
     expect(body).toMatch(/## Depends on\n\nNone\.\n/);
+
+    const section = (heading: string) => body.split(`## ${heading}\n`)[1]!.split("\n## ")[0]!.trim();
+    const fn = /add (\w+)/.exec(titles[n - 1]!)![1]!;
+    expect(section("Outcome")).toContain(`\`${fn}(`);
+    expect(section("Notes")).not.toBe("");
 
     const criteria = body.split("## Acceptance criteria\n")[1]!.split("\n## ")[0]!;
     const bullets = criteria.split("\n").filter((line) => line.startsWith("- "));
@@ -126,7 +139,7 @@ describe("a valid run", () => {
   });
 
   test("the written project passes node --test", () => {
-    const result = spawnSync(process.execPath, ["--test"], { cwd: out, encoding: "utf8" });
+    const result = spawnSync(process.execPath, ["--test", "--test-reporter=tap"], { cwd: out, encoding: "utf8" });
     expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(result.stdout).toMatch(/# pass 1\b/);
   });
@@ -144,6 +157,19 @@ describe("refusals", () => {
     writeFileSync(join(out, "keep.txt"), "x");
     expectRefusal(scaffold(out, "--repo", "acme/spike", "--skill", skill), /not empty/);
     expect(readdirSync(out)).toEqual(["keep.txt"]);
+  });
+
+  test("refuses a dir that is a file", () => {
+    const out = join(root, "file");
+    writeFileSync(out, "x");
+    expectRefusal(scaffold(out, "--repo", "acme/spike", "--skill", skill), /not empty/);
+    expect(readFileSync(out, "utf8")).toBe("x");
+  });
+
+  test("refuses an unknown flag", () => {
+    const out = join(root, "out");
+    expectRefusal(scaffold(out, "--repo", "acme/spike", "--skill", skill, "--bogus", "x"), /bogus/);
+    expect(existsSync(out)).toBe(false);
   });
 
   test("accepts a dir that exists and is empty", () => {
