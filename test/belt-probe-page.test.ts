@@ -181,6 +181,28 @@ test("a slow earlier get never overwrites a newer belt", async () => {
   expect(page.text()).not.toContain("older-host");
 });
 
+test("a slow earlier get that fails never hides a newer belt", async () => {
+  const pending: Array<{ resolve: (b: BeltV1) => void; reject: (e: Error) => void }> = [];
+  let onChange: (() => void) | undefined;
+  const page = load({
+    storage: {
+      get: () => new Promise<BeltV1>((resolve, reject) => pending.push({ resolve, reject })),
+      subscribe: (_key, cb) => {
+        onChange = cb;
+      },
+    },
+  });
+  await settle();
+  onChange?.();
+  await settle();
+  pending[1]!.resolve({ ...belt, runner: { ...belt.runner, host: "newer-host" } });
+  await settle();
+  pending[0]!.reject(new Error("slow failure"));
+  await settle();
+  expect(page.text()).toContain("newer-host");
+  expect(page.text()).not.toContain("slow failure");
+});
+
 test("says window.superset is not available when it is missing", async () => {
   const page = load(undefined);
   await settle();
@@ -189,9 +211,19 @@ test("says window.superset is not available when it is missing", async () => {
 });
 
 test("says storage.get is not available when it is missing", async () => {
-  const page = load({ storage: { subscribe: () => {} } });
+  let subscribed = false;
+  const page = load({
+    storage: {
+      subscribe: () => {
+        subscribed = true;
+      },
+    },
+  });
   await settle();
-  expect(page.text()).toContain("storage.get is not available");
+  const out = page.text();
+  expect(out).toContain("storage.get is not available");
+  expect(out).not.toContain("failed");
+  expect(subscribed).toBe(false);
   expect(page.intervals).toHaveLength(0);
 });
 
