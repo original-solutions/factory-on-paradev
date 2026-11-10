@@ -6,6 +6,7 @@
 // FAKE_SCRIPT: a JSON file that answers by command instead of the three above. Its keys are the
 //   command, the first one or two words of argv ("schema", "workspaces create"). A value is one
 //   answer, { stdout?, stderr?, exit? }, or a list of them used in turn, the last one repeating.
+//   A list advances only with FAKE_LOG set, since the turn is counted from that log.
 //   A stdout that is not a string is printed as JSON. A command with no key exits 1.
 // FAKE_LOG: a file it appends its argv to, one JSON array per line.
 // Always echoes its argv to stderr as JSON on the first line.

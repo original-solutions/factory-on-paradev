@@ -30,8 +30,8 @@ export function lastResultLine(text: string): string | null {
   const last = chunks(text).findLast((c) => c.role === "Assistant");
   const line = last?.body
     .split("\n")
-    .map((l) => l.trim())
-    .findLast((l) => l !== "");
+    .map((l) => l.trimEnd())
+    .findLast((l) => l.trim() !== "");
   return line && /^FACTORY-(DONE|STOP): /.test(line) ? line : null;
 }
 
@@ -100,16 +100,23 @@ function main(args: string[]): number {
     return call("ws-archive-local", ["workspaces", "archive", ...ids, "--local"]).exit;
   }
 
-  const prompt = (file: string) => {
+  const resultsFile = join(spikeDir, "RESULTS.md");
+  if (existsSync(resultsFile)) {
+    process.stderr.write(`run-local: ${resultsFile} exists; move it aside before a new run, so its notes are kept\n`);
+    return 2;
+  }
+  const prompts: string[] = [];
+  for (const file of ["1.txt", "gate-failure.txt"]) {
     const path = join(clone, "prompts", file);
-    if (!existsSync(path)) throw new Stop(`missing ${path}; scaffold the spike clone first`);
-    return readFileSync(path, "utf8").replace(/\n+$/, "");
-  };
+    if (!existsSync(path)) {
+      process.stderr.write(`run-local: missing ${path}; scaffold the spike clone first\n`);
+      return 2;
+    }
+    prompts.push(readFileSync(path, "utf8").replace(/\n+$/, ""));
+  }
+  const [prompt1, gateText] = prompts as [string, string];
 
   try {
-    const prompt1 = prompt("1.txt");
-    const gateText = prompt("gate-failure.txt");
-
     // X5: the schema, which also gates every write call.
     const schema = must("", "schema", ["schema"]);
     const version: unknown = schema.json?.version;
@@ -139,8 +146,9 @@ function main(args: string[]): number {
     ];
     const created = must("step1", "ws-create-local", createArgs);
     const ws = need<string>("step1", created, ".workspace.id", created.json?.workspace?.id);
+    appendIds({ WS_L: ws });
     const term = need<string>("step1", created, ".agents[0].sessionId", created.json?.agents?.[0]?.sessionId);
-    appendIds({ WS_L: ws, TERM_L: term });
+    appendIds({ TERM_L: term });
     const on = ["--local", "--workspace", ws, "--terminal", term];
     const got = must("step1", "ws-get-local", ["workspaces", "get", ws, "--local"]);
     must("step1", "agents-explain-local-starting", ["agents", "explain", ...on]);
@@ -192,7 +200,9 @@ function main(args: string[]): number {
     const after = must("step4", "agents-read-local-after-gate", ["agents", "read", ...on]);
     const afterText = need<string>("step4", after, ".text", after.json?.text);
     const afterLine = lastResultLine(afterText);
-    const oneUser = chunks(afterText).findLast((c) => c.role === "User")?.body.includes(gateText) === true;
+    const afterTurns = chunks(afterText);
+    const reply = afterTurns.findLastIndex((c) => c.role === "Assistant");
+    const oneUser = reply > 0 && afterTurns[reply - 1]!.role === "User" && afterTurns[reply - 1]!.body.includes(gateText);
     cells.step4 = cell(
       afterLine && oneUser
         ? `pass, agents-read-local-after-gate, ${afterLine}`
@@ -202,23 +212,32 @@ function main(args: string[]): number {
     // X7: the L1 create again, unchanged.
     const repeat = call("ws-create-local-repeat", createArgs);
     const x7Fixtures = ["ws-create-local-repeat"];
-    if (repeat.exit === 0) {
-      const repeatWs: string = repeat.json?.workspace?.id ?? ws;
+    const repeatWs: unknown = repeat.json?.workspace?.id;
+    const extra: string[] = (repeat.json?.agents ?? [])
+      .map((a: any) => a?.sessionId)
+      .filter((id: unknown) => typeof id === "string" && id !== term);
+    if (repeat.exit !== 0) {
+      cells.x7 = `exit ${repeat.exit}`;
+    } else if (typeof repeatWs !== "string") {
+      cells.x7 = cell(`the answer has no .workspace.id; second agent: ${extra.join(", ") || "none"}, not closed`);
+      if (extra.length > 0) {
+        process.stderr.write(`run-local: ws-create-local-repeat has no .workspace.id; close ${extra.join(", ")} by hand\n`);
+      }
+    } else {
       if (repeatWs !== ws) appendIds({ WS_L_REPEAT: repeatWs });
-      const extra: string[] = (repeat.json?.agents ?? [])
-        .map((a: any) => a?.sessionId)
-        .filter((id: unknown) => typeof id === "string" && id !== term);
-      extra.forEach((id, i) => {
+      const closed = extra.map((id, i) => {
         const name = `terminals-close-local-repeat${i === 0 ? "" : `-${i + 1}`}`;
         x7Fixtures.push(name);
-        call(name, ["terminals", "close", "--local", "--workspace", repeatWs, "--terminal", id]);
+        const argv = ["terminals", "close", "--local", "--workspace", repeatWs, "--terminal", id];
+        const { exit } = call(name, argv);
+        if (exit === 0) return `${id} (closed)`;
+        process.stderr.write(`run-local: ${name} exit ${exit}; ${id} is still running. Close it by hand: superset ${argv.join(" ")}\n`);
+        return `${id} (close failed, exit ${exit}, still running)`;
       });
       cells.x7 = cell(
-        `alreadyExists: ${repeat.json?.alreadyExists}, second agent: ${extra.length > 0 ? `${extra.join(", ")} (closed)` : "none"}` +
+        `alreadyExists: ${repeat.json?.alreadyExists}, second agent: ${closed.join(", ") || "none"}` +
           (repeatWs !== ws ? `, new workspace ${repeatWs}` : ""),
       );
-    } else {
-      cells.x7 = `exit ${repeat.exit}`;
     }
     cells["x7-fixtures"] = x7Fixtures.join(", ");
 
@@ -239,7 +258,7 @@ function main(args: string[]): number {
     cells.lastEventTypes = [...eventTypes].join(", ");
     cells.states = [...states].join(", ");
     cells.errors = errors.join("\n");
-    writeResults(join(spikeDir, "RESULTS.md"), cells);
+    writeResults(resultsFile, cells);
   }
 }
 
