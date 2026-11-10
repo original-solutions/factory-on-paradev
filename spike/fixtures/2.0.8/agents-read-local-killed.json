@@ -1,0 +1,4 @@
+{
+  "text": "User: <command-message>factory</command-message>\n<command-name>/factory</command-name>\n<command-args>original-solutions/factory-paradev-spike#2\n\nThe factory launched this session unattended, in a workspace it created for you. Nobody is in the chat. The factory owns the issue's labels and comments and runs its own gate after your draft PR.</command-args>\n\nUser: [redacted: the /factory SKILL.md that Claude Code expanded here, 15237 characters, from the private rawphp/factory@7be6029]",
+  "harness": "claude"
+}

@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "workspaces",
+    "get",
+    "9a9a5fef-ec66-4036-9bf0-d8302e8bb39f",
+    "--local",
+    "--json"
+  ],
+  "exit": 1,
+  "startedAt": 1794343579490,
+  "durationMs": 168,
+  "stderr": "Error: Workspace not found on host 9cdf60ce84d4cfa1d43d51d4b3cc5d76: 9a9a5fef-ec66-4036-9bf0-d8302e8bb39f\nHint: Pass --host <id> if it lives on another machine\n"
+}

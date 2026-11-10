@@ -1,0 +1,31 @@
+{
+  "workspaces": [
+    {
+      "id": "9a9a5fef-ec66-4036-9bf0-d8302e8bb39f",
+      "name": "fac #2 subtract",
+      "project": "factory-paradev-spike",
+      "branch": "fac/2-1",
+      "terminals": [
+        {
+          "id": "5e3b1255-4f81-40c6-b003-e42416740258",
+          "title": "tomkaczocha@personal-mac:~/.paradev/worktrees/factory-paradev-spike/fac/2-1",
+          "agent": {
+            "id": "claude",
+            "state": "working"
+          }
+        }
+      ],
+      "layout": {
+        "activeTabId": null,
+        "tabs": [],
+        "sidebar": {
+          "open": false,
+          "fullScreen": false,
+          "activeTabId": null,
+          "tabs": []
+        }
+      },
+      "layoutError": null
+    }
+  ]
+}
