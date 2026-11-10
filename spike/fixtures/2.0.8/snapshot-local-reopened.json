@@ -1,0 +1,31 @@
+{
+  "workspaces": [
+    {
+      "id": "07d94a5a-9ac0-46c5-92d0-71040748475c",
+      "name": "fac #4 stats retry",
+      "project": "factory-paradev-spike",
+      "branch": "fac/4-2",
+      "terminals": [
+        {
+          "id": "57b0d905-58bc-4206-8f19-d45e0c301d69",
+          "title": null,
+          "agent": {
+            "id": "claude",
+            "state": "working"
+          }
+        }
+      ],
+      "layout": {
+        "activeTabId": null,
+        "tabs": [],
+        "sidebar": {
+          "open": false,
+          "fullScreen": false,
+          "activeTabId": null,
+          "tabs": []
+        }
+      },
+      "layoutError": null
+    }
+  ]
+}

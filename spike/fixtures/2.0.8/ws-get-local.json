@@ -1,0 +1,16 @@
+{
+  "id": "be47b9e8-7687-4c3c-8791-5fd7f04ba5fe",
+  "name": "fac #1 multiply",
+  "branch": "fac/1-1",
+  "type": "worktree",
+  "projectId": "e9ab7dc2-e7f6-42d9-94ed-82d6d623aabd",
+  "projectName": "factory-paradev-spike",
+  "hostId": "9cdf60ce84d4cfa1d43d51d4b3cc5d76",
+  "hostName": "9cdf60ce84d4cfa1d43d51d4b3cc5d76",
+  "taskId": null,
+  "worktreePath": "/Users/tomkaczocha/.paradev/worktrees/factory-paradev-spike/fac/1-1",
+  "worktreeExists": true,
+  "createdAt": "2026-11-10T16:55:08.156Z",
+  "url": "superset://v2-workspace/be47b9e8-7687-4c3c-8791-5fd7f04ba5fe",
+  "webUrl": "https://app.superset.sh/workspaces/be47b9e8-7687-4c3c-8791-5fd7f04ba5fe"
+}

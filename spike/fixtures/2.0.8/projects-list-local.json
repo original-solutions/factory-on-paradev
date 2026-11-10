@@ -1,0 +1,32 @@
+[
+  {
+    "name": "redacted-1",
+    "repo": "-",
+    "path": "/redacted/1",
+    "id": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "factory-paradev-spike",
+    "repo": "https://github.com/original-solutions/factory-paradev-spike",
+    "path": "/Users/tomkaczocha/EA/projects/factory-paradev-spike",
+    "id": "e9ab7dc2-e7f6-42d9-94ed-82d6d623aabd"
+  },
+  {
+    "name": "redacted-2",
+    "repo": "-",
+    "path": "/redacted/2",
+    "id": "00000000-0000-4000-8000-000000000002"
+  },
+  {
+    "name": "redacted-3",
+    "repo": "-",
+    "path": "/redacted/3",
+    "id": "00000000-0000-4000-8000-000000000003"
+  },
+  {
+    "name": "redacted-4",
+    "repo": "-",
+    "path": "/redacted/4",
+    "id": "00000000-0000-4000-8000-000000000004"
+  }
+]

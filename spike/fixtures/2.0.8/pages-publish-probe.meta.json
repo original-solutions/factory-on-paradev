@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "pages",
+    "publish",
+    "spike/belt-probe",
+    "--title",
+    "Factory belt probe",
+    "--visibility",
+    "just_me",
+    "--no-watch",
+    "--json"
+  ],
+  "exit": 1,
+  "startedAt": 1794329725913,
+  "durationMs": 145,
+  "stderr": "Error: Not logged in\nHint: Run: superset auth login (or set SUPERSET_API_KEY)\n"
+}

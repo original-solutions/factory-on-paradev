@@ -1,0 +1,27 @@
+{
+  "argv": [
+    "workspaces",
+    "create",
+    "--local",
+    "--project",
+    "e9ab7dc2-e7f6-42d9-94ed-82d6d623aabd",
+    "--name",
+    "fac #1 multiply",
+    "--branch",
+    "fac/1-1",
+    "--skip-branch-prefix",
+    "--base-branch",
+    "main",
+    "--tag",
+    "factory",
+    "--agent",
+    "claude",
+    "--prompt",
+    "/factory original-solutions/factory-paradev-spike#1\n\nThe factory launched this session unattended, in a workspace it created for you. Nobody is in the chat. The factory owns the issue's labels and comments and runs its own gate after your draft PR.",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794329706615,
+  "durationMs": 1606,
+  "stderr": ""
+}

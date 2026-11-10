@@ -1,0 +1,10 @@
+{
+  "terminalId": "27446599-a510-4df8-989b-45938576d96b",
+  "state": "none",
+  "agentId": null,
+  "headline": "No agent in this terminal.",
+  "because": "the terminal is a plain shell with nothing running in it",
+  "details": [],
+  "lastEventType": null,
+  "lastEventAt": null
+}

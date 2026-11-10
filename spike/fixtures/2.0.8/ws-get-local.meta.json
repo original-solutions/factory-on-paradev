@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "workspaces",
+    "get",
+    "be47b9e8-7687-4c3c-8791-5fd7f04ba5fe",
+    "--local",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794329708221,
+  "durationMs": 427,
+  "stderr": ""
+}

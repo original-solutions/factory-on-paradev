@@ -1,0 +1,28 @@
+{
+  "workspace": {
+    "id": "07d94a5a-9ac0-46c5-92d0-71040748475c",
+    "organizationId": "fef625a4-1dbc-451b-b0e1-1c285c61a68e",
+    "projectId": "e9ab7dc2-e7f6-42d9-94ed-82d6d623aabd",
+    "hostId": "9cdf60ce84d4cfa1d43d51d4b3cc5d76",
+    "name": "fac #4 stats retry",
+    "branch": "fac/4-2",
+    "type": "worktree",
+    "createdByUserId": "8bccd4e3-aa91-4913-afe4-cb4dce8edfbf",
+    "taskId": null,
+    "createdAt": "2026-11-10T20:27:02.283Z",
+    "updatedAt": "2026-11-10T20:27:02.283Z"
+  },
+  "terminals": [],
+  "agents": [
+    {
+      "ok": true,
+      "kind": "terminal",
+      "sessionId": "57b0d905-58bc-4206-8f19-d45e0c301d69",
+      "label": "Claude"
+    }
+  ],
+  "alreadyExists": false,
+  "txid": null,
+  "url": "superset://v2-workspace/07d94a5a-9ac0-46c5-92d0-71040748475c",
+  "webUrl": "https://app.superset.sh/workspaces/07d94a5a-9ac0-46c5-92d0-71040748475c"
+}

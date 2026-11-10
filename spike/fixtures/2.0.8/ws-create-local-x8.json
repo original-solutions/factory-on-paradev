@@ -1,0 +1,21 @@
+{
+  "workspace": {
+    "id": "f7631c1d-214c-4a35-98b8-fd0cba008887",
+    "organizationId": "fef625a4-1dbc-451b-b0e1-1c285c61a68e",
+    "projectId": "e9ab7dc2-e7f6-42d9-94ed-82d6d623aabd",
+    "hostId": "9cdf60ce84d4cfa1d43d51d4b3cc5d76",
+    "name": "x8 base from origin",
+    "branch": "fac/x8",
+    "type": "worktree",
+    "createdByUserId": "8bccd4e3-aa91-4913-afe4-cb4dce8edfbf",
+    "taskId": null,
+    "createdAt": "2026-11-10T16:57:32.888Z",
+    "updatedAt": "2026-11-10T16:57:32.888Z"
+  },
+  "terminals": [],
+  "agents": [],
+  "alreadyExists": false,
+  "txid": null,
+  "url": "superset://v2-workspace/f7631c1d-214c-4a35-98b8-fd0cba008887",
+  "webUrl": "https://app.superset.sh/workspaces/f7631c1d-214c-4a35-98b8-fd0cba008887"
+}
