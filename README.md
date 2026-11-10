@@ -18,6 +18,15 @@ It drives Paradev through the signed-in `superset` CLI, so your Paradev and agen
 
 The repo will also be a Paradev plugin marketplace, so `superset plugins install factory@factory-on-paradev` gives every agent the skills it needs.
 
+## Develop
+
+```sh
+npm ci
+npm run check
+```
+
+Scripts run with Node's built-in type stripping (`node file.ts`), so there is no build step.
+
 ## Not affiliated with Paradev
 
 Paradev is a product of Superset Inc. This project uses Paradev's public CLI and is not made or endorsed by them.
