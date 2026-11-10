@@ -12,6 +12,11 @@ const samples = {
 };
 const KiB = 1024;
 
+const committed = {
+  belt: readFileSync(samples.belt),
+  oversize: readFileSync(samples.oversize),
+};
+
 function makeSamples(): void {
   execFileSync(process.execPath, [script], { stdio: "pipe" });
 }
@@ -84,9 +89,24 @@ describe("make-samples", () => {
     expectValidBelt(readBelt(samples.oversize));
   });
 
-  test("a rerun writes byte-identical files", () => {
+  test("attention items point at runs in the same payload", () => {
     makeSamples();
-    const first = [readFileSync(samples.belt), readFileSync(samples.oversize)];
+    for (const path of [samples.belt, samples.oversize]) {
+      const belt = readBelt(path);
+      for (const item of belt.attention) {
+        const ref = /^([\w.-]+\/[\w.-]+)#(\d+) /.exec(item.text);
+        expect(ref).not.toBeNull();
+        const run = belt.runs.find((r) => r.repo === ref![1] && r.issue === Number(ref![2]));
+        expect(run, item.text).toBeDefined();
+        expect(item.kind).toBe(run!.state);
+        if (run!.step) expect(item.text).toContain(run!.step);
+      }
+    }
+  });
+
+  test("a rerun writes the committed files byte for byte", () => {
+    // Read the committed samples before any test run rewrites them.
+    const first = [committed.belt, committed.oversize];
     makeSamples();
     const second = [readFileSync(samples.belt), readFileSync(samples.oversize)];
     expect(second[0]!.equals(first[0]!)).toBe(true);
@@ -101,6 +121,9 @@ describe("belt probe page", () => {
     expect(html).not.toMatch(/\b(?:src|href)\s*=\s*["']?\s*https?:/i);
     expect(html).not.toMatch(/\bfetch\s*\(\s*["'`]\s*https?:/i);
     expect(html).not.toMatch(/https?:/i);
+    // Protocol-relative URLs reach outside too.
+    expect(html).not.toMatch(/\b(?:src|href)\s*=\s*["']?\s*\/\//i);
+    expect(html).not.toMatch(/\bfetch\s*\(\s*["'`]\s*\/\//i);
   });
 
   test("loads no external script or stylesheet", () => {

@@ -21,14 +21,14 @@ const belt: BeltV1 = {
     paradevOnline: true,
     lastPassAt: "2026-01-02T03:04:00.000Z",
   },
-  counts: { triage: 1, building: 2, prOpen: 3, needsInfo: 4, stuck: 5, finished7d: 6 },
+  counts: { triage: 71, building: 72, prOpen: 73, needsInfo: 74, stuck: 75, finished7d: 76 },
   runs: [
     {
       id: "r1",
       repo: "acme/widgets",
       issue: 42,
       title: "Add <b>bold</b> & widgets",
-      state: "building",
+      state: "needs-info",
       step: "Make",
       reason: null,
       prUrl: null,
@@ -89,10 +89,12 @@ test("renders the shared belt header and one row per run", async () => {
   const out = page.text();
   expect(out).toContain("demo-host");
   expect(out).toContain("2026-01-02T03:04:05.000Z");
-  for (const n of ["1", "2", "3", "4", "5", "6"]) expect(out).toContain(n);
-  expect(out).toContain("acme/widgets#42");
-  expect(out).toContain("building");
-  expect(out).toContain("Make");
+  expect(out).toContain(
+    "triage 71 · building 72 · PR open 73 · needs info 74 · stuck 75 · finished 7d 76",
+  );
+  expect(out).toContain("<td>acme/widgets#42</td>");
+  expect(out).toContain("<td>needs-info</td>");
+  expect(out).toContain("<td>Make</td>");
   // Titles are data, so they are escaped, never parsed as markup.
   expect(out).toContain("Add &lt;b&gt;bold&lt;/b&gt; &amp; widgets");
   expect(out).not.toContain("<b>bold</b>");
@@ -125,6 +127,58 @@ test("subscribes to the shared belt and re-renders on each change", async () => 
   onChange?.();
   await settle();
   expect(page.text()).toContain("second-host");
+});
+
+test("falls back to polling when subscribe throws", async () => {
+  const page = load({
+    storage: {
+      get: async () => belt,
+      subscribe: () => {
+        throw new Error("nope");
+      },
+    },
+  });
+  await settle();
+  expect(page.text()).toContain("storage.subscribe failed: nope");
+  expect(page.intervals).toHaveLength(1);
+  expect(page.intervals[0]!.ms).toBe(30_000);
+});
+
+test("falls back to polling when an async subscribe rejects", async () => {
+  const page = load({
+    storage: {
+      get: async () => belt,
+      subscribe: async () => {
+        throw new Error("rejected");
+      },
+    },
+  });
+  await settle();
+  expect(page.text()).toContain("storage.subscribe failed: rejected");
+  expect(page.intervals).toHaveLength(1);
+});
+
+test("a slow earlier get never overwrites a newer belt", async () => {
+  const resolvers: Array<(b: BeltV1) => void> = [];
+  let onChange: (() => void) | undefined;
+  const page = load({
+    storage: {
+      get: () => new Promise<BeltV1>((resolve) => resolvers.push(resolve)),
+      subscribe: (_key, cb) => {
+        onChange = cb;
+      },
+    },
+  });
+  await settle();
+  onChange?.();
+  await settle();
+  expect(resolvers).toHaveLength(2);
+  resolvers[1]!({ ...belt, runner: { ...belt.runner, host: "newer-host" } });
+  await settle();
+  resolvers[0]!({ ...belt, runner: { ...belt.runner, host: "older-host" } });
+  await settle();
+  expect(page.text()).toContain("newer-host");
+  expect(page.text()).not.toContain("older-host");
 });
 
 test("says window.superset is not available when it is missing", async () => {
