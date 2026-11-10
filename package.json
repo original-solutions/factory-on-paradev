@@ -10,7 +10,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run test"
+    "check": "npm run typecheck && npm run test && node spike/scan-fixtures.ts"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
