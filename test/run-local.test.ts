@@ -188,6 +188,7 @@ describe("the happy path", () => {
   test("appends to an ids.env that already exists", () => {
     rmSync(fix, { recursive: true, force: true });
     rmSync(log);
+    rmSync(join(work, "spike", "RESULTS.md"));
     writeFileSync(join(work, "spike", "ids.env"), "export KEEP=1\n");
     expect(run(happyScript()).status).toBe(0);
     expect(readFileSync(join(work, "spike", "ids.env"), "utf8")).toBe("export KEEP=1\nexport WS_L=ws-1\nexport TERM_L=term-1\n");
@@ -232,6 +233,142 @@ test("a repeat create with no new terminal closes nothing", () => {
   const r = run(script);
   expect(r.status).toBe(0);
   expect(calls().some((argv) => argv[0] === "terminals" && argv[1] === "close")).toBe(false);
+});
+
+function x7Row() {
+  return results().split("\n").find((line) => line.startsWith("| X7 ")) ?? "";
+}
+
+test("a repeat create in a new workspace records its id and closes the terminal there", () => {
+  const script = happyScript();
+  const [first] = script["workspaces create"] as Answer[];
+  script["workspaces create"] = [
+    first!,
+    { stdout: { workspace: { id: "ws-2" }, agents: [{ ok: true, sessionId: "term-2" }], alreadyExists: false } },
+  ];
+  expect(run(script).status).toBe(0);
+  expect(readFileSync(join(work, "spike", "ids.env"), "utf8")).toBe(
+    "export WS_L=ws-1\nexport TERM_L=term-1\nexport WS_L_REPEAT=ws-2\n",
+  );
+  expect(calls().find((argv) => argv[0] === "terminals" && argv[1] === "close")).toEqual([
+    "terminals", "close", "--local", "--workspace", "ws-2", "--terminal", "term-2", "--json",
+  ]);
+  expect(x7Row()).toContain("new workspace ws-2");
+});
+
+test("a repeat create with no workspace id closes nothing and says why", () => {
+  const script = happyScript();
+  const [first] = script["workspaces create"] as Answer[];
+  script["workspaces create"] = [first!, { stdout: { agents: [{ ok: true, sessionId: "term-2" }] } }];
+  const r = run(script);
+  expect(r.status).toBe(0);
+  expect(calls().some((argv) => argv[0] === "terminals" && argv[1] === "close")).toBe(false);
+  expect(x7Row()).toContain("no .workspace.id");
+  expect(r.stderr).toContain("term-2");
+});
+
+test("a failed close is reported as still running, not closed", () => {
+  const script = happyScript();
+  script["terminals close"] = { stderr: "Error: terminal not found\n", exit: 1 };
+  const r = run(script);
+  expect(r.status).toBe(0);
+  expect(x7Row()).toContain("term-2 (close failed, exit 1, still running)");
+  expect(x7Row()).not.toContain("(closed)");
+  expect(r.stderr).toContain("terminals close --local --workspace ws-1 --terminal term-2");
+  expect(r.stdout).toContain("Cmd+Q");
+});
+
+test("a failed probe is recorded and the run goes on", () => {
+  const script = happyScript();
+  const [first] = script["workspaces create"] as Answer[];
+  script["workspaces create"] = [first!, { stderr: "Error: branch already checked out\n", exit: 1 }];
+  script["workspaces list"] = [{ stderr: "Error: no default target\n", exit: 1 }, { stdout: [] }];
+  const r = run(script);
+
+  expect(r.status).toBe(0);
+  expect(calls().at(-1)).toEqual(["workspaces", "list", "--local", "--json"]);
+  expect(r.stdout).toContain("Cmd+Q");
+  const md = results();
+  expect(x7Row()).toContain("exit 1");
+  expect(md).toMatch(/\| X6 [^\n]*no flag exit 1/);
+  expect(md).toContain("Error: branch already checked out");
+  expect(md).toContain("Error: no default target");
+});
+
+test("a created workspace is kept in ids.env even when its answer has no agent", () => {
+  const script = happyScript();
+  script["workspaces create"] = { stdout: { workspace: { id: "ws-1", branch: "fac/1-1" }, agents: [] } };
+  const r = run(script);
+  expect(r.status).toBe(1);
+  expect(r.stderr).toContain(".agents[0].sessionId");
+  expect(readFileSync(join(work, "spike", "ids.env"), "utf8")).toBe("export WS_L=ws-1\n");
+});
+
+test("an existing RESULTS.md is refused before any call and left alone", () => {
+  mkdirSync(join(work, "spike"));
+  writeFileSync(join(work, "spike", "RESULTS.md"), "hand notes\n");
+  const r = run(happyScript());
+  expect(r.status).toBe(2);
+  expect(r.stderr).toContain("RESULTS.md");
+  expect(calls()).toEqual([]);
+  expect(readFileSync(join(work, "spike", "RESULTS.md"), "utf8")).toBe("hand notes\n");
+});
+
+test("a missing prompt file exits 2 before any call", () => {
+  rmSync(join(clone, "prompts", "1.txt"));
+  const r = run(happyScript());
+  expect(r.status).toBe(2);
+  expect(r.stderr).toContain(join(clone, "prompts", "1.txt"));
+  expect(calls()).toEqual([]);
+});
+
+type Tweak = (s: Script) => void;
+const reads = (s: Script) => s["agents read"] as { stdout: { text: string; harness: string } }[];
+const failCases: [string, string, string, Tweak][] = [
+  ["agent not ok", "1 ", "agents[0].ok", (s) => {
+    const list = s["workspaces create"] as { stdout: any }[];
+    list[0] = { stdout: { ...list[0]!.stdout, agents: [{ ok: false, sessionId: "term-1" }] } };
+  }],
+  ["wrong branch", "1 ", "branch is fac/other", (s) => {
+    const list = s["workspaces create"] as { stdout: any }[];
+    list[0] = { stdout: { ...list[0]!.stdout, workspace: { id: "ws-1", branch: "fac/other" } } };
+  }],
+  ["no worktree", "1 ", "worktreeExists", (s) => {
+    s["workspaces get"] = { stdout: { id: "ws-1", worktreeExists: false } };
+  }],
+  ["not idle", "2 ", "state working", (s) => {
+    s["agents wait"] = { stdout: { terminalId: "term-1", state: "working", lastEventType: "PreToolUse" } };
+  }],
+  ["other harness", "3 ", "harness codex", (s) => {
+    reads(s)[0]!.stdout.harness = "codex";
+  }],
+  ["no result line", "3 ", "no result line", (s) => {
+    reads(s)[0]!.stdout.text = "User: go\n\nAssistant: Still going.";
+  }],
+  ["gate text split", "4 ", "one User chunk", (s) => {
+    reads(s)[1]!.stdout.text = `User: go\n\nAssistant: x\n${done}\n\nUser: The factory gate failed.\n\nUser: | # fail 1\n\nAssistant: ok\n${done}`;
+  }],
+  ["no result line after the gate", "4 ", "no result line", (s) => {
+    reads(s)[1]!.stdout.text = `User: ${gateText}\n\nAssistant: Looking.`;
+  }],
+];
+
+test.each(failCases)("%s fails its Local cell and the run goes on", (_, step, why, tweak) => {
+  const script = happyScript();
+  tweak(script);
+  const r = run(script);
+  expect(r.status).toBe(0);
+  const [local] = localCell(results(), step);
+  expect(local).toMatch(/^fail/);
+  expect(local).toContain(why);
+});
+
+test("a User chunk after the gate reply still passes step 4", () => {
+  const script = happyScript();
+  const second = reads(script)[1]!.stdout;
+  second.text = `${second.text}\n\nUser: hook output`;
+  expect(run(script).status).toBe(0);
+  expect(localCell(results(), "4 ")[0]).toMatch(/^pass/);
 });
 
 test("a wait timeout is recorded and stops the run", () => {
@@ -346,6 +483,10 @@ describe("lastResultLine", () => {
 
   test("a result line in the middle of the final message does not count", () => {
     expect(lastResultLine(`User: go\n\nAssistant: ${done}\nthen more`)).toBeNull();
+  });
+
+  test("a result line with leading whitespace does not count", () => {
+    expect(lastResultLine(`User: go\n\nAssistant: Done.\n   ${done}`)).toBeNull();
   });
 
   test("a one-line final message is read past its Assistant prefix", () => {
