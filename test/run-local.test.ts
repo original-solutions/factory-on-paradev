@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { lastResultLine } from "../spike/run-local.ts";
+import { FIXTURES, lastResultLine } from "../spike/run-local.ts";
 
 const driver = fileURLToPath(new URL("../spike/run-local.ts", import.meta.url));
 const fake = fileURLToPath(new URL("./fixtures/fake-superset.mjs", import.meta.url));
@@ -219,11 +219,53 @@ describe("the happy path", () => {
     expect(md).not.toContain("{{");
   });
 
+  test("writes the observed values it saw", () => {
+    const md = results();
+    expect(md).toContain("- lastEventType values seen: Start, PreToolUse, Stop\n");
+    expect(md).toContain("- explain states seen: working, idle\n");
+    expect(md).toMatch(/- Run time per location, create to first result line: local: \d+s\n/);
+    expect(md).toContain("- Worktree folder pattern (local, host): local: /wt/fac-1-1\n");
+    expect(md).toContain("- User: chunks per /factory prompt: 1\n");
+    expect(md).toContain("- Text after the last Assistant: chunk: none\n");
+  });
+
   test("RESULTS.md keeps the template's sections", () => {
     const md = results();
     for (const heading of ["## Steps", "## Probes", "## Observed values", "## Errors, verbatim"]) expect(md).toContain(heading);
     for (let n = 1; n <= 11; n++) expect(md).toContain(`| X${n} `);
   });
+});
+
+function observed(label: string) {
+  return results().split("\n").find((line) => line.startsWith(`- ${label}`)) ?? "";
+}
+
+test("explain states count only agents explain answers", () => {
+  const script = happyScript();
+  script["agents wait"] = { stdout: { terminalId: "term-1", state: "idle", lastEventType: "Notification" } };
+  script["terminals send"] = { stdout: { terminalId: "term-1", submitted: true, state: "submitted" } };
+  expect(run(script).status).toBe(0);
+  expect(observed("explain states seen")).toBe("- explain states seen: working, idle");
+  expect(observed("lastEventType values seen")).toBe("- lastEventType values seen: Start, PreToolUse, Notification, Stop");
+});
+
+test("text after the last Assistant chunk is recorded, with the User chunk count", () => {
+  const script = happyScript();
+  const first = reads(script)[0]!.stdout;
+  first.text = `${first.text}\n\nUser: hook output`;
+  expect(run(script).status).toBe(0);
+  expect(observed("User: chunks")).toBe("- User: chunks per /factory prompt: 2");
+  expect(observed("Text after the last Assistant")).toBe("- Text after the last Assistant: chunk: User: hook output");
+});
+
+test("an error whose stderr holds a | and a newline stays one table row", () => {
+  const script = happyScript();
+  script["workspaces list"] = [{ stderr: "Error: a | b\nmore\n", exit: 1 }, { stdout: [] }];
+  expect(run(script).status).toBe(0);
+  const rows = results().split("\n").filter((line) => line.includes("Error: a"));
+  expect(rows).toEqual([
+    '| superset workspaces list --json | ws-list-noflag | argv=["workspaces","list","--json"]<br>Error: a \\| b<br>more<br> |',
+  ]);
 });
 
 test("a repeat create with no new terminal closes nothing", () => {
@@ -254,6 +296,57 @@ test("a repeat create in a new workspace records its id and closes the terminal 
     "terminals", "close", "--local", "--workspace", "ws-2", "--terminal", "term-2", "--json",
   ]);
   expect(x7Row()).toContain("new workspace ws-2");
+});
+
+test("a repeat create with two new terminals closes both under their own fixture names", () => {
+  const script = happyScript();
+  const [first] = script["workspaces create"] as Answer[];
+  script["workspaces create"] = [
+    first!,
+    {
+      stdout: {
+        workspace: { id: "ws-1" },
+        agents: [{ ok: true, sessionId: "term-1" }, { ok: true, sessionId: "term-2" }, { ok: true, sessionId: "term-3" }],
+        alreadyExists: true,
+      },
+    },
+  ];
+  expect(run(script).status).toBe(0);
+  const close = (term: string) => ["terminals", "close", "--local", "--workspace", "ws-1", "--terminal", term, "--json"];
+  expect(calls().filter((argv) => argv[0] === "terminals" && argv[1] === "close")).toEqual([close("term-2"), close("term-3")]);
+  expect(metaArgv("terminals-close-local-repeat")).toEqual(close("term-2"));
+  expect(metaArgv("terminals-close-local-repeat-2")).toEqual(close("term-3"));
+  expect(x7Row()).toContain("second agent: term-2 (closed), term-3 (closed)");
+  expect(x7Row()).toContain("ws-create-local-repeat, terminals-close-local-repeat, terminals-close-local-repeat-2");
+});
+
+test("a repeat create that exits 1 still keeps its new workspace and closes its terminal", () => {
+  const script = happyScript();
+  const [first] = script["workspaces create"] as Answer[];
+  script["workspaces create"] = [
+    first!,
+    { stdout: { workspace: { id: "ws-2" }, agents: [{ ok: false, sessionId: "term-2" }] }, stderr: "Error: agent failed\n", exit: 1 },
+  ];
+  const r = run(script);
+  expect(r.status).toBe(0);
+  expect(readFileSync(join(work, "spike", "ids.env"), "utf8")).toBe(
+    "export WS_L=ws-1\nexport TERM_L=term-1\nexport WS_L_REPEAT=ws-2\n",
+  );
+  expect(calls().find((argv) => argv[0] === "terminals" && argv[1] === "close")).toEqual([
+    "terminals", "close", "--local", "--workspace", "ws-2", "--terminal", "term-2", "--json",
+  ]);
+  expect(x7Row()).toContain("exit 1, alreadyExists: undefined, second agent: term-2 (closed), new workspace ws-2");
+});
+
+test("a repeat create that exits 1 with no workspace id names its agent to close by hand", () => {
+  const script = happyScript();
+  const [first] = script["workspaces create"] as Answer[];
+  script["workspaces create"] = [first!, { stdout: { agents: [{ ok: true, sessionId: "term-2" }] }, exit: 1 }];
+  const r = run(script);
+  expect(r.status).toBe(0);
+  expect(calls().some((argv) => argv[0] === "terminals" && argv[1] === "close")).toBe(false);
+  expect(x7Row()).toContain("exit 1, the answer has no .workspace.id; second agent: term-2, not closed");
+  expect(r.stderr).toContain("close term-2 by hand");
 });
 
 test("a repeat create with no workspace id closes nothing and says why", () => {
@@ -302,6 +395,47 @@ test("a created workspace is kept in ids.env even when its answer has no agent",
   expect(r.status).toBe(1);
   expect(r.stderr).toContain(".agents[0].sessionId");
   expect(readFileSync(join(work, "spike", "ids.env"), "utf8")).toBe("export WS_L=ws-1\n");
+});
+
+test("a create that exits 1 keeps the workspace it made in ids.env and stops", () => {
+  const script = happyScript();
+  script["workspaces create"] = {
+    stdout: { workspace: { id: "ws-1", branch: "fac/1-1" }, agents: [{ ok: false }] },
+    stderr: "Error: agent failed to launch\n",
+    exit: 1,
+  };
+  const r = run(script);
+  expect(r.status).toBe(1);
+  expect(r.stderr).toContain("ws-create-local: exit 1");
+  expect(calls().length).toBe(3);
+  expect(readFileSync(join(work, "spike", "ids.env"), "utf8")).toBe("export WS_L=ws-1\n");
+  expect(localCell(results(), "1 ")[0]).toBe("fail, ws-create-local, exit 1");
+});
+
+test("the fixture list is every fixture the happy path writes", () => {
+  expect([...FIXTURES, "terminals-close-local-repeat"].sort()).toEqual(happyPath.map(([name]) => name).sort());
+});
+
+test.each([...FIXTURES, "terminals-close-local-repeat", "terminals-close-local-repeat-2"])(
+  "a FIX that already holds %s is refused before any call and left alone",
+  (name) => {
+    mkdirSync(fix);
+    writeFileSync(join(fix, `${name}.meta.json`), "earlier\n");
+    const r = run(happyScript());
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain(`${name}.meta.json`);
+    expect(r.stderr).toContain("fresh folder");
+    expect(calls()).toEqual([]);
+    expect(readFileSync(join(fix, `${name}.meta.json`), "utf8")).toBe("earlier\n");
+    expect(existsSync(join(work, "spike", "RESULTS.md"))).toBe(false);
+  },
+);
+
+test("a FIX holding other fixtures is used as it is", () => {
+  mkdirSync(fix);
+  writeFileSync(join(fix, "ws-create-local-4.meta.json"), "{}\n");
+  writeFileSync(join(fix, "schema-host.meta.json"), "{}\n");
+  expect(run(happyScript()).status).toBe(0);
 });
 
 test("an existing RESULTS.md is refused before any call and left alone", () => {
@@ -448,12 +582,12 @@ test("--cleanup archives only the local workspace ids in ids.env", () => {
   mkdirSync(join(work, "spike"));
   writeFileSync(
     join(work, "spike", "ids.env"),
-    "export WS_L=ws-1\nexport TERM_L=term-1\nexport WS_L4=ws-4\nexport WS_H=host-ws\nexport PROJECT_L=proj-1\n",
+    "export WS_L=ws-1\nexport TERM_L=term-1\nexport WS_L_REPEAT=ws-2\nexport WS_L4=ws-4\nexport WS_H=host-ws\nexport PROJECT_L=proj-1\n",
   );
-  const r = run({ "workspaces archive": { stdout: { archived: 2 } } }, ["--cleanup"]);
+  const r = run({ "workspaces archive": { stdout: { archived: 3 } } }, ["--cleanup"]);
 
   expect(r.status).toBe(0);
-  expect(calls()).toEqual([["workspaces", "archive", "ws-1", "ws-4", "--local", "--json"]]);
+  expect(calls()).toEqual([["workspaces", "archive", "ws-1", "ws-2", "ws-4", "--local", "--json"]]);
   expect(fixtureNames()).toEqual(["ws-archive-local"]);
 });
 

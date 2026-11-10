@@ -5,14 +5,29 @@
 //   ... node spike/run-local.ts --cleanup     archive the WS_L* workspace ids in spike/ids.env
 //
 // Writes spike/ids.env (appended) and spike/RESULTS.md under the current directory.
-// Exit 2 on missing input, 1 when a call fails or a check refuses.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+// Exit 2 when an input check refuses, before any call: a missing env var, an existing RESULTS.md,
+// a missing prompt file, or FIX already holding this driver's fixtures.
+// Exit 1 when the schema version or the project check refuses, or when an L1 to L4 call exits non-zero
+// or its answer lacks a field the run needs; the run stops there.
+// Otherwise exit 0, even when a step's answer fails its check or a probe call (X5 to X7) fails:
+// those go into RESULTS.md as a fail cell or an exit code, and the run goes on.
+// --cleanup exits with the archive call's exit code, or 1 when ids.env has no WS_L* id.
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { record } from "./rec.ts";
 
 const VERSIONS = ["2.0.7", "2.0.8"];
 const INPUTS = ["SUPERSET", "FIX", "SPIKE_CLONE", "SPIKE_REPO"] as const;
+// Every fixture a run writes, so a second run into the same FIX cannot overwrite the first run's answers.
+// X7 closes add terminals-close-local-repeat, -2, -3 and so on.
+export const FIXTURES = [
+  "schema", "projects-list-local", "ws-create-local", "ws-get-local", "agents-explain-local-starting",
+  "agents-explain-local-working", "agents-wait-local", "agents-explain-local-idle", "agents-read-local",
+  "terminals-send-local", "agents-explain-local-after-gate", "agents-read-local-after-gate",
+  "ws-create-local-repeat", "ws-list-noflag", "ws-list-local",
+];
+const CLOSE_FIXTURE = /^terminals-close-local-repeat(-\d+)?\.meta\.json$/;
 
 type Chunk = { role: "User" | "Assistant"; body: string };
 
@@ -115,6 +130,16 @@ function main(args: string[]): number {
     prompts.push(readFileSync(path, "utf8").replace(/\n+$/, ""));
   }
   const [prompt1, gateText] = prompts as [string, string];
+  const earlier = existsSync(fix)
+    ? readdirSync(fix).filter((f) => FIXTURES.some((n) => f === `${n}.meta.json`) || CLOSE_FIXTURE.test(f))
+    : [];
+  if (earlier.length > 0) {
+    process.stderr.write(
+      `run-local: ${fix} already holds fixtures from an earlier run (${earlier.join(", ")}); ` +
+        `point FIX at a fresh folder, so those answers are kept\n`,
+    );
+    return 2;
+  }
 
   try {
     // X5: the schema, which also gates every write call.
@@ -144,9 +169,12 @@ function main(args: string[]): number {
       "--branch", "fac/1-1", "--skip-branch-prefix", "--base-branch", "main",
       "--tag", "factory", "--agent", "claude", "--prompt", prompt1,
     ];
-    const created = must("step1", "ws-create-local", createArgs);
-    const ws = need<string>("step1", created, ".workspace.id", created.json?.workspace?.id);
-    appendIds({ WS_L: ws });
+    // The id is kept before the exit is checked: a create can make the workspace and still exit 1.
+    const created = call("ws-create-local", createArgs);
+    const createdWs: unknown = created.json?.workspace?.id;
+    if (typeof createdWs === "string") appendIds({ WS_L: createdWs });
+    if (created.exit !== 0) fail("step1", created.name, `exit ${created.exit}`);
+    const ws = need<string>("step1", created, ".workspace.id", typeof createdWs === "string" ? createdWs : null);
     const term = need<string>("step1", created, ".agents[0].sessionId", created.json?.agents?.[0]?.sessionId);
     appendIds({ TERM_L: term });
     const on = ["--local", "--workspace", ws, "--terminal", term];
@@ -209,17 +237,20 @@ function main(args: string[]): number {
         : `fail, agents-read-local-after-gate, ${afterLine ? "the gate failure is not one User chunk" : "no result line"}`,
     );
 
-    // X7: the L1 create again, unchanged.
+    // X7: the L1 create again, unchanged. What its answer created is kept and closed even when it
+    // exits non-zero, since a create can make the workspace or start an agent and still exit 1.
     const repeat = call("ws-create-local-repeat", createArgs);
     const x7Fixtures = ["ws-create-local-repeat"];
     const repeatWs: unknown = repeat.json?.workspace?.id;
-    const extra: string[] = (repeat.json?.agents ?? [])
+    const agents: unknown = repeat.json?.agents;
+    const extra: string[] = (Array.isArray(agents) ? agents : [])
       .map((a: any) => a?.sessionId)
-      .filter((id: unknown) => typeof id === "string" && id !== term);
-    if (repeat.exit !== 0) {
-      cells.x7 = `exit ${repeat.exit}`;
-    } else if (typeof repeatWs !== "string") {
-      cells.x7 = cell(`the answer has no .workspace.id; second agent: ${extra.join(", ") || "none"}, not closed`);
+      .filter((id: unknown): id is string => typeof id === "string" && id !== term);
+    const x7: string[] = repeat.exit !== 0 ? [`exit ${repeat.exit}`] : [];
+    if (typeof repeatWs !== "string") {
+      if (repeat.exit === 0 || extra.length > 0) {
+        x7.push(`the answer has no .workspace.id; second agent: ${extra.join(", ") || "none"}, not closed`);
+      }
       if (extra.length > 0) {
         process.stderr.write(`run-local: ws-create-local-repeat has no .workspace.id; close ${extra.join(", ")} by hand\n`);
       }
@@ -234,11 +265,12 @@ function main(args: string[]): number {
         process.stderr.write(`run-local: ${name} exit ${exit}; ${id} is still running. Close it by hand: superset ${argv.join(" ")}\n`);
         return `${id} (close failed, exit ${exit}, still running)`;
       });
-      cells.x7 = cell(
+      x7.push(
         `alreadyExists: ${repeat.json?.alreadyExists}, second agent: ${closed.join(", ") || "none"}` +
           (repeatWs !== ws ? `, new workspace ${repeatWs}` : ""),
       );
     }
+    cells.x7 = cell(x7.join(", "));
     cells["x7-fixtures"] = x7Fixtures.join(", ");
 
     // X6: the default target with no flag.
