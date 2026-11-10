@@ -1,0 +1,16 @@
+{
+  "id": "f7631c1d-214c-4a35-98b8-fd0cba008887",
+  "name": "x8 base from origin",
+  "branch": "fac/x8",
+  "type": "worktree",
+  "projectId": "e9ab7dc2-e7f6-42d9-94ed-82d6d623aabd",
+  "projectName": "factory-paradev-spike",
+  "hostId": "9cdf60ce84d4cfa1d43d51d4b3cc5d76",
+  "hostName": "9cdf60ce84d4cfa1d43d51d4b3cc5d76",
+  "taskId": null,
+  "worktreePath": "/Users/tomkaczocha/.paradev/worktrees/factory-paradev-spike/fac/x8",
+  "worktreeExists": true,
+  "createdAt": "2026-11-10T16:57:32.888Z",
+  "url": "superset://v2-workspace/f7631c1d-214c-4a35-98b8-fd0cba008887",
+  "webUrl": "https://app.superset.sh/workspaces/f7631c1d-214c-4a35-98b8-fd0cba008887"
+}

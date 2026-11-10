@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "pages",
+    "publish",
+    "spike/belt-probe",
+    "--title",
+    "Factory belt probe",
+    "--visibility",
+    "just_me",
+    "--workspace",
+    "be47b9e8-7687-4c3c-8791-5fd7f04ba5fe",
+    "--no-watch",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794329742463,
+  "durationMs": 6302,
+  "stderr": ""
+}

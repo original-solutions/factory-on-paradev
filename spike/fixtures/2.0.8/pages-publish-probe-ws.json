@@ -1,0 +1,20 @@
+{
+  "id": "30c684ae-67ab-41c9-b673-cdacc8d5254e",
+  "slug": "factory-belt-probe-75onf6",
+  "url": "https://app.superset.sh/page/factory-belt-probe-75onf6",
+  "linked": true,
+  "title": "Factory belt probe",
+  "description": null,
+  "visibility": "just_me",
+  "version": 1,
+  "label": null,
+  "contentType": "text/html",
+  "sizeBytes": 4557,
+  "createdAt": "2026-11-10T16:55:47.074Z",
+  "unanchored": false,
+  "watching": false,
+  "assets": {
+    "uploaded": 3,
+    "reused": 0
+  }
+}

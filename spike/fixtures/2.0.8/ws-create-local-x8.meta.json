@@ -1,0 +1,23 @@
+{
+  "argv": [
+    "workspaces",
+    "create",
+    "--local",
+    "--project",
+    "e9ab7dc2-e7f6-42d9-94ed-82d6d623aabd",
+    "--name",
+    "x8 base from origin",
+    "--branch",
+    "fac/x8",
+    "--skip-branch-prefix",
+    "--base-branch",
+    "x8-origin-only",
+    "--tag",
+    "factory",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794329852414,
+  "durationMs": 486,
+  "stderr": ""
+}

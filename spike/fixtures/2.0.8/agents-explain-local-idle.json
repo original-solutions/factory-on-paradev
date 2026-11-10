@@ -1,0 +1,12 @@
+{
+  "terminalId": "27446599-a510-4df8-989b-45938576d96b",
+  "state": "idle",
+  "agentId": "claude",
+  "headline": "claude is idle.",
+  "because": "its recorded event is Stop, which means its turn ended: it finished, or it was interrupted",
+  "details": [
+    "The last hook arrived 0 seconds ago; the session started 4 minutes ago."
+  ],
+  "lastEventType": "Stop",
+  "lastEventAt": 1794329982376
+}

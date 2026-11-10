@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "pages",
+    "storage",
+    "30c684ae-67ab-41c9-b673-cdacc8d5254e",
+    "--key",
+    "belt",
+    "--scope",
+    "shared",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794329826095,
+  "durationMs": 869,
+  "stderr": ""
+}

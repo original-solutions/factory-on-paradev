@@ -1,0 +1,13 @@
+{
+  "terminalId": "57b0d905-58bc-4206-8f19-d45e0c301d69",
+  "state": "working",
+  "agentId": "claude",
+  "headline": "claude is working.",
+  "because": "its recorded event is Start, which means a turn is in progress (a prompt was submitted or a tool just ran)",
+  "details": [
+    "The last hook arrived 5 seconds ago; the session started 2 minutes ago.",
+    "Agents send no hook for an interrupt. Paradev clears this state when the interrupt comes through Paradev; one typed elsewhere can leave it working."
+  ],
+  "lastEventType": "Start",
+  "lastEventAt": 1794342566107
+}

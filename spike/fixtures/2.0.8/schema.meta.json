@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "schema",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794329706284,
+  "durationMs": 160,
+  "stderr": ""
+}

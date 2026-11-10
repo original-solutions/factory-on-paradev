@@ -1,0 +1,20 @@
+{
+  "argv": [
+    "agents",
+    "wait",
+    "--local",
+    "--workspace",
+    "cbda7906-379d-47f0-a5d4-64445b0cffd8",
+    "--terminal",
+    "009bc022-754c-4c2a-a5a8-a9b1d496ee59",
+    "--until",
+    "working",
+    "--timeout",
+    "300",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794330195292,
+  "durationMs": 2763,
+  "stderr": ""
+}

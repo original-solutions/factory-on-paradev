@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "snapshot",
+    "--workspace",
+    "07d94a5a-9ac0-46c5-92d0-71040748475c",
+    "--json"
+  ],
+  "exit": 1,
+  "startedAt": 1794342631778,
+  "durationMs": 151,
+  "stderr": "Error: Host service for this machine isn't running\nHint: Run: superset start\n"
+}

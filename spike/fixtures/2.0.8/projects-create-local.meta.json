@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "projects",
+    "create",
+    "--local",
+    "--name",
+    "factory-paradev-spike",
+    "--import",
+    "/Users/tomkaczocha/EA/projects/factory-paradev-spike",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794329699118,
+  "durationMs": 458,
+  "stderr": ""
+}

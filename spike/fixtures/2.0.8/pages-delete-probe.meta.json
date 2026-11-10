@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "pages",
+    "delete",
+    "30c684ae-67ab-41c9-b673-cdacc8d5254e",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794342803866,
+  "durationMs": 1557,
+  "stderr": ""
+}

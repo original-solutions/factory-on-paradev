@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "projects",
+    "list",
+    "--local",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794329706446,
+  "durationMs": 168,
+  "stderr": ""
+}
