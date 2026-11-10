@@ -1,25 +1,35 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { beltBytes, type BeltV1 } from "../src/belt.ts";
 
 const probeDir = fileURLToPath(new URL("../spike/belt-probe/", import.meta.url));
 const script = `${probeDir}make-samples.ts`;
-const samples = {
-  belt: `${probeDir}belt.json`,
-  oversize: `${probeDir}belt-oversize.json`,
+const names = { belt: "belt.json", oversize: "belt-oversize.json" };
+const committed = {
+  belt: `${probeDir}${names.belt}`,
+  oversize: `${probeDir}${names.oversize}`,
 };
 const KiB = 1024;
 
-const committed = {
-  belt: readFileSync(samples.belt),
-  oversize: readFileSync(samples.oversize),
-};
+// The generator writes into a temp dir, so a test run never rewrites the
+// committed samples and a stale sample fails every run, not just the first.
+let outDir = "";
+const generated = { belt: "", oversize: "" };
 
-function makeSamples(): void {
-  execFileSync(process.execPath, [script], { stdio: "pipe" });
-}
+beforeAll(() => {
+  outDir = mkdtempSync(join(tmpdir(), "belt-samples-"));
+  execFileSync(process.execPath, [script, outDir], { stdio: "pipe" });
+  generated.belt = join(outDir, names.belt);
+  generated.oversize = join(outDir, names.oversize);
+});
+
+afterAll(() => {
+  if (outDir) rmSync(outDir, { recursive: true, force: true });
+});
 
 function readBelt(path: string): BeltV1 {
   return JSON.parse(readFileSync(path, "utf8")) as BeltV1;
@@ -57,12 +67,12 @@ function expectValidBelt(belt: BeltV1): void {
 
 describe("beltBytes", () => {
   test("is the UTF-8 byte length of the JSON", () => {
-    const belt = readBelt(samples.belt);
+    const belt = readBelt(committed.belt);
     expect(beltBytes(belt)).toBe(Buffer.byteLength(JSON.stringify(belt), "utf8"));
   });
 
   test("counts multi-byte characters as bytes, not code units", () => {
-    const base = readBelt(samples.belt);
+    const base = readBelt(committed.belt);
     const ascii = { ...base, runner: { ...base.runner, host: "aa" } };
     const accented = { ...base, runner: { ...base.runner, host: "éé" } };
     // "é" is one UTF-16 unit but two UTF-8 bytes.
@@ -72,26 +82,39 @@ describe("beltBytes", () => {
 
 describe("make-samples", () => {
   test("writes a belt between 38 and 42 KiB and an oversize belt between 68 and 72 KiB", () => {
-    makeSamples();
-    const size = statSync(samples.belt).size;
-    const oversize = statSync(samples.oversize).size;
+    const size = statSync(generated.belt).size;
+    const oversize = statSync(generated.oversize).size;
     expect(size).toBeGreaterThanOrEqual(38 * KiB);
     expect(size).toBeLessThanOrEqual(42 * KiB);
     expect(oversize).toBeGreaterThanOrEqual(68 * KiB);
     expect(oversize).toBeLessThanOrEqual(72 * KiB);
     // The oversize sample must cross Paradev's 64 KiB value limit as stored.
-    expect(beltBytes(readBelt(samples.oversize))).toBeGreaterThan(64 * KiB);
+    expect(beltBytes(readBelt(generated.oversize))).toBeGreaterThan(64 * KiB);
   });
 
   test("writes valid BeltV1 payloads", () => {
-    makeSamples();
-    expectValidBelt(readBelt(samples.belt));
-    expectValidBelt(readBelt(samples.oversize));
+    expectValidBelt(readBelt(generated.belt));
+    expectValidBelt(readBelt(generated.oversize));
+  });
+
+  test("counts summarise the runs in the same payload", () => {
+    for (const path of [generated.belt, generated.oversize]) {
+      const { counts, runs } = readBelt(path);
+      const tally = (state: BeltV1["runs"][number]["state"]) =>
+        runs.filter((r) => r.state === state).length;
+      expect(counts).toEqual({
+        triage: tally("triage"),
+        building: tally("building"),
+        prOpen: tally("pr-open"),
+        needsInfo: tally("needs-info"),
+        stuck: tally("stuck"),
+        finished7d: runs.filter((r) => r.finished).length,
+      });
+    }
   });
 
   test("attention items point at runs in the same payload", () => {
-    makeSamples();
-    for (const path of [samples.belt, samples.oversize]) {
+    for (const path of [generated.belt, generated.oversize]) {
       const belt = readBelt(path);
       for (const item of belt.attention) {
         const ref = /^([\w.-]+\/[\w.-]+)#(\d+) /.exec(item.text);
@@ -105,12 +128,8 @@ describe("make-samples", () => {
   });
 
   test("a rerun writes the committed files byte for byte", () => {
-    // Read the committed samples before any test run rewrites them.
-    const first = [committed.belt, committed.oversize];
-    makeSamples();
-    const second = [readFileSync(samples.belt), readFileSync(samples.oversize)];
-    expect(second[0]!.equals(first[0]!)).toBe(true);
-    expect(second[1]!.equals(first[1]!)).toBe(true);
+    expect(readFileSync(generated.belt).equals(readFileSync(committed.belt))).toBe(true);
+    expect(readFileSync(generated.oversize).equals(readFileSync(committed.oversize))).toBe(true);
   });
 });
 

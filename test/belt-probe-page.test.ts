@@ -264,6 +264,46 @@ test("shows the error in plain text when get fails", async () => {
   expect(page.text()).toContain("value too large");
 });
 
+test("clears a get error once a later get succeeds", async () => {
+  let fail = true;
+  let onChange: (() => void) | undefined;
+  const page = load({
+    storage: {
+      get: async () => {
+        if (fail) throw new Error("value too large");
+        return belt;
+      },
+      subscribe: (_key, cb) => {
+        onChange = cb;
+      },
+    },
+  });
+  await settle();
+  expect(page.text()).toContain("value too large");
+
+  fail = false;
+  onChange?.();
+  await settle();
+  expect(page.text()).toContain("acme/widgets#42");
+  expect(page.text()).not.toContain("value too large");
+});
+
+test("blames the payload, not storage.get, when the value is not JSON", async () => {
+  const page = load({ storage: { get: async () => "{not json", subscribe: () => {} } });
+  await settle();
+  const out = page.text();
+  expect(out).toContain("The belt from storage.get (get) could not be shown:");
+  expect(out).not.toContain("storage.get failed");
+});
+
+test("blames the payload, not storage.get, when the belt has the wrong shape", async () => {
+  const page = load({ storage: { get: async () => ({ v: 1 }), subscribe: () => {} } });
+  await settle();
+  const out = page.text();
+  expect(out).toContain("The belt from storage.get (get) could not be shown:");
+  expect(out).not.toContain("storage.get failed");
+});
+
 test("says so when the shared belt is empty", async () => {
   const page = load({ storage: { get: async () => null, subscribe: () => {} } });
   await settle();

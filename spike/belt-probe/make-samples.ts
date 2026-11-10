@@ -1,10 +1,12 @@
-// Writes two sample belts for the spike, next to this file:
+// Writes two sample belts for the spike, next to this file unless given a directory:
 //   belt.json          about 40 KiB, under Paradev's 64 KiB storage limit
 //   belt-oversize.json about 70 KiB, over it
 // Everything comes from fixed demo data, so a rerun writes the same bytes.
-// Run with: node spike/belt-probe/make-samples.ts
+// Run with: node spike/belt-probe/make-samples.ts [out-dir]
 
 import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beltBytes, type BeltV1 } from "../../src/belt.ts";
 
 type Run = BeltV1["runs"][number];
@@ -95,8 +97,9 @@ function beltOfSize(target: number): BeltV1 {
   return payload;
 }
 
+const outDir = process.argv[2] ?? fileURLToPath(new URL(".", import.meta.url));
 const write = (name: string, payload: BeltV1) =>
-  writeFileSync(new URL(name, import.meta.url), `${JSON.stringify(payload)}\n`);
+  writeFileSync(join(outDir, name), `${JSON.stringify(payload)}\n`);
 
 write("belt.json", beltOfSize(40 * KiB));
 write("belt-oversize.json", beltOfSize(70 * KiB));

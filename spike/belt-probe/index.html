@@ -71,17 +71,27 @@
   // latest one may render, so an older value never replaces a newer one.
   let latest = 0;
 
+  function message(e) {
+    return e && e.message ? e.message : String(e);
+  }
+
   async function load(storage, via) {
     const call = ++latest;
+    let value;
     try {
-      let value = await storage.get(KEY, OPTS);
-      if (call !== latest) return;
+      value = await storage.get(KEY, OPTS);
+    } catch (e) {
+      if (call === latest) errorEl.textContent = "storage.get failed (" + via + "): " + message(e);
+      return;
+    }
+    if (call !== latest) return;
+    // The get worked; a value that is not a readable belt is the payload's fault.
+    try {
       if (typeof value === "string") value = JSON.parse(value);
       render(value, via);
       errorEl.textContent = "";
     } catch (e) {
-      if (call !== latest) return;
-      errorEl.textContent = "storage.get failed (" + via + "): " + (e && e.message ? e.message : String(e));
+      errorEl.textContent = "The belt from storage.get (" + via + ") could not be shown: " + message(e);
     }
   }
 
@@ -106,7 +116,7 @@
         say("Subscribed to shared \"belt\".");
         return;
       } catch (e) {
-        say("storage.subscribe failed: " + (e && e.message ? e.message : String(e)));
+        say("storage.subscribe failed: " + message(e));
       }
     }
     say("Polling storage.get every 30 seconds.");
