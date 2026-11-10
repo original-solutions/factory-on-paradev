@@ -40,8 +40,24 @@ function fixture(path: string, content: string): void {
   writeFileSync(file, content);
 }
 
+// Keeps git inside the temp folder and clear of this machine's git config.
+function env(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_CEILING_DIRECTORIES: dirname(root),
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    XDG_CONFIG_HOME: root,
+  };
+}
+
+function git(...args: string[]): void {
+  const run = spawnSync("git", args, { cwd: root, encoding: "utf8", env: env() });
+  expect(run.status, run.stderr).toBe(0);
+}
+
 function scan(): { status: number | null; output: string } {
-  const run = spawnSync(process.execPath, [script], { cwd: root, encoding: "utf8" });
+  const run = spawnSync(process.execPath, [script], { cwd: root, encoding: "utf8", env: env() });
   return { status: run.status, output: run.stdout + run.stderr };
 }
 
@@ -128,4 +144,25 @@ test.each([
 test("passes the allowed email domains behind an encoded @", () => {
   fixture("emails.txt", ["dev" + "%40" + "example.com", "123+dev" + "\\u0040" + "users.noreply.github.com"].join("\n"));
   expect(scan()).toEqual({ status: 0, output: "" });
+});
+
+// The repo's .gitignore keeps spike/fixtures/**/secrets* out of git.
+test("skips fixtures git ignores but scans ones forced into the index", () => {
+  git("init", "-q");
+  writeFileSync(join(root, ".gitignore"), "spike/fixtures/**/secrets*\n");
+  fixture("2.0.7/secrets.json", secret("ghp_ token") + "\n");
+  fixture("secrets/token.txt", secret("JWT") + "\n");
+  fixture("2.0.7/forced/secrets.json", secret("personal email") + "\n");
+  fixture("2.0.7/answer.json", secret("ghp_ token") + "\n");
+  git("add", "-f", "spike/fixtures/2.0.7/forced/secrets.json");
+  expect(scan()).toEqual({
+    status: 1,
+    output: "spike/fixtures/2.0.7/answer.json:1: GitHub token\nspike/fixtures/2.0.7/forced/secrets.json:1: email address\n",
+  });
+});
+
+test("scans every fixture outside a git repo", () => {
+  writeFileSync(join(root, ".gitignore"), "spike/fixtures/**/secrets*\n");
+  fixture("secrets.json", secret("ghp_ token") + "\n");
+  expect(scan()).toEqual({ status: 1, output: "spike/fixtures/secrets.json:1: GitHub token\n" });
 });

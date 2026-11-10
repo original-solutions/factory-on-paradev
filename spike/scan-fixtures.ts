@@ -1,6 +1,7 @@
 // Fails the gate when a recorded fixture holds something that looks like a
 // secret or a personal email. Prints only path, line and pattern name, never
 // the matched text, so the scan cannot leak what it finds into a log.
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -50,10 +51,20 @@ function files(dir: string): string[] {
     });
 }
 
+// Files git refuses to commit (the .gitignore'd secrets* files) are skipped;
+// one forced into the index is scanned. Outside a git repo, or without git,
+// every file is scanned.
+function ignored(paths: string[]): Set<string> {
+  const run = spawnSync("git", ["check-ignore", "-z", "--stdin"], { input: paths.join("\0"), encoding: "utf8" });
+  return new Set(run.status === 0 ? run.stdout.split("\0") : []);
+}
+
 let found = false;
 
 if (existsSync(root)) {
-  for (const file of files(root)) {
+  const all = files(root);
+  const skip = ignored(all);
+  for (const file of all.filter((path) => !skip.has(path))) {
     readFileSync(file, "utf8")
       .split(/\r?\n/)
       .forEach((line, index) => {
