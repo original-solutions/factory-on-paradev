@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Factory belt probe</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 1.5rem; color: #1b1b1b; background: #fafafa; }
+  h1 { font-size: 1.1rem; margin: 0 0 0.75rem; }
+  #status, #error { white-space: pre-line; margin: 0 0 0.75rem; }
+  #error { color: #a40000; }
+  .meta { margin: 0 0 0.25rem; }
+  table { border-collapse: collapse; width: 100%; margin-top: 0.75rem; }
+  th, td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+  th { font-weight: 600; background: #f0f0f0; }
+</style>
+</head>
+<body>
+<h1>Factory belt probe</h1>
+<p id="status"></p>
+<p id="error"></p>
+<div id="belt"></div>
+<script>
+  // Reads the factory belt from the page's shared storage and follows changes.
+  // Paradev pages run under a CSP that blocks outside requests: this page
+  // fetches nothing and shows titles and states only, never gate output or logs.
+  const KEY = "belt";
+  const OPTS = { scope: "shared" };
+  const POLL_MS = 30000;
+
+  const statusEl = document.getElementById("status");
+  const errorEl = document.getElementById("error");
+  const beltEl = document.getElementById("belt");
+  const notes = [];
+
+  function say(text) {
+    notes.push(text);
+    statusEl.textContent = notes.join("\n");
+  }
+
+  function esc(value) {
+    return String(value ?? "—")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function render(belt, via) {
+    if (belt == null) {
+      beltEl.innerHTML = "<p>No belt in shared storage yet.</p>";
+      return;
+    }
+    const c = belt.counts;
+    const rows = belt.runs.map((r) =>
+      "<tr><td>" + esc(r.repo + "#" + r.issue) + "</td><td>" + esc(r.title) +
+      "</td><td>" + esc(r.state) + "</td><td>" + esc(r.step) + "</td></tr>"
+    ).join("");
+    beltEl.innerHTML =
+      "<p class=\"meta\">Host <strong>" + esc(belt.runner.host) + "</strong>, updated " + esc(belt.updatedAt) + "</p>" +
+      "<p class=\"meta\">triage " + esc(c.triage) + " · building " + esc(c.building) +
+      " · PR open " + esc(c.prOpen) + " · needs info " + esc(c.needsInfo) +
+      " · stuck " + esc(c.stuck) + " · finished 7d " + esc(c.finished7d) + "</p>" +
+      "<p class=\"meta\">Rendered " + esc(new Date().toISOString()) + " after " + esc(via) + ", " + esc(belt.runs.length) + " runs</p>" +
+      "<table><thead><tr><th>Issue</th><th>Title</th><th>State</th><th>Step</th></tr></thead>" +
+      "<tbody>" + rows + "</tbody></table>";
+  }
+
+  // Gets can overlap (the first load and a change, or a slow poll); only the
+  // latest one may render, so an older value never replaces a newer one.
+  let latest = 0;
+
+  function message(e) {
+    return e && e.message ? e.message : String(e);
+  }
+
+  async function load(storage, via) {
+    const call = ++latest;
+    let value;
+    try {
+      value = await storage.get(KEY, OPTS);
+    } catch (e) {
+      if (call === latest) errorEl.textContent = "storage.get failed (" + via + "): " + message(e);
+      return;
+    }
+    if (call !== latest) return;
+    // The get worked; a value that is not a readable belt is the payload's fault.
+    try {
+      if (typeof value === "string") value = JSON.parse(value);
+      render(value, via);
+      errorEl.textContent = "";
+    } catch (e) {
+      errorEl.textContent = "The belt from storage.get (" + via + ") could not be shown: " + message(e);
+    }
+  }
+
+  async function start() {
+    const superset = window.superset;
+    if (!superset) {
+      say("window.superset is not available");
+      return;
+    }
+    const storage = superset.storage || {};
+    const hasGet = typeof storage.get === "function";
+    const hasSubscribe = typeof storage.subscribe === "function";
+    if (!hasGet) say("storage.get is not available");
+    if (!hasSubscribe) say("storage.subscribe is not available");
+    if (!hasGet) return;
+
+    load(storage, "get");
+    if (hasSubscribe) {
+      try {
+        // Awaited so a subscribe that returns a rejected promise also falls back.
+        await storage.subscribe(KEY, () => load(storage, "subscribe"), OPTS);
+        say("Subscribed to shared \"belt\".");
+        return;
+      } catch (e) {
+        say("storage.subscribe failed: " + message(e));
+      }
+    }
+    say("Polling storage.get every 30 seconds.");
+    setInterval(() => load(storage, "poll"), POLL_MS);
+  }
+
+  start();
+</script>
+</body>
+</html>
