@@ -1,0 +1,7 @@
+factory:
+  instructors: [tomkaczocha, rawphp]
+  base: main
+  provision: [npm ci]
+  gate: [npm run check]
+  limits: { gate_retries: 2 }
+  autonomy: pr
