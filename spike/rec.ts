@@ -1,8 +1,8 @@
 // Records one answer of Paradev's `superset` CLI as a fixture.
 // Usage: node spike/rec.ts <name> <superset args...>
 import { spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_BINARY = "/Applications/Superset.app/Contents/Resources/resources/bin/superset";
@@ -41,7 +41,7 @@ export function record(name: string, args: string[], { binary, fixtureDir }: Rec
   return exit;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const [name = "", ...args] = process.argv.slice(2);
   process.exitCode = record(name, args, {
     binary: process.env.SUPERSET || DEFAULT_BINARY,
