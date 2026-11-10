@@ -320,6 +320,7 @@ test("a missing prompt file exits 2 before any call", () => {
   expect(r.status).toBe(2);
   expect(r.stderr).toContain(join(clone, "prompts", "1.txt"));
   expect(calls()).toEqual([]);
+  expect(existsSync(join(work, "spike", "RESULTS.md"))).toBe(false);
 });
 
 type Tweak = (s: Script) => void;
@@ -347,6 +348,9 @@ const failCases: [string, string, string, Tweak][] = [
   }],
   ["gate text split", "4 ", "one User chunk", (s) => {
     reads(s)[1]!.stdout.text = `User: go\n\nAssistant: x\n${done}\n\nUser: The factory gate failed.\n\nUser: | # fail 1\n\nAssistant: ok\n${done}`;
+  }],
+  ["gate text quoted by the agent", "4 ", "one User chunk", (s) => {
+    reads(s)[1]!.stdout.text = `User: go\n\nAssistant: ${gateText}\n\nAssistant: ok\n${done}`;
   }],
   ["no result line after the gate", "4 ", "no result line", (s) => {
     reads(s)[1]!.stdout.text = `User: ${gateText}\n\nAssistant: Looking.`;
