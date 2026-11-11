@@ -396,6 +396,26 @@ describe("launch", () => {
     }),
   );
 
+  it.live("refuses a filter driver it cannot blank with -c, and touches the worktree not at all", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const marks = tempDir("marks");
+      // `-c filter.x=y.smudge=` would set the key `filter.x`, so the driver `x=y` would keep its smudge.
+      git(r.clone, "config", "filter.x=y.smudge", `sh -c 'touch ${marks}/smudge; cat'`);
+      git(r.clone, "config", "filter.x=y.clean", `sh -c 'touch ${marks}/clean; cat'`);
+      NodeFS.writeFileSync(NodePath.join(r.clone, ".git", "info", "attributes"), "* filter=x=y\n");
+      const t = rig(launchScript(r).filter((step) => step.fixture !== "agents-create-local-resume"), {
+        config: { remoteBase: r.remoteBase },
+      });
+      const error = yield* Effect.flip(t.run((s) => s.launch(request({ baseRef: "x8-origin-only" }))));
+      assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.main);
+      assert.deepStrictEqual(NodeFS.readdirSync(marks), []);
+      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+    }),
+  );
+
   it.live("refuses a project whose repo is not a GitHub URL, before it creates anything", () =>
     Effect.gen(function* () {
       const r = repos();
