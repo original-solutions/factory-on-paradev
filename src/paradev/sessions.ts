@@ -14,10 +14,14 @@ import * as Schema from "effect/Schema";
 
 import {
   configFlags,
+  FETCH_ARGS,
   FETCH_CREDENTIAL_FLAGS,
+  FETCH_HTTP_FLAGS,
   fetchCredentialEnv,
+  fileTransportFor,
   HARDENED_GIT_CONFIG,
   HARDENED_GIT_ENV,
+  normalizeRemoteBase,
 } from "../gitHardening.ts";
 import { FactoryPaths } from "../paths.ts";
 import { FactoryProcess } from "../process.ts";
@@ -53,7 +57,6 @@ const STARTING_GRACE_MS = 5 * MINUTE;
 /** A `working` agent this long without a hook gets the process lookup. */
 const SILENT_WORKING_MS = 10 * MINUTE;
 const NAME_MAX = 80;
-const DEFAULT_REMOTE_BASE = "https://github.com";
 /** A Paradev project's `repo`: a GitHub repository URL. */
 const GITHUB_REPO = /^https:\/\/github\.com\/([A-Za-z0-9-]+\/[A-Za-z0-9._-]+?)(?:\.git)?\/?$/;
 
@@ -210,7 +213,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const dataDir = (yield* FactoryPaths).baseDir;
   const services = yield* Effect.context<FileSystem.FileSystem | Path.Path | SupersetCli>();
   const fs = yield* FileSystem.FileSystem;
-  const remoteBase = (config.remoteBase ?? DEFAULT_REMOTE_BASE).replace(/\/+$/, "");
+  const remoteBase = normalizeRemoteBase(config.remoteBase);
   /** The process a record's preset runs: the configured command for the configured preset. */
   const commandOf = (record: ThreadRecord) =>
     record.agent === config.agent ? (config.agentCommand ?? config.agent) : record.agent;
@@ -362,8 +365,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         yield* fs.makeDirectory(scratch, { recursive: true });
         yield* gitOk(scratch, ["init", "--quiet", "--bare", "--template="]);
       }
-      const file = remoteBase.startsWith("file://") ? "always" : "never";
-      const fetchArgs = ["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head"];
+      const fetchArgs = ["fetch", "--quiet", ...FETCH_ARGS];
+      // No retry here, unlike the gate's: a launch that fails on the network is retried by the next pass.
       yield* gitOk(
         scratch,
         [...fetchArgs, `${remoteBase}/${repo}.git`, `+refs/heads/${baseRef}:refs/heads/${baseRef}`],
@@ -371,9 +374,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
           fetch: true,
           timeoutMs: 120_000,
           pre: [
-            "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", `protocol.file.allow=${file}`,
-            // As the gate's fetch: the HTTP/2 framing layer is what a flaky link breaks first.
-            "-c", "http.version=HTTP/1.1",
+            "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", `protocol.file.allow=${fileTransportFor(remoteBase)}`,
+            ...FETCH_HTTP_FLAGS,
           ],
         },
       );

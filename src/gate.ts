@@ -12,10 +12,14 @@ import * as NodePath from "node:path";
 
 import {
   configFlags,
+  FETCH_ARGS,
   FETCH_CREDENTIAL_FLAGS,
+  FETCH_HTTP_FLAGS,
   fetchCredentialEnv,
+  fileTransportFor,
   HARDENED_GIT_CONFIG,
   HARDENED_GIT_ENV,
+  normalizeRemoteBase,
 } from "./gitHardening.ts";
 import type { AppendIo } from "./ledger/appendFile.ts";
 import { errnoCode, ledgerCall, type LedgerError } from "./ledger/errors.ts";
@@ -33,7 +37,6 @@ import { commandLine, isCommitId, sanitize, shortSha } from "./text.ts";
  * gate effect runs; `clearGateLocks` removes one a dead server left.
  */
 
-const DEFAULT_REMOTE_BASE = "https://github.com";
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_GIT_TIMEOUT_MS = 30_000;
 const DEFAULT_CHECKOUT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -518,13 +521,12 @@ const unexpected = (what: string) => new WorkspaceUnexpectedError({ what });
  * transport; only the fetch gets credentials. A session as the same OS user can still read ours.
  */
 export const makeWorkspace = (runner: Runner, options: GateOptions = {}) => {
-  const remoteBase = (options.remoteBase ?? DEFAULT_REMOTE_BASE).replace(/\/+$/, "");
+  const remoteBase = normalizeRemoteBase(options.remoteBase);
   const gitTimeoutMs = options.gitTimeoutMs ?? DEFAULT_GIT_TIMEOUT_MS;
   const gitTailBytes = options.gitTailBytes ?? GIT_TAIL_BYTES;
   const checkoutTimeoutMs = options.checkoutTimeoutMs ?? DEFAULT_CHECKOUT_TIMEOUT_MS;
   const fetchRetryDelaysMs = options.fetchRetryDelaysMs ?? FETCH_RETRY_DELAYS_MS;
-  const fileTransport = remoteBase.startsWith("file://") ? "always" : "never";
-  const hardening = configFlags([...HARDENED_GIT_CONFIG, `protocol.file.allow=${fileTransport}`]);
+  const hardening = configFlags([...HARDENED_GIT_CONFIG, `protocol.file.allow=${fileTransportFor(remoteBase)}`]);
 
   const gitEnv = (fetch: boolean): Record<string, string> => {
     const credentials = fetch ? fetchCredentialEnv(options.ghConfigDir) : {};
@@ -608,14 +610,12 @@ export const makeWorkspace = (runner: Runner, options: GateOptions = {}) => {
     yield* git(dir, { args: ["init", "--quiet", "--template="], timeoutMs: checkoutTimeoutMs });
     // The commits come into the new object store and nothing else changes: no ref, no
     // FETCH_HEAD, no tags, no submodules. The URL is the gate's, not git config's.
-    // HTTP/1.1, because the HTTP/2 framing layer is what a flaky link breaks first.
+    // The gate retries a dropped fetch itself; the Paradev adapter's launch is retried by the next pass.
     const fetch = git(dir, {
-      pre: [...FETCH_CREDENTIAL_FLAGS, "-c", "http.version=HTTP/1.1"],
+      pre: [...FETCH_CREDENTIAL_FLAGS, ...FETCH_HTTP_FLAGS],
       args: [
         "fetch",
-        "--no-tags",
-        "--no-recurse-submodules",
-        "--no-write-fetch-head",
+        ...FETCH_ARGS,
         `${remoteBase}/${repo}.git`,
         sha,
         ...(base === sha ? [] : [base]),

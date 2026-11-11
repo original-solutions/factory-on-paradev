@@ -54,3 +54,20 @@ export const FETCH_CREDENTIAL_FLAGS: ReadonlyArray<string> = [
 /** `-c` flags for each of `settings`. */
 export const configFlags = (settings: ReadonlyArray<string>): ReadonlyArray<string> =>
   settings.flatMap((setting) => ["-c", setting]);
+
+/** Where a base is fetched from when no `remoteBase` is set. */
+export const DEFAULT_REMOTE_BASE = "https://github.com";
+
+/** `remoteBase`, or the default, with no trailing slash: repositories are at `<it>/<owner>/<name>.git`. */
+export const normalizeRemoteBase = (remoteBase: string | undefined): string =>
+  (remoteBase ?? DEFAULT_REMOTE_BASE).replace(/\/+$/, "");
+
+/** `protocol.file.allow` for a fetch from `remoteBase`: only a `file://` base (tests) may use it. */
+export const fileTransportFor = (remoteBase: string): "always" | "never" =>
+  remoteBase.startsWith("file://") ? "always" : "never";
+
+/** What a by-URL fetch never does: no tags, no submodules, no FETCH_HEAD. */
+export const FETCH_ARGS: ReadonlyArray<string> = ["--no-tags", "--no-recurse-submodules", "--no-write-fetch-head"];
+
+/** HTTP/1.1, because the HTTP/2 framing layer is what a flaky link breaks first. */
+export const FETCH_HTTP_FLAGS: ReadonlyArray<string> = ["-c", "http.version=HTTP/1.1"];
