@@ -56,10 +56,17 @@ export interface RunInput {
   readonly cwd?: string;
   /** Added after the inherited allowlist; may override an inherited name. */
   readonly env?: Readonly<Record<string, string>>;
+  /**
+   * Names copied from the server's environment in place of the default allowlist, with no
+   * `LC_*`. For a command that must see a narrower environment than a gate does.
+   */
+  readonly inheritEnv?: ReadonlyArray<string>;
   /** Default 30 minutes (softfac's gate default). */
   readonly timeoutMs?: number;
   /** Default 16 KiB. */
   readonly tailBytes?: number;
+  /** The cap for `stderrTail` when `separateStderr` is set. Default `tailBytes`. */
+  readonly stderrTailBytes?: number;
   /** How long after SIGTERM to send SIGKILL. Default 10_000. Exists so a test can be fast. */
   readonly termGraceMs?: number;
   /**
@@ -88,18 +95,22 @@ export interface RunResult {
    * stdout alone when `separateStderr` was set.
    */
   readonly tail: string;
-  /** The last `tailBytes` of stderr; "" unless `separateStderr` was set. */
+  /** The last `stderrTailBytes` of stderr; "" unless `separateStderr` was set. */
   readonly stderrTail: string;
-  /** True when a tail dropped bytes, i.e. the output was longer than `tailBytes`. */
+  /** True when a tail dropped bytes, i.e. the output was longer than its cap. */
   readonly truncated: boolean;
+  /** True when `tail` itself dropped bytes; a cut `stderrTail` does not count. */
+  readonly tailTruncated: boolean;
 }
 
 /**
- * Keeps the end of a byte stream. Memory stays under about twice the cap:
- * the front is dropped down to the cap only once the buffer passes twice it.
+ * Keeps the end of a byte stream. Chunks are joined only to trim or finish, so a large cap costs
+ * one copy per doubling, not one per chunk. Memory stays under about twice the cap: the front is
+ * dropped down to the cap only once the kept bytes pass twice it.
  */
 class Tail {
-  private buf = Buffer.alloc(0);
+  private chunks: Array<Buffer> = [];
+  private length = 0;
   private dropped = false;
 
   private readonly cap: number;
@@ -109,29 +120,35 @@ class Tail {
   }
 
   push(chunk: Buffer): void {
-    this.buf = Buffer.concat([this.buf, chunk]);
-    if (this.buf.length > 2 * this.cap) this.trim();
+    this.chunks.push(chunk);
+    this.length += chunk.length;
+    if (this.length > 2 * this.cap) this.trim();
   }
 
   get truncated(): boolean {
-    return this.dropped || this.buf.length > this.cap;
+    return this.dropped || this.length > this.cap;
   }
 
   finish(): string {
-    this.trim();
+    const buf = this.trim();
     let start = 0;
     // A cut inside a character loses that character instead of becoming U+FFFD.
     if (this.dropped) {
-      while (start < this.buf.length && (this.buf[start]! & 0xc0) === 0x80) start++;
+      while (start < buf.length && (buf[start]! & 0xc0) === 0x80) start++;
     }
-    return new TextDecoder().decode(this.buf.subarray(start));
+    return new TextDecoder().decode(buf.subarray(start));
   }
 
-  private trim(): void {
-    if (this.buf.length > this.cap) {
-      this.buf = this.buf.subarray(this.buf.length - this.cap);
+  private trim(): Buffer {
+    let buf = Buffer.concat(this.chunks, this.length);
+    if (buf.length > this.cap) {
+      // A copy, so the kept end does not hold the whole joined buffer alive.
+      buf = Buffer.from(buf.subarray(buf.length - this.cap));
       this.dropped = true;
     }
+    this.chunks = [buf];
+    this.length = buf.length;
+    return buf;
   }
 }
 
@@ -149,11 +166,17 @@ const buildChildPath = (launchPath: string | undefined, serverPath: string): str
   return entries.join(":");
 };
 
-const buildEnv = (extra: Readonly<Record<string, string>> | undefined): Record<string, string> => {
+const buildEnv = (
+  extra: Readonly<Record<string, string>> | undefined,
+  inherit: ReadonlyArray<string> | undefined,
+): Record<string, string> => {
+  const only = inherit === undefined ? null : new Set(inherit);
+  const inherited = (name: string): boolean =>
+    only === null ? INHERITED_ENV.has(name) || name.startsWith("LC_") : only.has(name);
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(globalThis.process.env)) {
     if (value === undefined) continue;
-    if (INHERITED_ENV.has(name) || name.startsWith("LC_")) env[name] = value;
+    if (inherited(name)) env[name] = value;
   }
   if (env.PATH !== undefined) {
     env.PATH = buildChildPath(globalThis.process.env.T3FAC_LAUNCH_PATH, env.PATH);
@@ -165,7 +188,7 @@ const run = Effect.fn("FactoryProcess.run")(function* (input: RunInput) {
   const args = input.args ?? [];
   const separate = input.separateStderr === true;
   const tail = new Tail(input.tailBytes ?? DEFAULT_TAIL_BYTES);
-  const stderrTail = new Tail(input.tailBytes ?? DEFAULT_TAIL_BYTES);
+  const stderrTail = new Tail(input.stderrTailBytes ?? input.tailBytes ?? DEFAULT_TAIL_BYTES);
 
   // By default one pipe for both streams: Node cannot hand one pipe to two
   // fds, so the wrapper shell merges stderr into stdout. With separateStderr
@@ -197,7 +220,7 @@ const run = Effect.fn("FactoryProcess.run")(function* (input: RunInput) {
     try: () => {
       const child = NodeChildProcess.spawn("/bin/sh", script, {
         cwd: input.cwd,
-        env: buildEnv(input.env),
+        env: buildEnv(input.env, input.inheritEnv),
         stdio: [nice ? "pipe" : "ignore", "pipe", separate ? "pipe" : "ignore"],
         detached: true,
       });
@@ -316,6 +339,7 @@ const run = Effect.fn("FactoryProcess.run")(function* (input: RunInput) {
       tail: out,
       stderrTail: err,
       truncated: tail.truncated || stderrTail.truncated,
+      tailTruncated: tail.truncated,
     } satisfies RunResult;
   });
 

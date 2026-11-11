@@ -119,6 +119,20 @@ it.live("passes PATH, LC_* and the env argument through", () =>
   ),
 );
 
+it.live("passes only the names in inheritEnv when it is set, and no LC_*", () =>
+  withEnv(
+    { LC_FACTORY_TEST: "lc", LOGNAME: "factory", LANG: "en_AU.UTF-8" },
+    Effect.gen(function* () {
+      const result = yield* run({
+        command: `printf '%s|%s|%s' "\${LC_FACTORY_TEST-unset}" "\${LOGNAME-unset}" "\${LANG-unset}"`,
+        shell: true,
+        inheritEnv: ["LANG"],
+      });
+      assert.strictEqual(result.tail, "unset|unset|en_AU.UTF-8");
+    }),
+  ),
+);
+
 it.live(
   "puts the launch PATH first, then the rest of the server PATH, without duplicates or empty entries",
   () =>
@@ -221,6 +235,10 @@ it.live("keeps only the last tailBytes of a 1 MB output", () =>
     const dflt = yield* run({ command: COUNTER_SCRIPT, shell: true });
     assert.strictEqual(dflt.tail, expected.slice(-16384));
     assert.strictEqual(dflt.tail.length, 16384);
+
+    const whole = yield* run({ command: COUNTER_SCRIPT, shell: true, tailBytes: 64 << 20 });
+    assert.strictEqual(whole.tail, expected);
+    assert.isFalse(whole.truncated);
   }),
 );
 
@@ -434,6 +452,39 @@ it.live("truncated is true only when a tail dropped bytes", () =>
     assert.strictEqual(stderrCut.tail, "ok\n");
     assert.strictEqual(stderrCut.stderrTail, "efgh");
     assert.strictEqual(stderrCut.truncated, true);
+  }),
+);
+
+it.live("stderrTailBytes caps stderr on its own, and tailTruncated covers tail alone", () =>
+  Effect.gen(function* () {
+    const stderrCut = yield* run({
+      command: "printf abcd; printf abcdefgh >&2",
+      shell: true,
+      tailBytes: 4,
+      stderrTailBytes: 2,
+      separateStderr: true,
+    });
+    assert.strictEqual(stderrCut.tail, "abcd");
+    assert.strictEqual(stderrCut.stderrTail, "gh");
+    assert.isFalse(stderrCut.tailTruncated);
+    assert.isTrue(stderrCut.truncated);
+
+    const stdoutCut = yield* run({
+      command: "printf abcdefgh",
+      shell: true,
+      tailBytes: 4,
+      separateStderr: true,
+    });
+    assert.isTrue(stdoutCut.tailTruncated);
+
+    // Unset, stderr gets tailBytes as before.
+    const shared = yield* run({
+      command: "printf abcdefgh >&2",
+      shell: true,
+      tailBytes: 4,
+      separateStderr: true,
+    });
+    assert.strictEqual(shared.stderrTail, "efgh");
   }),
 );
 

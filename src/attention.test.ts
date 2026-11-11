@@ -35,6 +35,7 @@ const done = (exitCode: number | null, tail = ""): RunResult => ({
   tail,
   stderrTail: "",
   truncated: false,
+  tailTruncated: false,
 });
 
 /** A FactoryProcess that records each call and answers with `reply`. */
@@ -270,6 +271,7 @@ it.effect("an osascript that times out is logged once and no later item runs a p
         tail: "",
         stderrTail: "",
         truncated: false,
+        tailTruncated: false,
       }),
     );
     return Effect.gen(function* () {

@@ -97,6 +97,7 @@ const setup = (...answers: ReadonlyArray<Answer>) => {
           tail: "",
           stderrTail: "",
           truncated: false,
+          tailTruncated: false,
           ...answer.result,
         } satisfies RunResult);
         return answer.delay === undefined ? result : result.pipe(Effect.delay(answer.delay));

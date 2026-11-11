@@ -262,7 +262,7 @@ Paradev puts a local worktree at `~/.paradev/worktrees/<project name>/<branch>`,
 
 ### Method by method
 
-All calls pass `--local` and `--json`. Timeouts are the runner's own: it kills the `superset` child's process group when one passes.
+Every call but `snapshot` passes `--local`, and the runner adds `--json`. Timeouts are the runner's own: it kills the `superset` child's process group when one passes.
 
 | Method | CLI calls, in order | Fields read | Timeout, retry |
 |---|---|---|---|
@@ -322,7 +322,7 @@ The CLI error "No transcript for that terminal" gives `null`. The adapter reads 
 `paradev/cli.ts` is the only code that spawns `superset`.
 
 - Binary: `paradev.cli` from the config, default `/Applications/Superset.app/Contents/Resources/resources/bin/superset`.
-- Every call gets `--json` and an explicit `--local`. `snapshot` takes no `--local` and defaults to this machine.
+- The runner adds `--json` to every call. Callers pass `--local` themselves: `snapshot`, `schema`, `auth whoami` and the `pages` commands take none, and `snapshot` defaults to this machine.
 - Environment: `HOME`, `PATH`, `USER`, `LANG` and `TMPDIR` only, through `process.ts`'s allowlist. No `SUPERSET_API_KEY`.
 - Login: a CLI started outside a Paradev terminal has no host login. P0 saw every call fail with `Not logged in` from Terminal.app until `superset auth login`, after which `auth whoami` said `authSource: oauth`. The LaunchAgent is outside Paradev, so `install` runs `superset auth whoami --json` and exits 1 with the login command when it fails.
 - Exit 0: parse stdout as JSON; a parse failure is `PARADEV_SHAPE`.
@@ -593,7 +593,7 @@ From `spike/RESULTS.md` in factory-on-paradev, local runs on 2026-11-10 and 2026
 | L5b | A killed agent stays `working`, its terminal live at a shell prompt. The session id is the newest `.jsonl` in Claude's project folder, and `--resume-session` with `--prompt` continues the conversation in a new terminal | the liveness check, resume |
 | X2 | Not run (host only, to keep this Mac's other agents online) | nothing: the rate-limit path reads the transcript |
 | X4 | Page `storage.get` and `subscribe` work; publish worked only with `--workspace`; a value over 65536 bytes fails | belt page, #27's publish check |
-| X6 | No flag and `--local` give the same answer today | every call still passes `--local` |
+| X6 | No flag and `--local` give the same answer today | every call that takes `--local` still passes it (`snapshot` takes none) |
 | X7 | A repeat create with `--agent` returns `alreadyExists: true` and starts a second agent | launch without `--agent` |
 | X8 | `--base-branch` does not fetch, and a missing branch silently falls back to the project default | the base check |
 | X9 | PRs open as the active `gh` login; commits carry the worktree's git email | T2, launch message |
