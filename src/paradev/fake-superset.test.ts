@@ -47,3 +47,21 @@ it.effect("an argv no unused step expects fails the test", () =>
     assert.include(String(Cause.squash(cause)), "unexpected argv");
   }),
 );
+
+it.effect("a step's edit rewrites the fixture's answer", () =>
+  Effect.gen(function* () {
+    const fake = fakeSuperset([
+      {
+        argv: ["workspaces", "get", "w1", "--local"],
+        fixture: "ws-get-local",
+        edit: (answer) => ({ ...(answer as object), worktreePath: "/tmp/elsewhere" }),
+      },
+    ]);
+    const result = yield* ask(["workspaces", "get", "w1", "--local", "--json"]).pipe(
+      Effect.provide(fake.layer),
+    );
+    const parsed = JSON.parse(result.tail) as { worktreePath: string; branch: string };
+    assert.strictEqual(parsed.worktreePath, "/tmp/elsewhere");
+    assert.strictEqual(parsed.branch, "fac/1-1");
+  }),
+);
