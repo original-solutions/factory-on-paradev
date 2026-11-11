@@ -351,7 +351,7 @@ describe("launch", () => {
         `agents create: worktree at ${r.originOnly}`,
       ]);
       assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.originOnly);
-      assert.include(reflog(r.worktree).split("\n")[0], "reset: moving to origin/x8-origin-only");
+      assert.include(reflog(r.worktree).split("\n")[0], `reset: moving to ${r.originOnly}`);
       assert.strictEqual(git(r.worktree, "symbolic-ref", "--short", "HEAD"), "fac/x8");
       assert.strictEqual(flag(t.calls.find(argvIs("workspaces", "create")), "--base-branch"), "x8-origin-only");
     }),

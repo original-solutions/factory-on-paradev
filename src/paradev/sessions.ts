@@ -296,14 +296,23 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   };
 
   /**
-   * A terminal of the workspace in `answer` that is not in `skip`: the agent a launch started. A
-   * factory workspace is created with no terminal, and a starting agent's terminal shows no agent
-   * until its first hook, so any terminal there counts.
+   * What the snapshot shows in the workspace beyond the terminals in `skip`: a terminal running
+   * an agent of `preset`, which a launch takes as its own; `unclear` for any other terminal (a
+   * starting agent shows no agent until its first hook, and a person may open a shell), beside
+   * which a launch neither takes nor starts an agent; else nothing.
    */
-  const agentTerminalIn = (answer: SnapshotAnswer, workspaceId: string, skip: ReadonlyArray<string>) =>
-    answer.workspaces
-      .find((ws) => ws.id === workspaceId)
-      ?.terminals.find((t) => !skip.includes(t.id))?.id ?? null;
+  const agentIn = (
+    answer: SnapshotAnswer,
+    workspaceId: string,
+    preset: string,
+    skip: ReadonlyArray<string>,
+  ): { readonly terminal: string } | "unclear" | null => {
+    const terminals = answer.workspaces.find((ws) => ws.id === workspaceId)?.terminals ?? [];
+    const others = terminals.filter((t) => !skip.includes(t.id));
+    const agent = others.find((t) => t.agent?.id === preset);
+    if (agent !== undefined) return { terminal: agent.id };
+    return others.length > 0 ? "unclear" : null;
+  };
 
   // ---- records ------------------------------------------------------------------------------
 
@@ -333,15 +342,16 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     });
 
   /**
-   * Fetches the base into the project's clone as `origin/<baseRef>`. The credentialed fetch goes
-   * by URL, from the project's GitHub repo, into a bare repository of the adapter's own with no
-   * config, as the gate's does; the clone then fetches from that one with no credentials. The
-   * clone's own `origin`, transport and filter settings, which a session can write, never meet
-   * a token.
+   * Fetches the base into the project's clone as `origin/<baseRef>`, and answers its commit. The
+   * credentialed fetch goes by URL, from the project's GitHub repo, into a bare repository of the
+   * adapter's own with no config, as the gate's does; the clone then fetches from that one with
+   * no credentials. The clone's own `origin`, transport and filter settings, which a session can
+   * write, never meet a token, and the commit answered is read where no session can move it.
    */
   const fetchBase = (project: ParadevProject, baseRef: string) =>
     Effect.gen(function* () {
       if (!isSafeBranchName(baseRef)) return yield* fail(`the base ${baseRef} is not a plain branch name`);
+      if (!/^[A-Za-z0-9_-]+$/.test(project.id)) return yield* fail(`Paradev project id ${project.id} is not plain`);
       const repo = GITHUB_REPO.exec(project.repo)?.[1];
       if (repo === undefined) {
         return yield* fail(`Paradev project ${project.id} names no GitHub repository: ${project.repo}`);
@@ -359,7 +369,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         {
           fetch: true,
           timeoutMs: 120_000,
-          pre: ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", `protocol.file.allow=${file}`],
+          pre: [
+            "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", `protocol.file.allow=${file}`,
+            // As the gate's fetch: the HTTP/2 framing layer is what a flaky link breaks first.
+            "-c", "http.version=HTTP/1.1",
+          ],
         },
       );
       yield* gitOk(
@@ -367,22 +381,13 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         [...fetchArgs, scratch, `+refs/heads/${baseRef}:refs/remotes/origin/${baseRef}`],
         { pre: ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always"], timeoutMs: 120_000 },
       );
+      return yield* gitOk(scratch, ["rev-parse", "--verify", "--end-of-options", `refs/heads/${baseRef}^{commit}`]);
     });
 
-  /**
-   * Paradev does not fetch the base, and builds a worktree from the clone's own refs: a local
-   * branch the runner never moves, or the project's default branch for one the clone lacks (X8).
-   * So the new worktree's HEAD must be the base just fetched, `origin/<baseRef>`, else it is reset
-   * there. Only called once the snapshot shows no agent in the workspace, so nothing is lost.
-   * Filter drivers a session put in the shared config are blanked for the checkout.
-   */
-  const baseCheck = (worktreePath: string, baseRef: string) =>
+  /** `-c` flags that blank every filter driver the repository's config names. */
+  const blankFilters = (dir: string) =>
     Effect.gen(function* () {
-      const ref = `origin/${baseRef}`;
-      const want = yield* gitOk(worktreePath, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]);
-      const head = yield* gitOk(worktreePath, ["rev-parse", "--verify", "HEAD^{commit}"]);
-      if (head === want) return;
-      const listed = yield* git(worktreePath, ["config", "--name-only", "--get-regexp", "^filter\\."]);
+      const listed = yield* git(dir, ["config", "--name-only", "--get-regexp", "^filter\\."]);
       const drivers = new Set(
         listed.exitCode === 0
           ? listed.tail.split("\n").flatMap((name) => {
@@ -391,10 +396,36 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
             })
           : [],
       );
-      const blank = [...drivers].flatMap((driver) =>
+      return [...drivers].flatMap((driver) =>
         ["smudge=", "clean=", "process=", "required=false"].flatMap((key) => ["-c", `filter.${driver}.${key}`]),
       );
-      yield* gitOk(worktreePath, ["reset", "--hard", "-q", ref], { pre: blank });
+    });
+
+  /**
+   * Paradev does not fetch the base, and builds a worktree from the clone's own refs: a local
+   * branch the runner never moves, or the project's default branch for one the clone lacks (X8).
+   * So the new worktree's HEAD must be `base`, the commit just fetched, else it is reset there.
+   * A worktree holding work (an edit, or a commit no other branch has) is never reset: that is an
+   * earlier attempt's agent, and the answer is `kept`. Filter drivers a session put in the shared
+   * config are blanked for the status and the checkout.
+   */
+  const baseCheck = (worktreePath: string, base: string) =>
+    Effect.gen(function* () {
+      const head = yield* gitOk(worktreePath, ["rev-parse", "--verify", "HEAD^{commit}"]);
+      if (head === base) return "at-base" as const;
+      const blank = yield* blankFilters(worktreePath);
+      const changed = yield* gitOk(worktreePath, ["status", "--porcelain", "--untracked-files=normal"], { pre: blank });
+      // A commit only the checked-out branch has is work; one another branch has is not.
+      const onBranch = yield* git(worktreePath, ["symbolic-ref", "-q", "HEAD"]);
+      // `--exclude` before `--branches` takes the name without `refs/heads/`.
+      const exclude =
+        onBranch.exitCode === 0 ? [`--exclude=${onBranch.tail.trim().replace(/^refs\/heads\//, "")}`] : [];
+      const ownCommit = yield* gitOk(worktreePath, [
+        "rev-list", "--max-count=1", "HEAD", "--not", ...exclude, "--branches", "--remotes",
+      ]);
+      if (changed !== "" || ownCommit !== "") return "kept" as const;
+      yield* gitOk(worktreePath, ["reset", "--hard", "-q", base], { pre: blank });
+      return "reset" as const;
     });
 
   const createAgent = (record: ThreadRecord, request: LaunchRequest) =>
@@ -425,23 +456,32 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     });
 
   /**
-   * Steps 5 to 7 of a launch: the worktree, then the agent. A terminal already in the workspace
-   * is the agent an earlier attempt started, so it is taken and the worktree left alone; only
-   * with none there is the worktree checked against the base and the agent started.
+   * Steps 5 to 7 of a launch: the worktree, the base check, then the agent. An agent of the
+   * preset already in the workspace is the one an earlier attempt started, so it is taken; only
+   * with no terminal there is an agent started, and only on a worktree at the base.
    */
-  const startAgent = (record: ThreadRecord, request: LaunchRequest, snapshotDone: boolean) =>
+  const startAgent = (record: ThreadRecord, request: LaunchRequest, base: string, snapshotDone: boolean) =>
     Effect.gen(function* () {
       const got = yield* getWorkspace(record.workspaceId);
       if (got.worktreePath === null) return yield* fail(`workspace ${record.workspaceId} has no worktree`);
       const placed: ThreadRecord = { ...record, worktreePath: got.worktreePath };
       yield* save(placed);
+      const checked = yield* baseCheck(got.worktreePath, base);
       if (!snapshotDone) {
-        const found = agentTerminalIn(yield* snapshot(record.workspaceId), record.workspaceId, placed.terminals);
-        if (found !== null) return yield* withAgent(placed, found, request);
+        const found = agentIn(yield* snapshot(record.workspaceId), record.workspaceId, placed.agent, placed.terminals);
+        if (found === "unclear") return yield* noAgentYet(placed);
+        if (found !== null) return yield* withAgent(placed, found.terminal, request);
       }
-      yield* baseCheck(got.worktreePath, request.baseRef);
+      if (checked === "kept") {
+        return yield* fail(
+          `the worktree ${got.worktreePath} holds work off the base and no agent runs there; it was left as it is`,
+        );
+      }
       return yield* withAgent(placed, yield* createAgent(placed, request), request);
     });
+
+  const noAgentYet = (record: ThreadRecord) =>
+    fail(`workspace ${record.workspaceId} has a terminal with no ${record.agent} agent in it yet; the next attempt looks again`);
 
   const launched = (record: ThreadRecord) => ({
     threadId: record.threadId,
@@ -457,15 +497,16 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     if (earlier !== null && earlier.terminals.length > 0) return launched(earlier);
     if (earlier !== null) {
       // It stopped between the record and the agent's start: the agent may be there already.
-      const found = agentTerminalIn(yield* snapshot(earlier.workspaceId), earlier.workspaceId, []);
-      if (found !== null) return launched(yield* withAgent(earlier, found, request));
-      yield* fetchBase(yield* projectOf(earlier.projectId), request.baseRef);
-      return launched(yield* startAgent(earlier, request, true));
+      const found = agentIn(yield* snapshot(earlier.workspaceId), earlier.workspaceId, earlier.agent, []);
+      if (found === "unclear") return yield* noAgentYet(earlier);
+      if (found !== null) return launched(yield* withAgent(earlier, found.terminal, request));
+      const base = yield* fetchBase(yield* projectOf(earlier.projectId), request.baseRef);
+      return launched(yield* startAgent(earlier, request, base, true));
     }
 
     // 2. The base into the repo clone.
     const project = yield* projectOf(request.projectId);
-    yield* fetchBase(project, request.baseRef);
+    const base = yield* fetchBase(project, request.baseRef);
 
     // 3. The workspace, with no agent: a repeat create with `--agent` starts a second one (X7).
     const argv = [
@@ -498,7 +539,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     if (record.terminals.length > 0) return launched(record);
 
     // 5 to 7.
-    return launched(yield* startAgent(record, request, false));
+    return launched(yield* startAgent(record, request, base, false));
   }, (effect) => effect.pipe(Effect.mapError(failWith("launch"))));
 
   // ---- status -------------------------------------------------------------------------------

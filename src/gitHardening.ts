@@ -12,6 +12,8 @@ export const HARDENED_GIT_CONFIG: ReadonlyArray<string> = [
   "core.attributesFile=/dev/null",
   "core.excludesFile=/dev/null",
   "protocol.ext.allow=never",
+  // Fetch-pack runs this to list an alternate's refs; empty turns it off.
+  "core.alternateRefsCommand=",
 ];
 
 /** The environment of a hardened git call; `-c` flags cannot turn the system and global config off. */

@@ -60,6 +60,8 @@ export interface LaunchRequest {
   /**
    * Fetch `origin` first and start from `baseRef`'s tip there, not from the
    * clone's local ref: for a resume from a branch an earlier session pushed.
+   * The Paradev adapter always starts from the fetched tip, since nothing moves its clone's local
+   * branch; it reads this field for nothing.
    */
   readonly startFromOrigin: boolean;
   /** The first message, which starts the first run. */
