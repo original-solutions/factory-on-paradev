@@ -475,15 +475,6 @@ describe("launch", () => {
         NodeFS.writeFileSync(NodePath.join(clone, ".git", "refs", "heads", "zzz"), `${"1".repeat(40)}\n`);
       },
     },
-    {
-      name: "gc.recentObjectsHook with auto gc due",
-      outcome: "launches",
-      plant: (clone, _scratch, marks) => {
-        git(clone, "config", "gc.recentObjectsHook", `touch ${marks}/gc`);
-        git(clone, "config", "gc.auto", "1");
-        git(clone, "config", "gc.autoPackLimit", "1");
-      },
-    },
   ];
   for (const { name, outcome, plant } of planted) {
     it.live(`runs nothing the clone's config names: ${name}`, () =>
@@ -508,6 +499,42 @@ describe("launch", () => {
       }),
     );
   }
+
+  // Fetch ends with `maintenance run --auto`, which repacks when the clone holds several packs and
+  // reads `gc.recentObjectsHook` and the like from the clone's config. Git 2.54 never ran that
+  // hook in any case this test could set up, so the observable is the repack itself: the packs
+  // the clone held before the launch are the packs it holds after.
+  it.live("starts no automatic maintenance in the clone", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const marks = tempDir("marks");
+      git(r.clone, "config", "gc.recentObjectsHook", `touch ${marks}/gc`);
+      git(r.clone, "config", "gc.auto", "1");
+      git(r.clone, "config", "gc.autoPackLimit", "1");
+      git(r.clone, "config", "maintenance.auto", "true");
+      // Several packs make a repack due.
+      for (const name of ["a", "b", "c", "d"]) {
+        const oid = NodeChildProcess.execFileSync("git", ["-C", r.clone, "hash-object", "-w", "--stdin"], {
+          input: `orphan ${name}`,
+        })
+          .toString()
+          .trim();
+        NodeChildProcess.execFileSync("git", ["-C", r.clone, "pack-objects", "-q", ".git/objects/pack/pack"], {
+          input: `${oid}\n`,
+        });
+      }
+      git(r.clone, "prune-packed");
+      const packs = () => NodeFS.readdirSync(NodePath.join(r.clone, ".git", "objects", "pack")).sort();
+      const before = packs();
+      assert.isAbove(before.filter((file) => file.endsWith(".pack")).length, 1);
+      const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase } });
+      yield* t.run((s) => s.launch(request({ baseRef: "x8-origin-only" })));
+      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.originOnly);
+      assert.deepStrictEqual(packs(), before);
+      assert.deepStrictEqual(NodeFS.readdirSync(marks), []);
+    }),
+  );
 
   // The config listing that decides which filters and hooks are blanked must be complete.
   const listing = (args: ReadonlyArray<string>) => args.includes("--get-regexp") && args.includes("-z");
