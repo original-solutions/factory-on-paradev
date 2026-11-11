@@ -583,6 +583,25 @@ describe("launch", () => {
     }),
   );
 
+  it.live("refuses a config hook it cannot turn off with -c, and touches the worktree not at all", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const marks = tempDir("marks");
+      // `-c hook.x=y.enabled=false` would set the key `hook.x`, so the hook `x=y` would keep running.
+      git(r.clone, "config", "hook.x=y.event", "reference-transaction");
+      git(r.clone, "config", "hook.x=y.command", `touch ${marks}/hook`);
+      const t = rig(launchScript(r).filter((step) => step.fixture !== "agents-create-local-resume"), {
+        config: { remoteBase: r.remoteBase },
+      });
+      const error = yield* Effect.flip(t.run((s) => s.launch(request({ baseRef: "x8-origin-only" }))));
+      assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.main);
+      assert.deepStrictEqual(NodeFS.readdirSync(marks), []);
+      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+    }),
+  );
+
   it.live("refuses a project whose repo is not a GitHub URL, before it creates anything", () =>
     Effect.gen(function* () {
       const r = repos();
