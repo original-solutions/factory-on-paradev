@@ -224,33 +224,38 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   // ---- git ----------------------------------------------------------------------------------
 
+  type GitOptions = {
+    readonly fetch?: boolean;
+    readonly timeoutMs?: number;
+    readonly pre?: ReadonlyArray<string>;
+    readonly env?: Readonly<Record<string, string>>;
+    readonly tailBytes?: number;
+  };
+
   /**
    * One git call, hardened as the gate's are: a session can write the clone's config and hooks.
-   * The invariant: no git call the adapter runs in the clone or a worktree executes a command
-   * that repo's config names. Each exec-capable key is pinned one way:
-   * - hooks directory, fsmonitor, `ext` transport, alternate refs, auto gc and maintenance:
-   *   HARDENED_GIT_CONFIG;
+   * The invariant: no git call the adapter runs in the clone or a worktree that can run a filter,
+   * a hook or a transport (the clone-side fetch, status, reset, and the rest of `baseCheck`)
+   * executes a command that repo's config names. Each exec-capable key is pinned one way:
+   * - hooks directory, fsmonitor, `ext` transport, alternate refs: HARDENED_GIT_CONFIG;
+   * - auto gc and maintenance (`gc.recentObjectsHook`): `--no-auto-maintenance` on the clone-side
+   *   fetch, the one command that starts it;
    * - lazy fetch from a promisor remote: `GIT_NO_LAZY_FETCH` in HARDENED_GIT_ENV;
    * - `remote.<name>.uploadpack`: the clone-side fetch passes `--upload-pack` on the command line;
    * - `protocol.<name>.allow` (with `insteadOf` and `core.sshCommand`): `GIT_ALLOW_PROTOCOL`,
    *   which overrides every `protocol.*.allow`, so no `-c protocol` flag is needed;
    * - filter drivers and config hooks (`hook.<name>.*`): `sessionRepo` blanks each one listed, and
    *   refuses the launch when the listing is not complete.
-   * So `git` is for the adapter's own scratch repository and the listing itself; every call in the
-   * clone or a worktree goes through `sessionRepo`. Only the by-URL fetch gets credentials,
-   * through `gh`, and only into a repository whose config is the adapter's own.
+   * So `git` is for the adapter's own scratch repository and the listing itself; every call in the clone or a
+   * worktree that can run a filter, hook or transport goes through `sessionRepo`. The one exception is `worktreeCheckout`'s two reads (`rev-parse` and
+   * `symbolic-ref`): they run no filter, hook or transport, and `GIT_NO_LAZY_FETCH` is set in every
+   * call, so they use plain `git` and a session cannot stall them by writing an odd name.
+   * The pins come from one listing; a session that writes the shared config between the listing
+   * and a later call can still get a filter or config hook run. That is the accepted P1 residual
+   * risk, and the git processes involved carry no GitHub credential. Only the by-URL fetch gets
+   * credentials, through `gh`, and only into a repository whose config is the adapter's own.
    */
-  const git = (
-    dir: string,
-    args: ReadonlyArray<string>,
-    options: {
-      readonly fetch?: boolean;
-      readonly timeoutMs?: number;
-      readonly pre?: ReadonlyArray<string>;
-      readonly env?: Readonly<Record<string, string>>;
-      readonly tailBytes?: number;
-    } = {},
-  ) =>
+  const git = (dir: string, args: ReadonlyArray<string>, options: GitOptions = {}) =>
     runner.run({
       command: "git",
       args: [
@@ -272,7 +277,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     });
 
   /** `git` that must exit 0: its stdout, trimmed. */
-  const gitOk = (dir: string, args: ReadonlyArray<string>, options?: Parameters<typeof git>[2]) =>
+  const gitOk = (dir: string, args: ReadonlyArray<string>, options?: GitOptions) =>
     git(dir, args, options).pipe(
       Effect.flatMap((result) =>
         result.exitCode === 0 && !result.timedOut
@@ -418,9 +423,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * every filter driver and config hook its config names turned off, and only `file` transport. The
    * names come from one listing, taken here: they are what the calls of this operation run with.
    * `-c` splits at the first `=`, so a name with anything outside `[A-Za-z0-9._-]` cannot be
-   * turned off that way: the launch fails rather than run git where it would run. The listing must
+   * turned off that way: the call fails rather than run git where it would run. The listing must
    * be complete: a truncated one, or a failure other than "none configured" (exit 1), fails the
-   * launch too, since a name left out of it would not be turned off. A hook is turned off with
+   * call too, since a name left out of it would not be turned off. A hook is turned off with
    * `enabled=false`; an empty `command` would make git fail the call it hooks.
    */
   const sessionRepo = (dir: string) =>
@@ -450,14 +455,14 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
           : [`${name}.enabled=false`]
         ).flatMap((setting) => ["-c", setting]),
       );
-      const options = (given: Parameters<typeof git>[2] = {}): Parameters<typeof git>[2] => ({
+      const options = (given: GitOptions = {}): GitOptions => ({
         ...given,
         pre: [...pins, ...(given.pre ?? [])],
         env: { GIT_ALLOW_PROTOCOL: "file", ...given.env },
       });
       return {
-        git: (args: ReadonlyArray<string>, given?: Parameters<typeof git>[2]) => git(dir, args, options(given)),
-        gitOk: (args: ReadonlyArray<string>, given?: Parameters<typeof git>[2]) => gitOk(dir, args, options(given)),
+        git: (args: ReadonlyArray<string>, given?: GitOptions) => git(dir, args, options(given)),
+        gitOk: (args: ReadonlyArray<string>, given?: GitOptions) => gitOk(dir, args, options(given)),
       };
     });
 
@@ -714,12 +719,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   const worktreeCheckout = Effect.fn("ParadevSessions.worktreeCheckout")(function* (path: string) {
     if (!(yield* fs.exists(`${path}/.git`))) return null;
-    const repo = yield* sessionRepo(path);
-    const head = yield* repo.gitOk(["rev-parse", "--verify", "HEAD^{commit}"]);
+    const head = yield* gitOk(path, ["rev-parse", "--verify", "HEAD^{commit}"]);
     if (!isCommitId(head)) {
       return yield* fail(`HEAD is not a commit id: ${head}`);
     }
-    const branch = yield* repo.git(["symbolic-ref", "-q", "--short", "HEAD"]);
+    const branch = yield* git(path, ["symbolic-ref", "-q", "--short", "HEAD"]);
     if (branch.timedOut || (branch.exitCode !== 0 && branch.exitCode !== 1)) {
       return yield* fail(`git symbolic-ref exited ${branch.exitCode}`);
     }

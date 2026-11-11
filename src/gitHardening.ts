@@ -1,7 +1,8 @@
 /**
  * What every factory git call runs with in a repository a session can write to: no system or
- * global config, hooks directory, fsmonitor, eol conversion, `ext` transport or automatic
- * maintenance. Config-defined hooks (`hook.<name>.*`) and filter drivers are named by the
+ * global config, hooks directory, fsmonitor, eol conversion or `ext` transport. Automatic
+ * maintenance is not pinned here: a caller in a repository a session can write passes
+ * `--no-auto-maintenance` to the commands that start it. Config-defined hooks (`hook.<name>.*`) and filter drivers are named by the
  * repository's own config, so a caller that cannot trust it blanks them one by one.
  */
 export const HARDENED_GIT_CONFIG: ReadonlyArray<string> = [
@@ -15,10 +16,6 @@ export const HARDENED_GIT_CONFIG: ReadonlyArray<string> = [
   "protocol.ext.allow=never",
   // Fetch-pack runs this to list an alternate's refs; empty turns it off.
   "core.alternateRefsCommand=",
-  // Fetch, commit and others start `gc --auto` or `maintenance run --auto` on exit; both read
-  // `gc.recentObjectsHook` from the config.
-  "maintenance.auto=false",
-  "gc.auto=0",
 ];
 
 /** The environment of a hardened git call; `-c` flags cannot turn the system and global config off. */
