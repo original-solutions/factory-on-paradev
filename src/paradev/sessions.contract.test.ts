@@ -466,6 +466,69 @@ describe("launch", () => {
     }),
   );
 
+  it.live("a transient failure of a step is retried once after 2 s, and Workspace not found is not retried", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const flaky = launchScript(r).flatMap((step): ReadonlyArray<Step> =>
+        step.fixture === "ws-get-local-x8" ? [{ argv: step.argv, fail: "Could not connect to API" }, step] : [step],
+      );
+      const t = rig(flaky, { config: { remoteBase: r.remoteBase } });
+      yield* t.run((s) => s.launch(request()));
+      assert.strictEqual(t.calls.filter(argvIs("workspaces", "get")).length, 2);
+      assert.deepStrictEqual(t.unused(), []);
+
+      const r2 = repos();
+      r2.addWorktree("fac/x8", "main");
+      const gone = launchScript(r2).map((step): Step =>
+        step.fixture === "ws-get-local-x8" ? { argv: step.argv, fail: `Workspace not found on host ${X8_WS}` } : step,
+      );
+      const t2 = rig(gone, { config: { remoteBase: r2.remoteBase } });
+      const error = yield* Effect.flip(t2.run((s) => s.launch(request())));
+      assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.strictEqual(t2.calls.filter(argvIs("workspaces", "get")).length, 1);
+    }),
+  );
+
+  it.live("agents create that cannot connect is not retried, and the record keeps no terminal", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const script = launchScript(r).map((step): Step =>
+        step.fixture === "agents-create-local-resume" ? { argv: step.argv, fail: "Could not connect to API" } : step,
+      );
+      const t = rig(script, { config: { remoteBase: r.remoteBase } });
+      const error = yield* Effect.flip(t.run((s) => s.launch(request())));
+      assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.strictEqual(t.calls.filter(argvIs("agents", "create")).length, 1);
+      const saved = yield* readThread(t.data, X8_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.deepStrictEqual(saved!.terminals, []);
+    }),
+  );
+
+  it.live("a project id that is not plain stops the launch before any git call", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      const t = rig(
+        [
+          {
+            argv: ["projects", "list", "--local"],
+            fixture: "projects-list-local",
+            edit: (answer) =>
+              (answer as ReadonlyArray<{ readonly id: string }>).map((p) =>
+                p.id === SPIKE_PROJECT ? { ...p, id: "../x", path: r.clone } : p,
+              ),
+          },
+        ],
+        { config: { remoteBase: r.remoteBase } },
+      );
+      const error = yield* Effect.flip(t.run((s) => s.launch(request({ projectId: "../x" }))));
+      assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.deepStrictEqual(t.calls, [["projects", "list", "--local"]]);
+      assert.deepStrictEqual(t.gitCalls, []);
+    }),
+  );
+
   it.live("a launch that died before its launch file adopts the agent it finds instead of starting one", () =>
     Effect.gen(function* () {
       const r = repos();
@@ -485,7 +548,7 @@ describe("launch", () => {
       const launched = yield* t.run((s) => s.launch(request()));
       assert.strictEqual(launched.threadId, `local:${L1_WS}`);
       assert.isUndefined(t.calls.find(argvIs("agents", "create")));
-      // Found before the base check: its work was not reset away.
+      // A worktree holding a commit is kept: its work was not reset away.
       assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), work);
       const saved = yield* readThread(t.data, L1_WS).pipe(Effect.provide(NodeServices.layer));
       assert.deepStrictEqual(saved!.terminals, [L5_DEAD]);
@@ -534,11 +597,13 @@ describe("launch", () => {
 
   it.live("the base check keeps a worktree with work in it, and the launch stops when no agent is there", () =>
     Effect.gen(function* () {
-      for (const leave of ["commit", "edit"] as const) {
+      for (const leave of ["commit", "edit", "untracked"] as const) {
         const r = repos();
         r.addWorktree("fac/x8", "main");
         const work = leave === "commit" ? commit(r.worktree, "work.txt") : r.main;
         if (leave === "edit") NodeFS.writeFileSync(NodePath.join(r.worktree, "a.txt"), "edited");
+        // The base adds b.txt, so a reset would write over this file.
+        if (leave === "untracked") NodeFS.writeFileSync(NodePath.join(r.worktree, "b.txt"), "mine");
         const t = rig(launchScript(r).filter((step) => step.fixture !== "agents-create-local-resume"), {
           config: { remoteBase: r.remoteBase },
         });
@@ -546,6 +611,7 @@ describe("launch", () => {
         assert.strictEqual(error._tag, "FactorySessionsError", leave);
         assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), work, leave);
         if (leave === "edit") assert.strictEqual(NodeFS.readFileSync(NodePath.join(r.worktree, "a.txt"), "utf8"), "edited");
+        if (leave === "untracked") assert.strictEqual(NodeFS.readFileSync(NodePath.join(r.worktree, "b.txt"), "utf8"), "mine");
         assert.isUndefined(t.calls.find(argvIs("agents", "create")), leave);
       }
     }),
@@ -577,14 +643,22 @@ describe("launch", () => {
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/x8", "main");
+      const token = process.env.GH_TOKEN;
+      process.env.GH_TOKEN = "test-token";
       const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase, ghConfigDir: "/factory/gh" } });
-      yield* t.run((s) => s.launch(request({ baseRef: "x8-origin-only" })));
+      try {
+        yield* t.run((s) => s.launch(request({ baseRef: "x8-origin-only" })));
+      } finally {
+        if (token === undefined) delete process.env.GH_TOKEN;
+        else process.env.GH_TOKEN = token;
+      }
       const helper = "credential.helper=!gh auth git-credential";
       const credentialed = t.gitCalls.filter((c) => c.args.includes(helper) || "GH_CONFIG_DIR" in c.env);
       assert.strictEqual(credentialed.length, 1);
       const [fetch] = credentialed;
       assert.isTrue(fetch!.args.includes(helper));
       assert.strictEqual(fetch!.env.GH_CONFIG_DIR, "/factory/gh");
+      assert.strictEqual(fetch!.env.GH_TOKEN, "test-token");
       assert.include(fetch!.args, `${r.remoteBase}/original-solutions/factory-paradev-spike.git`);
       const dir = fetch!.args[fetch!.args.indexOf("-C") + 1]!;
       assert.isTrue(dir.startsWith(NodePath.join(t.data, "paradev")), dir);
@@ -592,6 +666,7 @@ describe("launch", () => {
       for (const call of t.gitCalls.filter((c) => c !== fetch)) {
         assert.notInclude(call.args, helper);
         assert.notProperty(call.env, "GH_TOKEN");
+        assert.notProperty(call.env, "GH_CONFIG_DIR");
       }
     }),
   );
@@ -628,6 +703,7 @@ describe("launch", () => {
       assert.deepStrictEqual(launched, { threadId: `local:${L1_WS}`, worktreePath: record().worktreePath, branch: "fac/1-1" });
       assert.deepStrictEqual(t.unused(), []);
       assert.strictEqual(t.calls.length, 2);
+      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
       assert.strictEqual(
         yield* readLaunch(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)),
         `local:${L1_WS}`,
@@ -936,7 +1012,7 @@ describe("status of a dead agent (the liveness check)", () => {
           explainAt("agents-explain-local-killed", L5_WS, L5_DEAD),
           { argv: argvIs("agents", "read"), fixture: "agents-read-local-killed" },
         ],
-        { agentRunning },
+        { agentRunning, config: { agentCommand: "claude-bin" } },
       );
       const worktreePath = "/Users/me/.paradev/worktrees/factory-paradev-spike/fac/2-1";
       yield* seed(t.data, record({ threadId: `local:${L5_WS}`, workspaceId: L5_WS, worktreePath, terminals: [L5_DEAD] }));
@@ -949,7 +1025,7 @@ describe("status of a dead agent (the liveness check)", () => {
     Effect.gen(function* () {
       const { status, lookups, worktreePath } = yield* dead(false);
       assert.strictEqual(status.run, "interrupted");
-      assert.deepStrictEqual(lookups, [["claude", worktreePath]]);
+      assert.deepStrictEqual(lookups, [["claude-bin", worktreePath]]);
     }),
   );
 
