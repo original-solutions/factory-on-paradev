@@ -1,0 +1,276 @@
+import * as Context from "effect/Context";
+import type * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+
+/**
+ * The temporary `t3/<hex>` or `t3code/<hex>` branch T3 makes a worktree on: a local copy of
+ * `isTemporaryWorktreeBranch` from `@t3tools/shared/git`, for `isLaunchBranch`.
+ */
+const TEMP_WORKTREE_HEX_TOKEN = "[0-9a-f]{8}";
+const TEMP_WORKTREE_UUID_V4_TOKEN =
+  "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+const TEMP_WORKTREE_BRANCH_PATTERN = new RegExp(
+  `^(?:t3[-/]${TEMP_WORKTREE_HEX_TOKEN}|t3code(?:[-/]${TEMP_WORKTREE_HEX_TOKEN}|\\/${TEMP_WORKTREE_UUID_V4_TOKEN}))$`,
+);
+const isTemporaryWorktreeBranch = (refName: string): boolean =>
+  TEMP_WORKTREE_BRANCH_PATTERN.test(refName.trim().toLowerCase());
+
+/**
+ * Agent sessions as the factory sees them: softfac's `Sessions` trait
+ * (`src/t3.rs`) over T3's services, called in-process instead of over the
+ * wire. Everything above this file uses these types, never T3's.
+ */
+
+/** Where a run is in its life, as T3 Code names it. */
+export const RUN_STATUSES = [
+  "preparing",
+  "queued",
+  "starting",
+  "running",
+  "waiting",
+  "completed",
+  "interrupted",
+  "failed",
+  "cancelled",
+  "rolled_back",
+] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+/** The model a thread runs on, as T3 Code names it. */
+export interface Model {
+  /** The configured provider instance, e.g. `claudeAgent`. */
+  readonly instanceId: string;
+  /** The model id, e.g. `claude-sonnet-5-5`. */
+  readonly model: string;
+  /** The provider options the selection carries (a reasoning effort, say), when it has any. */
+  readonly options?: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }>;
+}
+
+/** The T3 project of a watched repo, as `findProject` answers it. */
+export interface FactoryProject {
+  readonly id: string;
+  /**
+   * The model a session on this project runs on: the project's default model, else the default
+   * in T3's settings, the same choice a person gets in a new thread on the project. Null when
+   * neither names one; the factory then launches nothing.
+   */
+  readonly model: Model | null;
+}
+
+/** Everything `launch` needs. */
+export interface LaunchRequest {
+  /**
+   * Names this command. Sent again after a failure, the same id lets T3 tell a
+   * retry from a new launch, so callers derive it from what they are launching
+   * (issue and attempt).
+   */
+  readonly commandId: string;
+  /** A T3 project id, from `findProject`. */
+  readonly projectId: string;
+  readonly title: string;
+  /** The ref the thread's worktree starts from. */
+  readonly baseRef: string;
+  /**
+   * Fetch `origin` first and start from `baseRef`'s tip there, not from the
+   * clone's local ref: for a resume from a branch an earlier session pushed.
+   */
+  readonly startFromOrigin: boolean;
+  /** The first message, which starts the first run. */
+  readonly message: string;
+  readonly model: Model;
+  /**
+   * The pull request the thread continues, linked to the thread at launch. Absent for a plain
+   * start and for a resume from an earlier run that left no pull request.
+   */
+  readonly pullRequestUrl?: string;
+}
+
+/** What a worktree has checked out (`worktreeCheckout`). */
+export interface Checkout {
+  readonly head: string;
+  readonly branch: string | null;
+}
+
+/** What `launch` returns. */
+export interface Launched {
+  readonly threadId: string;
+  /** `null` until T3 Code has prepared the worktree. */
+  readonly worktreePath: string | null;
+  /** `null` until T3 Code has prepared the worktree. */
+  readonly branch: string | null;
+}
+
+/** Where a thread works and whether it is archived. */
+export interface Thread {
+  /** `null` until T3 Code has prepared the worktree. */
+  readonly worktreePath: string | null;
+  /** `null` until T3 Code has prepared the worktree. */
+  readonly branch: string | null;
+  readonly archived: boolean;
+}
+
+/** What `status` reports about a thread. */
+export interface ThreadStatus extends Thread {
+  /**
+   * The run with the highest ordinal, if the thread has any run yet. A
+   * cancelled run that never started is left out, unless every run is one.
+   */
+  readonly run: RunStatus | null;
+  /** The `ordinal` of that same run; `null` when the thread has no run. */
+  readonly runOrdinal: number | null;
+  /**
+   * When that same run began, as epoch milliseconds: its start, else when it was requested if it
+   * was cancelled; `null` when it never began, or the thread has no run.
+   */
+  readonly runStartedAt: number | null;
+  /** When that same run ended, as epoch milliseconds; `null` while it runs, or when the thread has no run. */
+  readonly runCompletedAt: number | null;
+  /** The text of the last assistant message of that same run; `null` when the run has none. */
+  readonly lastAssistantMessage: string | null;
+}
+
+/**
+ * Whether `branch` is the temporary `t3/<hex>` branch T3 made the worktree at `worktreePath`
+ * on. T3 can rename the thread's branch after launch while the session pushes the one it
+ * started on. T3 names the folder after that branch (`/` written `-`), and its record of the
+ * folder cannot be changed by the session, unlike the checked-out branch.
+ */
+export const isLaunchBranch = (branch: string, worktreePath: string | null): boolean =>
+  worktreePath !== null &&
+  isTemporaryWorktreeBranch(branch) &&
+  branch.replaceAll("/", "-") === worktreePath.split(/[\\/]/).pop();
+
+/**
+ * The temporary `t3/<hex>` branch T3 made the worktree at `worktreePath` on, read back from the
+ * folder name (the inverse of `isLaunchBranch`); null when the folder is not named after one.
+ */
+export const launchBranchOf = (worktreePath: string | null): string | null => {
+  const folder = worktreePath?.split(/[\\/]/).pop();
+  if (folder === undefined) return null;
+  const branch = folder.replace(/^t3-/, "t3/");
+  return isLaunchBranch(branch, worktreePath) ? branch : null;
+};
+
+export class ThreadNotFoundError extends Schema.TaggedError<ThreadNotFoundError>()(
+  "FactoryThreadNotFoundError",
+  { threadId: Schema.String },
+) {
+  override get message(): string {
+    return `T3 does not know thread ${this.threadId}.`;
+  }
+}
+
+/**
+ * T3 refused the message. It keeps that answer for the command id, so sending
+ * the same id again fails the same way; only a new id sends the message again.
+ */
+export class MessageRejectedError extends Schema.TaggedError<MessageRejectedError>()(
+  "FactoryMessageRejectedError",
+  { threadId: Schema.String, commandId: Schema.String, cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return `T3 refused message ${this.commandId} to thread ${this.threadId}.`;
+  }
+}
+
+export class SessionsError extends Schema.TaggedError<SessionsError>()("FactorySessionsError", {
+  operation: Schema.Literals([
+    "find-project",
+    "launch",
+    "status",
+    "thread",
+    "send",
+    "archive",
+    "remove-worktree",
+    "worktree-head",
+    "broken-worktrees",
+    "running-threads",
+    "live-branches",
+    "worktrees-directory",
+    "last-activity",
+  ]),
+  cause: Schema.Defect(),
+}) {
+  override get message(): string {
+    return `Factory sessions ${this.operation} failed.`;
+  }
+}
+
+export class FactorySessions extends Context.Service<
+  FactorySessions,
+  {
+    /** The live T3 project whose workspace root is exactly `workspaceRoot`, with its model. */
+    readonly findProject: (
+      workspaceRoot: string,
+    ) => Effect.Effect<FactoryProject | null, SessionsError>;
+    /**
+     * Starts a thread in its own worktree and runs `message` in it. The
+     * worktree is prepared asynchronously, so the answer may not carry a
+     * branch or path yet; `status` will. The same `commandId` again is the
+     * same launch: T3 answers with the thread it made and starts nothing.
+     */
+    readonly launch: (request: LaunchRequest) => Effect.Effect<Launched, SessionsError>;
+    /** The status of the thread's run, the last assistant message and where the thread works. */
+    readonly status: (
+      threadId: string,
+    ) => Effect.Effect<ThreadStatus, ThreadNotFoundError | SessionsError>;
+    /**
+     * Where the thread works and whether it is archived. Only the thread's own
+     * fields are read, so this answers for a thread whose runs or messages
+     * `status` cannot read: the stop path uses it, so a session can always be
+     * stopped.
+     */
+    readonly thread: (
+      threadId: string,
+    ) => Effect.Effect<Thread, ThreadNotFoundError | SessionsError>;
+    /**
+     * Sends a follow-up message into the thread; T3 decides delivery (start, steer or queue).
+     * `commandId` names it like a launch's: resent after a failure, T3 keeps one message, and a
+     * refused one stays refused under its id (`MessageRejectedError`). With `model`, the run it
+     * starts, and the thread from then on, run on that model.
+     */
+    readonly send: (
+      threadId: string,
+      commandId: string,
+      text: string,
+      model?: Model,
+    ) => Effect.Effect<void, ThreadNotFoundError | MessageRejectedError | SessionsError>;
+    /**
+     * Archives the thread, which stops its active run. Succeeds when the
+     * thread ends archived or gone: one that already was archived, and one T3
+     * does not know, change nothing. T3 does not make archiving idempotent, so
+     * every attempt sends a command id of its own.
+     */
+    readonly archive: (threadId: string) => Effect.Effect<void, SessionsError>;
+    /**
+     * Removes a thread's worktree with git and keeps its branch. Live threads still on it (a
+     * subagent sharing the checkout) are archived first, failing as `archive` before git runs; a
+     * later failure is `remove-worktree`. A worktree already gone is removed; `path` is absolute.
+     * A folder git just unlisted is emptied over about 10 s; any other leftover fails for a person.
+     */
+    readonly removeWorktree: (path: string) => Effect.Effect<void, SessionsError>;
+    /**
+     * What the worktree at absolute `path` has checked out: its HEAD commit, and the branch HEAD
+     * is on (null when detached). Null when `path` has no `.git`: no worktree is there. A read that
+     * fails, or a HEAD that is not a full commit id, is `worktree-head`.
+     */
+    readonly worktreeCheckout: (path: string) => Effect.Effect<Checkout | null, SessionsError>;
+    /**
+     * How many unarchived threads, a person's or the factory's, have an agent at work: a run
+     * preparing, starting or running. A run waiting on a person does not count.
+     */
+    readonly runningThreads: Effect.Effect<number, SessionsError>;
+    /**
+     * When the thread's agent last did anything (a message, reasoning, tool call or subagent), as
+     * epoch milliseconds; null when it has done nothing. What is sent into the thread is not counted.
+     */
+    readonly lastActivity: (threadId: string) => Effect.Effect<number | null, SessionsError>;
+    /**
+     * The folder T3 makes a new thread's worktree under now: the one Settings → Storage names,
+     * else `defaultDir`. Null for a setting T3 cannot make a worktree under.
+     */
+    readonly worktreesDirectory: (
+      defaultDir: string,
+    ) => Effect.Effect<string | null, SessionsError>;
+  }
+>()("factory-runner/sessions/FactorySessions") {}
