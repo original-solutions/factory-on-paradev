@@ -357,6 +357,21 @@ describe("launch", () => {
     }),
   );
 
+  it.live("the base check's status and reset do not recurse into submodules or take optional locks", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase } });
+      yield* t.run((s) => s.launch(request({ baseRef: "x8-origin-only" })));
+      const status = t.gitCalls.find((c) => c.args.includes("status"))!;
+      assert.include(status.args, "--ignore-submodules=all");
+      assert.include(status.args, "--no-optional-locks");
+      const reset = t.gitCalls.find((c) => c.args.includes("reset"))!;
+      assert.include(reset.args, "--no-recurse-submodules");
+      assert.isTrue(reset.args.some((arg, i) => arg === "-c" && reset.args[i + 1] === "submodule.recurse=false"));
+    }),
+  );
+
   it.live("starts from the fetched base even when the clone's own branch is behind", () =>
     Effect.gen(function* () {
       const r = repos();
