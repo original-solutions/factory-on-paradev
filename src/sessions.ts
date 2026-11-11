@@ -3,19 +3,6 @@ import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 /**
- * The temporary `t3/<hex>` or `t3code/<hex>` branch T3 makes a worktree on: a local copy of
- * `isTemporaryWorktreeBranch` from `@t3tools/shared/git`, for `isLaunchBranch`.
- */
-const TEMP_WORKTREE_HEX_TOKEN = "[0-9a-f]{8}";
-const TEMP_WORKTREE_UUID_V4_TOKEN =
-  "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-const TEMP_WORKTREE_BRANCH_PATTERN = new RegExp(
-  `^(?:t3[-/]${TEMP_WORKTREE_HEX_TOKEN}|t3code(?:[-/]${TEMP_WORKTREE_HEX_TOKEN}|\\/${TEMP_WORKTREE_UUID_V4_TOKEN}))$`,
-);
-const isTemporaryWorktreeBranch = (refName: string): boolean =>
-  TEMP_WORKTREE_BRANCH_PATTERN.test(refName.trim().toLowerCase());
-
-/**
  * Agent sessions as the factory sees them: softfac's `Sessions` trait
  * (`src/t3.rs`) over T3's services, called in-process instead of over the
  * wire. Everything above this file uses these types, never T3's.
@@ -129,27 +116,8 @@ export interface ThreadStatus extends Thread {
   readonly lastAssistantMessage: string | null;
 }
 
-/**
- * Whether `branch` is the temporary `t3/<hex>` branch T3 made the worktree at `worktreePath`
- * on. T3 can rename the thread's branch after launch while the session pushes the one it
- * started on. T3 names the folder after that branch (`/` written `-`), and its record of the
- * folder cannot be changed by the session, unlike the checked-out branch.
- */
-export const isLaunchBranch = (branch: string, worktreePath: string | null): boolean =>
-  worktreePath !== null &&
-  isTemporaryWorktreeBranch(branch) &&
-  branch.replaceAll("/", "-") === worktreePath.split(/[\\/]/).pop();
-
-/**
- * The temporary `t3/<hex>` branch T3 made the worktree at `worktreePath` on, read back from the
- * folder name (the inverse of `isLaunchBranch`); null when the folder is not named after one.
- */
-export const launchBranchOf = (worktreePath: string | null): string | null => {
-  const folder = worktreePath?.split(/[\\/]/).pop();
-  if (folder === undefined) return null;
-  const branch = folder.replace(/^t3-/, "t3/");
-  return isLaunchBranch(branch, worktreePath) ? branch : null;
-};
+/** Launch branch names live with the Paradev adapter, which makes them. */
+export { isLaunchBranch, launchBranchOf } from "./paradev/branches.ts";
 
 export class ThreadNotFoundError extends Schema.TaggedError<ThreadNotFoundError>()(
   "FactoryThreadNotFoundError",

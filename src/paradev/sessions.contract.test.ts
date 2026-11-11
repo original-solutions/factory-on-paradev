@@ -15,7 +15,7 @@ import { layer as processLayer } from "../process.ts";
 import { ThreadNotFoundError, type LaunchRequest } from "../sessions.ts";
 import { layer as cliLayer } from "./cli.ts";
 import { fakeSuperset, readFixture, type Step } from "./fake-superset.ts";
-import { AgentProcess, make, type ParadevSessions } from "./sessions.ts";
+import { AgentProcess, agentProcessLayer, make, type ParadevSessions } from "./sessions.ts";
 import { readLaunch, readThread, type ThreadRecord, writeLaunch, writeThread } from "./state.ts";
 
 const tempDir = useTempDirs();
@@ -209,6 +209,7 @@ describe("launch", () => {
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/x8", "main");
+      const before = reflog(r.worktree);
       const t = rig([
         ...launchScript(r),
         { argv: argvIs("agents", "explain"), fixture: "agents-explain-local-starting" },
@@ -230,7 +231,7 @@ describe("launch", () => {
       ]);
       // The worktree was already at main: the base check reset nothing.
       assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.main);
-      assert.notInclude(reflog(r.worktree), "reset:");
+      assert.strictEqual(reflog(r.worktree), before);
 
       const saved = yield* readThread(t.data, X8_WS).pipe(Effect.provide(NodeServices.layer));
       assert.deepInclude(saved, {
@@ -311,13 +312,12 @@ describe("launch", () => {
   it.live("without startFromOrigin the base check compares with the local ref", () =>
     Effect.gen(function* () {
       const r = repos();
-      git(r.clone, "branch", "local-base", "main");
       git(r.clone, "fetch", "-q", "origin", "x8-origin-only");
       r.addWorktree("fac/x8", "origin/x8-origin-only");
       const t = rig(launchScript(r));
-      yield* t.run((s) => s.launch(request({ baseRef: "local-base", startFromOrigin: false })));
+      yield* t.run((s) => s.launch(request({ baseRef: "main", startFromOrigin: false })));
       assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.main);
-      assert.include(reflog(r.worktree).split("\n")[0], "reset: moving to local-base");
+      assert.include(reflog(r.worktree).split("\n")[0], "reset: moving to main");
     }),
   );
 
@@ -699,5 +699,16 @@ describe("worktreeCheckout", () => {
       assert.deepStrictEqual(yield* t.run((s) => s.worktreeCheckout(r.worktree)), { head: r.main, branch: null });
       assert.isNull(yield* t.run((s) => s.worktreeCheckout(tempDir("empty"))));
     }),
+  );
+});
+
+describe("the real process lookup", () => {
+  it.live("answers null when no process has the name", () =>
+    Effect.gen(function* () {
+      const processes = yield* AgentProcess;
+      assert.isNull(yield* processes.find("fac-none-zq", process.cwd()));
+    }).pipe(
+      Effect.provide(agentProcessLayer.pipe(Layer.provide(Layer.mergeAll(processLayer, NodeServices.layer)))),
+    ),
   );
 });
