@@ -46,7 +46,10 @@ describe("thread records", () => {
     Effect.gen(function* () {
       const data = tempDir("state");
       yield* writeThread(data, record({ terminals: [] }));
+      const first = NodeFS.statSync(threadFile(data)).ino;
       yield* writeThread(data, record());
+      // A new file renamed over the old one, never the old one rewritten in place.
+      assert.notStrictEqual(NodeFS.statSync(threadFile(data)).ino, first);
       assert.deepStrictEqual(yield* readThread(data, WS), record());
       assert.deepStrictEqual(JSON.parse(NodeFS.readFileSync(threadFile(data), "utf8")), record());
       // The atomic write leaves no temp file or folder beside the record.

@@ -15,7 +15,13 @@ import { layer as processLayer } from "../process.ts";
 import { ThreadNotFoundError, type LaunchRequest } from "../sessions.ts";
 import { layer as cliLayer } from "./cli.ts";
 import { fakeSuperset, readFixture, type Step } from "./fake-superset.ts";
-import { AgentProcess, agentProcessLayer, make, type ParadevSessions } from "./sessions.ts";
+import {
+  AgentProcess,
+  agentProcessLayer,
+  make,
+  type ParadevSessions,
+  type ParadevSessionsConfig,
+} from "./sessions.ts";
 import { readLaunch, readThread, type ThreadRecord, writeLaunch, writeThread } from "./state.ts";
 
 const tempDir = useTempDirs();
@@ -50,12 +56,16 @@ const commit = (cwd: string, file: string): string => {
 
 /**
  * An origin with `main` at `main`, and `x8-origin-only` one commit on, pushed after the clone was
- * made, so the clone has never seen it (X8). `worktree` is where `workspaces get` will say the
- * workspace lives; the test makes it from the clone on `startAt`, as Paradev would.
+ * made, so the clone has never seen it (X8). The origin lives at `<remoteBase>/<owner>/<repo>.git`
+ * for the spike project's repo, so the adapter fetches it by URL as it fetches GitHub. `worktree`
+ * is where `workspaces get` will say the workspace lives; the test makes it from the clone on
+ * `startAt`, as Paradev would. `seed` pushes to the origin.
  */
 const repos = () => {
   const root = tempDir("repos");
-  const origin = NodePath.join(root, "origin.git");
+  const remote = NodePath.join(root, "remote");
+  const origin = NodePath.join(remote, "original-solutions", "factory-paradev-spike.git");
+  NodeFS.mkdirSync(NodePath.dirname(origin), { recursive: true });
   const seed = NodePath.join(root, "seed");
   const clone = NodePath.join(root, "clone");
   NodeChildProcess.execFileSync("git", ["init", "-q", "--bare", "-b", "main", origin]);
@@ -70,7 +80,7 @@ const repos = () => {
   const worktree = NodePath.join(root, "paradev", "worktrees", "factory-paradev-spike", "fac", "1-1");
   const addWorktree = (branch: string, startAt: string) =>
     git(clone, "worktree", "add", "-q", "-b", branch, worktree, startAt);
-  return { clone, main, originOnly, worktree, addWorktree };
+  return { clone, seed, main, originOnly, worktree, addWorktree, remoteBase: `file://${remote}` };
 };
 
 /** The reflog of the worktree's HEAD, newest first: a reset shows as `reset: moving to …`. */
@@ -78,7 +88,7 @@ const reflog = (worktree: string): string => git(worktree, "reflog", "--format=%
 
 // ---- the adapter over fake-superset ---------------------------------------------------------
 
-const CONFIG = { agent: "claude", agentCommand: "claude" } as const;
+const CONFIG: ParadevSessionsConfig = { agent: "claude", agentCommand: "claude" };
 
 const MODEL = {
   instanceId: "claude",
@@ -110,7 +120,10 @@ interface Rig {
   ) => Effect.Effect<A, E, never>;
 }
 
-const rig = (script: ReadonlyArray<Step>, options: { readonly agentRunning?: boolean } = {}): Rig => {
+const rig = (
+  script: ReadonlyArray<Step>,
+  options: { readonly agentRunning?: boolean; readonly config?: Partial<ParadevSessionsConfig> } = {},
+): Rig => {
   const fake = fakeSuperset(script);
   const data = tempDir("data");
   const lookups: Array<readonly [string, string]> = [];
@@ -142,7 +155,7 @@ const rig = (script: ReadonlyArray<Step>, options: { readonly agentRunning?: boo
     lookups,
     run: (body) =>
       Effect.gen(function* () {
-        return yield* body(yield* make(CONFIG));
+        return yield* body(yield* make({ ...CONFIG, ...options.config }));
       }).pipe(Effect.provide(layer)),
   };
 };
@@ -210,10 +223,10 @@ describe("launch", () => {
       const r = repos();
       r.addWorktree("fac/x8", "main");
       const before = reflog(r.worktree);
-      const t = rig([
-        ...launchScript(r),
-        { argv: argvIs("agents", "explain"), fixture: "agents-explain-local-starting" },
-      ]);
+      const t = rig(
+        [...launchScript(r), { argv: argvIs("agents", "explain"), fixture: "agents-explain-local-starting" }],
+        { config: { remoteBase: r.remoteBase } },
+      );
       const launched = yield* t.run((s) => s.launch(request()));
       assert.deepStrictEqual(launched, { threadId: `local:${X8_WS}`, worktreePath: r.worktree, branch: "fac/x8" });
 
@@ -263,9 +276,10 @@ describe("launch", () => {
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/x8", "main");
-      const t = rig(launchScript(r));
+      const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase } });
       yield* t.run((s) => s.launch(request({ baseRef: "x8-origin-only" })));
       assert.strictEqual(git(r.clone, "rev-parse", "origin/x8-origin-only"), r.originOnly);
+      assert.strictEqual(flag(t.calls.find(argvIs("workspaces", "create")), "--base-branch"), "x8-origin-only");
     }),
   );
 
@@ -273,7 +287,7 @@ describe("launch", () => {
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/x8", "main");
-      const t = rig(launchScript(r));
+      const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase } });
       yield* t.run((s) =>
         s.launch(request({ model: { instanceId: "claude", model: "", options: [{ id: "thinking", value: "on" }] } })),
       );
@@ -289,7 +303,7 @@ describe("launch", () => {
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/x8", "main");
-      const t = rig(launchScript(r));
+      const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase } });
       yield* t.run((s) => s.launch(request({ title: "t".repeat(200) })));
       assert.strictEqual(flag(t.calls.find(argvIs("workspaces", "create")), "--name"), "t".repeat(80));
     }),
@@ -300,8 +314,26 @@ describe("launch", () => {
       const r = repos();
       // X8: Paradev fell back to the project default, main, for a base the clone did not have.
       r.addWorktree("fac/x8", "main");
-      const t = rig(launchScript(r));
+      const seen: Array<string> = [];
+      // Probes: what git shows at the moment each CLI call is answered.
+      const probe = (what: string, read: () => string) => (answer: unknown) => {
+        seen.push(`${what} ${read()}`);
+        return answer;
+      };
+      const script = launchScript(r).map((step) =>
+        typeof step.argv === "function" && step.argv(["workspaces", "create"])
+          ? { ...step, edit: probe("create: clone has base", () => git(r.clone, "rev-parse", "origin/x8-origin-only")) }
+          : typeof step.argv === "function" && step.argv(["agents", "create"])
+            ? { ...step, edit: probe("agents create: worktree at", () => git(r.worktree, "rev-parse", "HEAD")) }
+            : step,
+      );
+      const t = rig(script, { config: { remoteBase: r.remoteBase } });
       yield* t.run((s) => s.launch(request({ baseRef: "x8-origin-only" })));
+      // The base was fetched before create, and the reset done before the agent started.
+      assert.deepStrictEqual(seen, [
+        `create: clone has base ${r.originOnly}`,
+        `agents create: worktree at ${r.originOnly}`,
+      ]);
       assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.originOnly);
       assert.include(reflog(r.worktree).split("\n")[0], "reset: moving to origin/x8-origin-only");
       assert.strictEqual(git(r.worktree, "symbolic-ref", "--short", "HEAD"), "fac/x8");
@@ -309,15 +341,59 @@ describe("launch", () => {
     }),
   );
 
-  it.live("without startFromOrigin the base check compares with the local ref", () =>
+  it.live("starts from the fetched base even when the clone's own branch is behind", () =>
     Effect.gen(function* () {
       const r = repos();
-      git(r.clone, "fetch", "-q", "origin", "x8-origin-only");
-      r.addWorktree("fac/x8", "origin/x8-origin-only");
-      const t = rig(launchScript(r));
+      // origin's main moves on after the clone was made; nothing moves the clone's local main.
+      git(r.seed, "checkout", "-q", "main");
+      const ahead = commit(r.seed, "c.txt");
+      git(r.seed, "push", "-q", "origin", "main");
+      // Paradev builds the worktree from the clone's local, stale main.
+      r.addWorktree("fac/x8", "main");
+      const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase } });
       yield* t.run((s) => s.launch(request({ baseRef: "main", startFromOrigin: false })));
-      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.main);
-      assert.include(reflog(r.worktree).split("\n")[0], "reset: moving to main");
+      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), ahead);
+    }),
+  );
+
+  it.live("fetches by URL and ignores remote, transport and filter config a session wrote in the clone", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const marks = tempDir("marks");
+      // A session can write the clone's config: every worktree of the project shares it.
+      git(r.clone, "config", "remote.origin.url", NodePath.join(marks, "nowhere.git"));
+      git(r.clone, "config", "remote.origin.uploadpack", `touch ${marks}/uploadpack; git-upload-pack`);
+      git(r.clone, "config", "filter.x.smudge", `sh -c 'touch ${marks}/smudge; cat'`);
+      git(r.clone, "config", "filter.x.process", `sh -c 'touch ${marks}/process'`);
+      NodeFS.writeFileSync(NodePath.join(r.clone, ".git", "info", "attributes"), "* filter=x\n");
+      const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase } });
+      yield* t.run((s) => s.launch(request({ baseRef: "x8-origin-only" })));
+      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.originOnly);
+      assert.strictEqual(NodeFS.readFileSync(NodePath.join(r.worktree, "b.txt"), "utf8"), "b.txt");
+      assert.deepStrictEqual(NodeFS.readdirSync(marks), []);
+    }),
+  );
+
+  it.live("refuses a project whose repo is not a GitHub URL, before it creates anything", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      const t = rig(
+        [
+          {
+            argv: ["projects", "list", "--local"],
+            fixture: "projects-list-local",
+            edit: (answer) =>
+              (answer as ReadonlyArray<{ readonly id: string }>).map((p) =>
+                p.id === SPIKE_PROJECT ? { ...p, path: r.clone, repo: "-" } : p,
+              ),
+          },
+        ],
+        { config: { remoteBase: r.remoteBase } },
+      );
+      const error = yield* Effect.flip(t.run((s) => s.launch(request())));
+      assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.deepStrictEqual(t.calls, [["projects", "list", "--local"]]);
     }),
   );
 
@@ -325,7 +401,7 @@ describe("launch", () => {
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/x8", "main");
-      const t = rig(launchScript(r));
+      const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase } });
       const first = yield* t.run((s) => s.launch(request()));
       const calls = t.calls.length;
       const second = yield* t.run((s) => s.launch(request()));
@@ -338,20 +414,68 @@ describe("launch", () => {
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/1-1", "main");
-      const t = rig([
-        { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
-        // X7: create on a branch that already has a workspace answers it with alreadyExists.
-        { argv: argvIs("workspaces", "create"), fixture: "ws-create-local-repeat" },
-        { argv: ["workspaces", "get", L1_WS, "--local"], fixture: "ws-get-local", edit: withPath(r.worktree) },
-        { argv: ["snapshot", "--workspace", L1_WS], fixture: "snapshot-local-before-kill", edit: snapshotOf(L1_WS) },
-      ]);
+      // The agent the lost attempt started has already committed on its branch.
+      const work = commit(r.worktree, "agent.txt");
+      const t = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          // X7: create on a branch that already has a workspace answers it with alreadyExists.
+          { argv: argvIs("workspaces", "create"), fixture: "ws-create-local-repeat" },
+          { argv: ["workspaces", "get", L1_WS, "--local"], fixture: "ws-get-local", edit: withPath(r.worktree) },
+          { argv: ["snapshot", "--workspace", L1_WS], fixture: "snapshot-local-before-kill", edit: snapshotOf(L1_WS) },
+        ],
+        { config: { remoteBase: r.remoteBase } },
+      );
       const launched = yield* t.run((s) => s.launch(request()));
       assert.strictEqual(launched.threadId, `local:${L1_WS}`);
       assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+      // Found before the base check: its work was not reset away.
+      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), work);
       const saved = yield* readThread(t.data, L1_WS).pipe(Effect.provide(NodeServices.layer));
       assert.deepStrictEqual(saved!.terminals, [L5_DEAD]);
       assert.deepStrictEqual(saved!.turns.map((turn) => turn.kind), ["launch"]);
       assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("adopts a terminal whose agent has not sent its first hook yet", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      // Before its first hook a starting agent's terminal shows no agent (X1, explain says none).
+      const script = launchScript(r).map((step) =>
+        step.fixture === "snapshot-local-before-kill"
+          ? { ...step, edit: snapshotOf(X8_WS, [{ id: "t-starting", title: "", agent: null }]) }
+          : step,
+      ).filter((step) => step.fixture !== "agents-create-local-resume");
+      const t = rig(script, { config: { remoteBase: r.remoteBase } });
+      yield* t.run((s) => s.launch(request({ baseRef: "x8-origin-only" })));
+      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.main);
+      const saved = yield* readThread(t.data, X8_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.deepStrictEqual(saved!.terminals, ["t-starting"]);
+    }),
+  );
+
+  it.live("a lost launch file with its thread record whole starts nothing and is written again", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      const t = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: argvIs("workspaces", "create"), fixture: "ws-create-local-repeat" },
+        ],
+        { config: { remoteBase: r.remoteBase } },
+      );
+      yield* seed(t.data, record());
+      const launched = yield* t.run((s) => s.launch(request()));
+      assert.deepStrictEqual(launched, { threadId: `local:${L1_WS}`, worktreePath: record().worktreePath, branch: "fac/1-1" });
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.length, 2);
+      assert.strictEqual(
+        yield* readLaunch(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)),
+        `local:${L1_WS}`,
+      );
     }),
   );
 });
@@ -380,17 +504,20 @@ describe("launch after a crash between the launch file and the agent's start", (
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/2-1", "main");
-      const t = rig([
-        { argv: ["snapshot", "--workspace", L5_WS], fixture: "snapshot-local-before-kill", edit: snapshotOf(L5_WS, []) },
-        { argv: ["workspaces", "get", L5_WS, "--local"], fixture: "ws-get-local-x8", edit: withPath(r.worktree) },
-        { argv: ["snapshot", "--workspace", L5_WS], fixture: "snapshot-local-before-kill", edit: snapshotOf(L5_WS, []) },
-        { argv: argvIs("agents", "create", "--local", "--workspace", L5_WS), fixture: "agents-create-local-resume" },
-      ]);
+      const t = rig(
+        [
+          { argv: ["snapshot", "--workspace", L5_WS], fixture: "snapshot-local-before-kill", edit: snapshotOf(L5_WS, []) },
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: ["workspaces", "get", L5_WS, "--local"], fixture: "ws-get-local-x8", edit: withPath(r.worktree) },
+          { argv: argvIs("agents", "create", "--local", "--workspace", L5_WS), fixture: "agents-create-local-resume" },
+        ],
+        { config: { remoteBase: r.remoteBase } },
+      );
       yield* crashed(t.data, null);
       yield* t.run((s) => s.launch(request({ baseRef: "x8-origin-only" })));
       assert.deepStrictEqual(
         t.calls.map((argv) => argv.slice(0, 2).join(" ")),
-        ["snapshot --workspace", "workspaces get", "snapshot --workspace", "agents create"],
+        ["snapshot --workspace", "projects list", "workspaces get", "agents create"],
       );
       // The base check ran on the resumed path too, against the base fetched now.
       assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.originOnly);
@@ -539,6 +666,88 @@ describe("status", () => {
   );
 });
 
+describe("status: the rest of the mapping table", () => {
+  const IDLE_AT = lastEventAt("agents-explain-local-idle");
+  /** `agents-explain-local-idle` with `state` and `lastEventType` set as given. */
+  const explained = (state: string, lastEventType: string | null): Step => ({
+    ...explainAt("agents-explain-local-idle"),
+    edit: (answer) => ({ ...(answer as object), state, lastEventType }),
+  });
+  const statusWith = (steps: ReadonlyArray<Step>) =>
+    Effect.gen(function* () {
+      const t = rig(steps);
+      yield* seed(t.data, record());
+      return yield* t.run((s) => s.status(`local:${L1_WS}`));
+    });
+  const read = { argv: argvIs("agents", "read"), fixture: "agents-read-local" } as const;
+
+  it.effect("starting is starting", () =>
+    Effect.gen(function* () {
+      assert.deepInclude(yield* statusWith([explained("starting", "Attached")]), { run: "starting", runCompletedAt: null });
+    }),
+  );
+
+  it.effect("blocked on a permission request is waiting", () =>
+    Effect.gen(function* () {
+      const status = yield* statusWith([explained("blocked", "PermissionRequest")]);
+      assert.deepInclude(status, { run: "waiting", runCompletedAt: null, lastAssistantMessage: null });
+    }),
+  );
+
+  it.effect("idle after Failed is failed at the last hook", () =>
+    Effect.gen(function* () {
+      const status = yield* statusWith([explained("idle", "Failed"), read]);
+      assert.deepInclude(status, { run: "failed", runCompletedAt: IDLE_AT });
+    }),
+  );
+
+  it.effect("exited is interrupted at the last hook", () =>
+    Effect.gen(function* () {
+      const status = yield* statusWith([explained("exited", "Stop"), read]);
+      assert.deepInclude(status, { run: "interrupted", runCompletedAt: IDLE_AT });
+    }),
+  );
+
+  it.effect("No agent is running in terminal is treated as exited", () =>
+    Effect.gen(function* () {
+      const status = yield* statusWith([
+        { argv: argvIs("agents", "explain"), fail: `No agent is running in terminal ${L1_TERM}` },
+        read,
+      ]);
+      assert.deepInclude(status, { run: "interrupted", runCompletedAt: null });
+    }),
+  );
+
+  it.effect("a state the table does not know is a SessionsError", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(statusWith([explained("dreaming", null)]));
+      assert.strictEqual(error._tag, "FactorySessionsError");
+    }),
+  );
+
+  it.effect("an ended run with no transcript has no last assistant message", () =>
+    Effect.gen(function* () {
+      const status = yield* statusWith([
+        explainAt("agents-explain-local-idle"),
+        { argv: argvIs("agents", "read"), fail: "No transcript for that terminal" },
+      ]);
+      assert.deepInclude(status, { run: "completed", lastAssistantMessage: null });
+    }),
+  );
+
+  it.effect("Workspace not found on the transcript read is ThreadNotFoundError", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        statusWith([
+          explainAt("agents-explain-local-idle"),
+          { argv: argvIs("agents", "read"), fixture: "agents-read-local-archived" },
+        ]),
+      );
+      assert.instanceOf(error, ThreadNotFoundError);
+    }),
+  );
+});
+
 describe("status of a dead agent (the liveness check)", () => {
   const dead = (agentRunning: boolean) =>
     Effect.gen(function* () {
@@ -682,8 +891,25 @@ describe("findProject", () => {
       ]);
       const project = yield* t.run((s) => s.findProject(`${root}/`));
       assert.strictEqual(project?.id, SPIKE_PROJECT);
-      assert.strictEqual(project?.model?.instanceId, "claude");
+      // No paradev.model or paradev.effort: the agent's defaults, so no --model and no --effort.
+      assert.deepStrictEqual(project?.model, { instanceId: "claude", model: "" });
       assert.isNull(yield* t.run((s) => s.findProject(root)));
+    }),
+  );
+
+  it.live("carries paradev.model and paradev.effort as the model launch passes on", () =>
+    Effect.gen(function* () {
+      const root = tempDir("project");
+      const t = rig(
+        [{ argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(root) }],
+        { config: { model: "opus", effort: "high" } },
+      );
+      const project = yield* t.run((s) => s.findProject(root));
+      assert.deepStrictEqual(project?.model, {
+        instanceId: "claude",
+        model: "opus",
+        options: [{ id: "effort", value: "high" }],
+      });
     }),
   );
 });
@@ -703,6 +929,25 @@ describe("worktreeCheckout", () => {
 });
 
 describe("the real process lookup", () => {
+  it.live("finds a process by name whose working directory is the folder, through a symlink", () =>
+    Effect.gen(function* () {
+      const dir = tempDir("cwd");
+      const link = NodePath.join(tempDir("link"), "wt");
+      NodeFS.symlinkSync(dir, link);
+      // An unusual duration marks this child as the test's own.
+      const child = NodeChildProcess.spawn("sleep", ["4207"], { cwd: dir, stdio: "ignore" });
+      try {
+        const processes = yield* AgentProcess;
+        assert.strictEqual(yield* processes.find("sleep", link), child.pid);
+        assert.isNull(yield* processes.find("sleep", tempDir("elsewhere")));
+      } finally {
+        child.kill("SIGKILL");
+      }
+    }).pipe(
+      Effect.provide(agentProcessLayer.pipe(Layer.provide(Layer.mergeAll(processLayer, NodeServices.layer)))),
+    ),
+  );
+
   it.live("answers null when no process has the name", () =>
     Effect.gen(function* () {
       const processes = yield* AgentProcess;

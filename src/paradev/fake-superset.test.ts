@@ -65,3 +65,13 @@ it.effect("a step's edit rewrites the fixture's answer", () =>
     assert.strictEqual(parsed.branch, "fac/1-1");
   }),
 );
+
+it.effect("a step's fail answers exit 1 with the CLI's Error line", () =>
+  Effect.gen(function* () {
+    const fake = fakeSuperset([{ argv: ["agents", "read"], fail: "No transcript for that terminal" }]);
+    const result = yield* ask(["agents", "read", "--json"]).pipe(Effect.provide(fake.layer));
+    assert.strictEqual(result.exitCode, 1);
+    assert.strictEqual(result.stderrTail, "Error: No transcript for that terminal\n");
+    assert.strictEqual(result.tail, "");
+  }),
+);
