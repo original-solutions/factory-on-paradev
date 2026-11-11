@@ -426,10 +426,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const head = yield* gitOk(worktreePath, ["rev-parse", "--verify", "HEAD^{commit}"]);
       if (head === base) return "at-base" as const;
       const blank = yield* blankFilters(worktreePath);
-      // No submodule recursion: a submodule's own config and filters are not blanked here.
+      // No status inside a submodule: its own config and filters are not blanked here. `dirty`
+      // still shows a changed submodule commit, which is work.
       const changed = yield* gitOk(
         worktreePath,
-        ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=all"],
+        ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=dirty"],
         { pre: ["--no-optional-locks", ...blank] },
       );
       // A commit only the checked-out branch has is work; one another branch has is not.
