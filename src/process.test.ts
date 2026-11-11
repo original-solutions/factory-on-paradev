@@ -235,6 +235,10 @@ it.live("keeps only the last tailBytes of a 1 MB output", () =>
     const dflt = yield* run({ command: COUNTER_SCRIPT, shell: true });
     assert.strictEqual(dflt.tail, expected.slice(-16384));
     assert.strictEqual(dflt.tail.length, 16384);
+
+    const whole = yield* run({ command: COUNTER_SCRIPT, shell: true, tailBytes: 64 << 20 });
+    assert.strictEqual(whole.tail, expected);
+    assert.isFalse(whole.truncated);
   }),
 );
 

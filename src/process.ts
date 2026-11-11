@@ -100,11 +100,13 @@ export interface RunResult {
 }
 
 /**
- * Keeps the end of a byte stream. Memory stays under about twice the cap:
- * the front is dropped down to the cap only once the buffer passes twice it.
+ * Keeps the end of a byte stream. Chunks are joined only to trim or finish, so a large cap costs
+ * one copy per doubling, not one per chunk. Memory stays under about twice the cap: the front is
+ * dropped down to the cap only once the kept bytes pass twice it.
  */
 class Tail {
-  private buf = Buffer.alloc(0);
+  private chunks: Array<Buffer> = [];
+  private length = 0;
   private dropped = false;
 
   private readonly cap: number;
@@ -114,29 +116,34 @@ class Tail {
   }
 
   push(chunk: Buffer): void {
-    this.buf = Buffer.concat([this.buf, chunk]);
-    if (this.buf.length > 2 * this.cap) this.trim();
+    this.chunks.push(chunk);
+    this.length += chunk.length;
+    if (this.length > 2 * this.cap) this.trim();
   }
 
   get truncated(): boolean {
-    return this.dropped || this.buf.length > this.cap;
+    return this.dropped || this.length > this.cap;
   }
 
   finish(): string {
-    this.trim();
+    const buf = this.trim();
     let start = 0;
     // A cut inside a character loses that character instead of becoming U+FFFD.
     if (this.dropped) {
-      while (start < this.buf.length && (this.buf[start]! & 0xc0) === 0x80) start++;
+      while (start < buf.length && (buf[start]! & 0xc0) === 0x80) start++;
     }
-    return new TextDecoder().decode(this.buf.subarray(start));
+    return new TextDecoder().decode(buf.subarray(start));
   }
 
-  private trim(): void {
-    if (this.buf.length > this.cap) {
-      this.buf = this.buf.subarray(this.buf.length - this.cap);
+  private trim(): Buffer {
+    let buf = Buffer.concat(this.chunks, this.length);
+    if (buf.length > this.cap) {
+      buf = buf.subarray(buf.length - this.cap);
       this.dropped = true;
     }
+    this.chunks = [buf];
+    this.length = buf.length;
+    return buf;
   }
 }
 
