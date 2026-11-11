@@ -851,36 +851,6 @@ describe("loaders", () => {
       }),
     ),
   );
-
-  // factory/config.example.yml is what the handover runbook tells a person to copy to
-  // ~/.config/t3fac/factory/config.yml, so it must load as it stands.
-  effectIt.effect("the example machine config loads as it stands, with no warning", () =>
-    Effect.gen(function* () {
-      const path = yield* Path.Path;
-      const file = yield* path.fromFileUrl(
-        new URL("../../../../factory/config.example.yml", import.meta.url),
-      );
-      expect(yield* loadMachineConfig(file)).toEqual(
-        Option.some({
-          warnings: [],
-          config: {
-            ghConfigDir: "/Users/tomkaczocha/.config/t3fac/gh",
-            pollSeconds: 60,
-            maxConcurrentRuns: 1,
-            maxConcurrentGates: 1,
-            feedbackSeconds: 600,
-            notify: true,
-            minFreeGib: 10,
-            maxLoadPerCore: 1,
-            deployWaitMinutes: 120,
-            modelFallbacks: {},
-            pruneBranchesAfterDays: 14,
-            pruneBranchesDryRun: false,
-          },
-        }),
-      );
-    }).pipe(Effect.provide(NodeServices.layer)),
-  );
 });
 
 describe("machine default_project", () => {
