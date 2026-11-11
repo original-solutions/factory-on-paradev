@@ -422,8 +422,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * `git` and `gitOk` for a repository a session can write (the clone, or a worktree of it), with
    * every filter driver and config hook its config names turned off, and only `file` transport. The
    * names come from one listing, taken here: they are what the calls of this operation run with.
-   * `-c` splits at the first `=`, so a name with anything outside `[A-Za-z0-9._-]` cannot be
-   * turned off that way: the call fails rather than run git where it would run. The listing must
+   * A name with anything outside `[A-Za-z0-9._-]` is refused: the call fails rather than run git
+   * where it would run. The listing must
    * be complete: a truncated one, or a failure other than "none configured" (exit 1), fails the
    * call too, since a name left out of it would not be turned off. A hook is turned off with
    * `enabled=false`; an empty `command` would make git fail the call it hooks.
@@ -449,16 +449,24 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
           return yield* fail(`${JSON.stringify(name)} in the repository's config cannot be turned off safely; nothing was run in it`);
         }
       }
-      const pins = [...names].flatMap((name) =>
-        (name.startsWith("filter.")
-          ? ["smudge=", "clean=", "process=", "required=false"].map((key) => `${name}.${key}`)
-          : [`${name}.enabled=false`]
-        ).flatMap((setting) => ["-c", setting]),
-      );
+      // In the environment, not as `-c` flags: git hands `-c` flags to every child it starts as one
+      // variable, and Linux refuses to start a child with a variable over 128 KiB.
+      const pins: Record<string, string> = {};
+      let count = 0;
+      for (const name of names) {
+        const settings: ReadonlyArray<readonly [string, string]> = name.startsWith("filter.")
+          ? [["smudge", ""], ["clean", ""], ["process", ""], ["required", "false"]]
+          : [["enabled", "false"]];
+        for (const [key, value] of settings) {
+          pins[`GIT_CONFIG_KEY_${count}`] = `${name}.${key}`;
+          pins[`GIT_CONFIG_VALUE_${count}`] = value;
+          count += 1;
+        }
+      }
+      pins.GIT_CONFIG_COUNT = String(count);
       const options = (given: GitOptions = {}): GitOptions => ({
         ...given,
-        pre: [...pins, ...(given.pre ?? [])],
-        env: { GIT_ALLOW_PROTOCOL: "file", ...given.env },
+        env: { GIT_ALLOW_PROTOCOL: "file", ...given.env, ...pins },
       });
       return {
         git: (args: ReadonlyArray<string>, given?: GitOptions) => git(dir, args, options(given)),

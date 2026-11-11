@@ -566,12 +566,12 @@ describe("launch", () => {
     );
   }
 
-  it.live("refuses a filter driver it cannot blank with -c, and touches the worktree not at all", () =>
+  it.live("refuses a filter driver whose name is not plain, and touches the worktree not at all", () =>
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/x8", "main");
       const marks = tempDir("marks");
-      // `-c filter.x=y.smudge=` would set the key `filter.x`, so the driver `x=y` would keep its smudge.
+      // A name outside `[A-Za-z0-9._-]` is refused rather than blanked.
       git(r.clone, "config", "filter.x=y.smudge", `sh -c 'touch ${marks}/smudge; cat'`);
       git(r.clone, "config", "filter.x=y.clean", `sh -c 'touch ${marks}/clean; cat'`);
       NodeFS.writeFileSync(NodePath.join(r.clone, ".git", "info", "attributes"), "* filter=x=y\n");
@@ -586,12 +586,12 @@ describe("launch", () => {
     }),
   );
 
-  it.live("refuses a config hook it cannot turn off with -c, and touches the worktree not at all", () =>
+  it.live("refuses a config hook whose name is not plain, and touches the worktree not at all", () =>
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/x8", "main");
       const marks = tempDir("marks");
-      // `-c hook.x=y.enabled=false` would set the key `hook.x`, so the hook `x=y` would keep running.
+      // A name outside `[A-Za-z0-9._-]` is refused rather than turned off.
       git(r.clone, "config", "hook.x=y.event", "reference-transaction");
       git(r.clone, "config", "hook.x=y.command", `touch ${marks}/hook`);
       const t = rig(launchScript(r).filter((step) => step.fixture !== "agents-create-local-resume"), {
