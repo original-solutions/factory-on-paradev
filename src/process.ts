@@ -56,6 +56,11 @@ export interface RunInput {
   readonly cwd?: string;
   /** Added after the inherited allowlist; may override an inherited name. */
   readonly env?: Readonly<Record<string, string>>;
+  /**
+   * Names copied from the server's environment in place of the default allowlist, with no
+   * `LC_*`. For a command that must see a narrower environment than a gate does.
+   */
+  readonly inheritEnv?: ReadonlyArray<string>;
   /** Default 30 minutes (softfac's gate default). */
   readonly timeoutMs?: number;
   /** Default 16 KiB. */
@@ -149,11 +154,17 @@ const buildChildPath = (launchPath: string | undefined, serverPath: string): str
   return entries.join(":");
 };
 
-const buildEnv = (extra: Readonly<Record<string, string>> | undefined): Record<string, string> => {
+const buildEnv = (
+  extra: Readonly<Record<string, string>> | undefined,
+  inherit: ReadonlyArray<string> | undefined,
+): Record<string, string> => {
+  const only = inherit === undefined ? null : new Set(inherit);
+  const inherited = (name: string): boolean =>
+    only === null ? INHERITED_ENV.has(name) || name.startsWith("LC_") : only.has(name);
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(globalThis.process.env)) {
     if (value === undefined) continue;
-    if (INHERITED_ENV.has(name) || name.startsWith("LC_")) env[name] = value;
+    if (inherited(name)) env[name] = value;
   }
   if (env.PATH !== undefined) {
     env.PATH = buildChildPath(globalThis.process.env.T3FAC_LAUNCH_PATH, env.PATH);
@@ -197,7 +208,7 @@ const run = Effect.fn("FactoryProcess.run")(function* (input: RunInput) {
     try: () => {
       const child = NodeChildProcess.spawn("/bin/sh", script, {
         cwd: input.cwd,
-        env: buildEnv(input.env),
+        env: buildEnv(input.env, input.inheritEnv),
         stdio: [nice ? "pipe" : "ignore", "pipe", separate ? "pipe" : "ignore"],
         detached: true,
       });

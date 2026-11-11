@@ -119,6 +119,20 @@ it.live("passes PATH, LC_* and the env argument through", () =>
   ),
 );
 
+it.live("passes only the names in inheritEnv when it is set, and no LC_*", () =>
+  withEnv(
+    { LC_FACTORY_TEST: "lc", LOGNAME: "factory", LANG: "en_AU.UTF-8" },
+    Effect.gen(function* () {
+      const result = yield* run({
+        command: `printf '%s|%s|%s' "\${LC_FACTORY_TEST-unset}" "\${LOGNAME-unset}" "\${LANG-unset}"`,
+        shell: true,
+        inheritEnv: ["LANG"],
+      });
+      assert.strictEqual(result.tail, "unset|unset|en_AU.UTF-8");
+    }),
+  ),
+);
+
 it.live(
   "puts the launch PATH first, then the rest of the server PATH, without duplicates or empty entries",
   () =>
