@@ -10,7 +10,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import { writeFileAtomically } from "../files.ts";
-import { sha256 } from "./branches.ts";
+import { sha256 } from "../text.ts";
 
 const Turn = Schema.Struct({
   commandId: Schema.String,

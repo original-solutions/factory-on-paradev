@@ -1,17 +1,11 @@
-// @effect-diagnostics nodeBuiltinImport:off - Hashes a command id, synchronously.
 /**
  * The branch a launch asks Paradev for, derived from its command id, so a retried launch asks
  * for the same branch and `workspaces create` answers the same workspace. Paradev puts a local
  * worktree at `~/.paradev/worktrees/<project name>/<branch>`, the branch's slashes kept as
  * folders, and never renames the branch after create.
  */
-import * as NodeCrypto from "node:crypto";
-
 import { parseRunId, type RunId } from "../ledger/runId.ts";
-
-/** The sha256 of `text`, as lowercase hex. */
-export const sha256 = (text: string): string =>
-  NodeCrypto.createHash("sha256").update(text).digest("hex");
+import { sha256 } from "../text.ts";
 
 /** A run's command id, `softfac:<run id>:<what>`. A run id holds no `:`. */
 const RUN_COMMAND = /^softfac:([^:]+):(.+)$/;

@@ -225,14 +225,28 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   // ---- git ----------------------------------------------------------------------------------
 
   /**
-   * One git call, hardened as the gate's are: a session can write the clone's config and hooks,
-   * so none of them runs here. Only a fetch gets credentials, through `gh`, and only into a
-   * repository whose config is the adapter's own.
+   * One git call, hardened as the gate's are: a session can write the clone's config and hooks.
+   * The invariant: no git call the adapter runs in the clone or a worktree executes a command
+   * that repo's config names. Each exec-capable key is pinned one way:
+   * - hooks, fsmonitor, `ext` transport, alternate refs: HARDENED_GIT_CONFIG;
+   * - `remote.<name>.uploadpack`: the clone-side fetch passes `--upload-pack` on the command line;
+   * - `protocol.<name>.allow` (with `insteadOf` and `core.sshCommand`): `GIT_ALLOW_PROTOCOL`,
+   *   which overrides every `protocol.*.allow`, so no `-c protocol` flag is needed;
+   * - filter drivers: `blankFilters` blanks each one listed, and refuses the launch when the
+   *   listing is not complete.
+   * Only the by-URL fetch gets credentials, through `gh`, and only into a repository whose
+   * config is the adapter's own.
    */
   const git = (
     dir: string,
     args: ReadonlyArray<string>,
-    options: { readonly fetch?: boolean; readonly timeoutMs?: number; readonly pre?: ReadonlyArray<string> } = {},
+    options: {
+      readonly fetch?: boolean;
+      readonly timeoutMs?: number;
+      readonly pre?: ReadonlyArray<string>;
+      readonly env?: Readonly<Record<string, string>>;
+      readonly tailBytes?: number;
+    } = {},
   ) =>
     runner.run({
       command: "git",
@@ -244,8 +258,13 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         dir,
         ...args,
       ],
-      env: { ...HARDENED_GIT_ENV, ...(options.fetch === true ? fetchCredentialEnv(config.ghConfigDir) : {}) },
+      env: {
+        ...HARDENED_GIT_ENV,
+        ...(options.fetch === true ? fetchCredentialEnv(config.ghConfigDir) : {}),
+        ...options.env,
+      },
       separateStderr: true,
+      ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
       timeoutMs: options.timeoutMs ?? 30_000,
     });
 
@@ -373,16 +392,19 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         {
           fetch: true,
           timeoutMs: 120_000,
-          pre: [
-            "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", `protocol.file.allow=${fileTransportFor(remoteBase)}`,
-            ...FETCH_HTTP_FLAGS,
-          ],
+          pre: FETCH_HTTP_FLAGS,
+          env: { GIT_ALLOW_PROTOCOL: fileTransportFor(remoteBase) === "always" ? "https:file" : "https" },
         },
       );
       yield* gitOk(
         project.path,
-        [...fetchArgs, scratch, `+refs/heads/${baseRef}:refs/remotes/origin/${baseRef}`],
-        { pre: ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always"], timeoutMs: 120_000 },
+        [
+          ...fetchArgs,
+          "--upload-pack=git-upload-pack",
+          scratch,
+          `+refs/heads/${baseRef}:refs/remotes/origin/${baseRef}`,
+        ],
+        { env: { GIT_ALLOW_PROTOCOL: "file" }, timeoutMs: 120_000 },
       );
       return yield* gitOk(scratch, ["rev-parse", "--verify", "--end-of-options", `refs/heads/${baseRef}^{commit}`]);
     });
@@ -390,15 +412,22 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   /**
    * `-c` flags that blank every filter driver the repository's config names. `-c` splits at the
    * first `=`, so a driver whose name has anything outside `[A-Za-z0-9._-]` cannot be blanked
-   * that way: the launch fails rather than run git where its filter would run.
+   * that way: the launch fails rather than run git where its filter would run. The listing must
+   * be complete: a truncated one, or a failure other than "none configured" (exit 1), fails the
+   * launch too, since a driver left out of it would not be blanked.
    */
   const blankFilters = (dir: string) =>
     Effect.gen(function* () {
-      const listed = yield* git(dir, ["config", "--name-only", "--get-regexp", "^filter\\."]);
+      const listed = yield* git(dir, ["config", "-z", "--name-only", "--get-regexp", "^filter\\."], {
+        tailBytes: 1024 * 1024,
+      });
+      if (listed.timedOut || listed.tailTruncated || (listed.exitCode !== 0 && listed.exitCode !== 1)) {
+        return yield* fail("the filter drivers of the repository could not be listed in full; the worktree was left as it is");
+      }
       const drivers = new Set(
         listed.exitCode === 0
-          ? listed.tail.split("\n").flatMap((name) => {
-              const match = /^filter\.(.+)\.[^.]+$/.exec(name.trim());
+          ? listed.tail.split("\0").flatMap((name) => {
+              const match = /^filter\.(.+)\.[^.]+$/s.exec(name);
               return match === null ? [] : [match[1]!];
             })
           : [],
