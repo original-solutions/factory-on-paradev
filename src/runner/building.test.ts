@@ -3418,7 +3418,7 @@ describe("advance: the pull request a session leaves when it stops or asks", () 
 
   it.effect("is recorded at the time limit from the launch branch of the worktree", () =>
     Effect.gen(function* () {
-      // The launch line recorded the worktree; the session pushed its own `t3/<hash>`.
+      // The launch line recorded the worktree; the session pushed its own launch branch.
       const rig = rigFor(
         STARTED.map((event) =>
           event.event === "session_launched"

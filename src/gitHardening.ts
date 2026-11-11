@@ -25,6 +25,30 @@ export const HARDENED_GIT_ENV: Readonly<Record<string, string>> = {
   LC_ALL: "C",
 };
 
+/**
+ * The environment a credentialed fetch adds to {@link HARDENED_GIT_ENV}: the token variables and
+ * `gh`'s config dir, `ghConfigDir` when given, so `gh auth git-credential` answers as the
+ * factory's login.
+ */
+export const fetchCredentialEnv = (ghConfigDir: string | undefined): Record<string, string> => {
+  const env: Record<string, string> = {};
+  for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "XDG_CONFIG_HOME"]) {
+    const value = globalThis.process.env[name];
+    if (value !== undefined) env[name] = value;
+  }
+  const dir = ghConfigDir ?? globalThis.process.env.GH_CONFIG_DIR;
+  if (dir !== undefined) env.GH_CONFIG_DIR = dir;
+  return env;
+};
+
+/** The `-c` flags that make `gh` the only credential helper of a fetch. */
+export const FETCH_CREDENTIAL_FLAGS: ReadonlyArray<string> = [
+  "-c",
+  "credential.helper=",
+  "-c",
+  "credential.helper=!gh auth git-credential",
+];
+
 /** `-c` flags for each of `settings`. */
 export const configFlags = (settings: ReadonlyArray<string>): ReadonlyArray<string> =>
   settings.flatMap((setting) => ["-c", setting]);

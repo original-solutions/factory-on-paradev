@@ -12,7 +12,13 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import { configFlags, HARDENED_GIT_CONFIG, HARDENED_GIT_ENV } from "../gitHardening.ts";
+import {
+  configFlags,
+  FETCH_CREDENTIAL_FLAGS,
+  fetchCredentialEnv,
+  HARDENED_GIT_CONFIG,
+  HARDENED_GIT_ENV,
+} from "../gitHardening.ts";
 import { FactoryPaths } from "../paths.ts";
 import { FactoryProcess } from "../process.ts";
 import {
@@ -23,10 +29,11 @@ import {
   ThreadNotFoundError,
   type ThreadStatus,
 } from "../sessions.ts";
+import { isSafeBranchName } from "../tracker/github.ts";
 import { launchBranch, worktreesRootOf } from "./branches.ts";
 import { call, callWithRetry, decodeAnswer } from "./call.ts";
 import { type CliError, SupersetCli } from "./cli.ts";
-import { listProjects, projectAt } from "./projects.ts";
+import { listProjects, type ParadevProject, projectAt } from "./projects.ts";
 import {
   listThreads,
   readLaunch,
@@ -45,6 +52,9 @@ const STARTING_GRACE_MS = 5 * MINUTE;
 /** A `working` agent this long without a hook gets the process lookup. */
 const SILENT_WORKING_MS = 10 * MINUTE;
 const NAME_MAX = 80;
+const DEFAULT_REMOTE_BASE = "https://github.com";
+/** A Paradev project's `repo`: a GitHub repository URL. */
+const GITHUB_REPO = /^https:\/\/github\.com\/([A-Za-z0-9-]+\/[A-Za-z0-9._-]+?)(?:\.git)?\/?$/;
 
 const Created = Schema.Struct({
   workspace: Schema.Struct({ id: Schema.String, branch: Schema.String }),
@@ -76,6 +86,16 @@ const Explained = Schema.Struct({
 });
 type Explanation = typeof Explained.Type;
 const Transcript = Schema.Struct({ text: Schema.String });
+
+/** A launch or read the adapter cannot carry out, with what it found. */
+export class ParadevAdapterError extends Schema.TaggedError<ParadevAdapterError>()(
+  "ParadevAdapterError",
+  { what: Schema.String },
+) {
+  override get message(): string {
+    return this.what;
+  }
+}
 
 export class AgentLookupError extends Schema.TaggedError<AgentLookupError>()(
   "ParadevAgentLookupError",
@@ -161,6 +181,13 @@ export interface ParadevSessionsConfig {
   readonly model?: string;
   /** `paradev.effort`, passed as `--effort`. */
   readonly effort?: string;
+  /**
+   * Where a base is fetched from: `<remoteBase>/<owner>/<repo>.git` for the project's GitHub
+   * repo. Default `https://github.com`; tests pass `file:///…`.
+   */
+  readonly remoteBase?: string;
+  /** `gh_config_dir`: the `gh` login a base fetch authenticates as, as for the gate. */
+  readonly ghConfigDir?: string;
 }
 
 /** What this issue builds of `FactorySessions`. */
@@ -182,7 +209,10 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const dataDir = (yield* FactoryPaths).baseDir;
   const services = yield* Effect.context<FileSystem.FileSystem | Path.Path | SupersetCli>();
   const fs = yield* FileSystem.FileSystem;
-  const agentCommand = config.agentCommand ?? config.agent;
+  const remoteBase = (config.remoteBase ?? DEFAULT_REMOTE_BASE).replace(/\/+$/, "");
+  /** The process a record's preset runs: the configured command for the configured preset. */
+  const commandOf = (record: ThreadRecord) =>
+    record.agent === config.agent ? (config.agentCommand ?? config.agent) : record.agent;
 
   /** The adapter's file and CLI helpers need these; the service's methods require nothing. */
   const local = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path | SupersetCli>) =>
@@ -192,41 +222,39 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   /**
    * One git call, hardened as the gate's are: a session can write the clone's config and hooks,
-   * so none of them runs here. Only the fetch gets credentials, through `gh`.
+   * so none of them runs here. Only a fetch gets credentials, through `gh`, and only into a
+   * repository whose config is the adapter's own.
    */
-  const git = (dir: string, args: ReadonlyArray<string>, options: { readonly fetch?: boolean; readonly timeoutMs?: number } = {}) =>
-    Effect.gen(function* () {
-      const env: Record<string, string> = { ...HARDENED_GIT_ENV };
-      if (options.fetch === true) {
-        for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR", "XDG_CONFIG_HOME"]) {
-          const value = globalThis.process.env[name];
-          if (value !== undefined) env[name] = value;
-        }
-      }
-      const credentials =
-        options.fetch === true
-          ? ["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"]
-          : [];
-      const result = yield* runner.run({
-        command: "git",
-        args: [...configFlags(HARDENED_GIT_CONFIG), ...credentials, "-C", dir, ...args],
-        env,
-        separateStderr: true,
-        timeoutMs: options.timeoutMs ?? 30_000,
-      });
-      return result;
+  const git = (
+    dir: string,
+    args: ReadonlyArray<string>,
+    options: { readonly fetch?: boolean; readonly timeoutMs?: number; readonly pre?: ReadonlyArray<string> } = {},
+  ) =>
+    runner.run({
+      command: "git",
+      args: [
+        ...configFlags(HARDENED_GIT_CONFIG),
+        ...(options.fetch === true ? FETCH_CREDENTIAL_FLAGS : []),
+        ...(options.pre ?? []),
+        "-C",
+        dir,
+        ...args,
+      ],
+      env: { ...HARDENED_GIT_ENV, ...(options.fetch === true ? fetchCredentialEnv(config.ghConfigDir) : {}) },
+      separateStderr: true,
+      timeoutMs: options.timeoutMs ?? 30_000,
     });
 
   /** `git` that must exit 0: its stdout, trimmed. */
-  const gitOk = (dir: string, args: ReadonlyArray<string>, options?: { readonly fetch?: boolean; readonly timeoutMs?: number }) =>
+  const gitOk = (dir: string, args: ReadonlyArray<string>, options?: Parameters<typeof git>[2]) =>
     git(dir, args, options).pipe(
       Effect.flatMap((result) =>
         result.exitCode === 0 && !result.timedOut
           ? Effect.succeed(result.tail.trim())
           : Effect.fail(
-              new Error(
-                `git ${args.join(" ")} ${result.timedOut ? "timed out" : `exited ${result.exitCode}`}: ${result.stderrTail.trim()}`,
-              ),
+              new ParadevAdapterError({
+                what: `git ${args.join(" ")} ${result.timedOut ? "timed out" : `exited ${result.exitCode}`}: ${result.stderrTail.trim()}`,
+              }),
             ),
       ),
     );
@@ -267,11 +295,15 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     );
   };
 
-  /** A terminal of the workspace in `answer` that runs this preset's agent and is not in `skip`. */
+  /**
+   * A terminal of the workspace in `answer` that is not in `skip`: the agent a launch started. A
+   * factory workspace is created with no terminal, and a starting agent's terminal shows no agent
+   * until its first hook, so any terminal there counts.
+   */
   const agentTerminalIn = (answer: SnapshotAnswer, workspaceId: string, skip: ReadonlyArray<string>) =>
     answer.workspaces
       .find((ws) => ws.id === workspaceId)
-      ?.terminals.find((t) => t.agent?.id === config.agent && !skip.includes(t.id))?.id ?? null;
+      ?.terminals.find((t) => !skip.includes(t.id))?.id ?? null;
 
   // ---- records ------------------------------------------------------------------------------
 
@@ -289,53 +321,87 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   const save = (record: ThreadRecord) => local(writeThread(dataDir, record));
 
-  // ---- launch -------------------------------------------------------------------------------
+  // ---- launch -----------------------------------------------------------------------------
 
-  /** Steps 5 to 7 of a launch: the worktree, the base check, and the agent. */
-  const startAgent = (record: ThreadRecord, request: LaunchRequest, clone: string | null) =>
+  const fail = (what: string) => Effect.fail(new ParadevAdapterError({ what }));
+
+  /** The Paradev project of `projectId` on this Mac. */
+  const projectOf = (projectId: string) =>
     Effect.gen(function* () {
-      const got = yield* getWorkspace(record.workspaceId);
-      if (got.worktreePath === null) {
-        return yield* Effect.fail(new Error(`workspace ${record.workspaceId} has no worktree`));
-      }
-      const placed: ThreadRecord = { ...record, worktreePath: got.worktreePath };
-      yield* save(placed);
-      yield* baseCheck(got.worktreePath, request, clone);
-      const found = agentTerminalIn(yield* snapshot(record.workspaceId), record.workspaceId, placed.terminals);
-      const terminal = found ?? (yield* createAgent(record.workspaceId, request));
-      const now = yield* Clock.currentTimeMillis;
-      const started: ThreadRecord = {
-        ...placed,
-        terminals: [...placed.terminals, terminal],
-        turns: [...placed.turns, { commandId: request.commandId, at: now, kind: "launch" }],
-      };
-      yield* save(started);
-      return started;
+      const project = (yield* local(listProjects)).find((p) => p.id === projectId);
+      return project ?? (yield* fail(`no Paradev project ${projectId} on this Mac`));
     });
 
   /**
-   * Paradev does not fetch the base, and falls back to the project's default branch for one the
-   * clone lacks (X8). So the new worktree's HEAD must be the base commit, else it is reset there;
-   * the agent has not started, so nothing is lost. With no clone path to fetch into (a launch
-   * picked up after a crash), the worktree fetches, since it shares the clone's refs.
+   * Fetches the base into the project's clone as `origin/<baseRef>`. The credentialed fetch goes
+   * by URL, from the project's GitHub repo, into a bare repository of the adapter's own with no
+   * config, as the gate's does; the clone then fetches from that one with no credentials. The
+   * clone's own `origin`, transport and filter settings, which a session can write, never meet
+   * a token.
    */
-  const baseCheck = (worktreePath: string, request: LaunchRequest, clone: string | null) =>
+  const fetchBase = (project: ParadevProject, baseRef: string) =>
     Effect.gen(function* () {
-      if (clone === null) yield* fetchBase(worktreePath, request.baseRef);
-      const ref = request.startFromOrigin ? `origin/${request.baseRef}` : request.baseRef;
-      const want = yield* gitOk(worktreePath, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]);
-      const head = yield* gitOk(worktreePath, ["rev-parse", "--verify", "HEAD^{commit}"]);
-      if (head !== want) yield* gitOk(worktreePath, ["reset", "--hard", "-q", ref]);
+      if (!isSafeBranchName(baseRef)) return yield* fail(`the base ${baseRef} is not a plain branch name`);
+      const repo = GITHUB_REPO.exec(project.repo)?.[1];
+      if (repo === undefined) {
+        return yield* fail(`Paradev project ${project.id} names no GitHub repository: ${project.repo}`);
+      }
+      const scratch = `${dataDir}/paradev/fetch/${project.id}.git`;
+      if (!(yield* fs.exists(`${scratch}/HEAD`))) {
+        yield* fs.makeDirectory(scratch, { recursive: true });
+        yield* gitOk(scratch, ["init", "--quiet", "--bare", "--template="]);
+      }
+      const file = remoteBase.startsWith("file://") ? "always" : "never";
+      const fetchArgs = ["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head"];
+      yield* gitOk(
+        scratch,
+        [...fetchArgs, `${remoteBase}/${repo}.git`, `+refs/heads/${baseRef}:refs/heads/${baseRef}`],
+        {
+          fetch: true,
+          timeoutMs: 120_000,
+          pre: ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", `protocol.file.allow=${file}`],
+        },
+      );
+      yield* gitOk(
+        project.path,
+        [...fetchArgs, scratch, `+refs/heads/${baseRef}:refs/remotes/origin/${baseRef}`],
+        { pre: ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always"], timeoutMs: 120_000 },
+      );
     });
 
-  const fetchBase = (dir: string, baseRef: string) =>
-    gitOk(dir, ["fetch", "--no-tags", "origin", "--end-of-options", baseRef], { fetch: true, timeoutMs: 120_000 });
+  /**
+   * Paradev does not fetch the base, and builds a worktree from the clone's own refs: a local
+   * branch the runner never moves, or the project's default branch for one the clone lacks (X8).
+   * So the new worktree's HEAD must be the base just fetched, `origin/<baseRef>`, else it is reset
+   * there. Only called once the snapshot shows no agent in the workspace, so nothing is lost.
+   * Filter drivers a session put in the shared config are blanked for the checkout.
+   */
+  const baseCheck = (worktreePath: string, baseRef: string) =>
+    Effect.gen(function* () {
+      const ref = `origin/${baseRef}`;
+      const want = yield* gitOk(worktreePath, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]);
+      const head = yield* gitOk(worktreePath, ["rev-parse", "--verify", "HEAD^{commit}"]);
+      if (head === want) return;
+      const listed = yield* git(worktreePath, ["config", "--name-only", "--get-regexp", "^filter\\."]);
+      const drivers = new Set(
+        listed.exitCode === 0
+          ? listed.tail.split("\n").flatMap((name) => {
+              const match = /^filter\.(.+)\.[^.]+$/.exec(name.trim());
+              return match === null ? [] : [match[1]!];
+            })
+          : [],
+      );
+      const blank = [...drivers].flatMap((driver) =>
+        ["smudge=", "clean=", "process=", "required=false"].flatMap((key) => ["-c", `filter.${driver}.${key}`]),
+      );
+      yield* gitOk(worktreePath, ["reset", "--hard", "-q", ref], { pre: blank });
+    });
 
-  const createAgent = (workspaceId: string, request: LaunchRequest) =>
+  const createAgent = (record: ThreadRecord, request: LaunchRequest) =>
     Effect.gen(function* () {
       const effort = request.model.options?.find((option) => option.id === "effort")?.value;
       const argv = [
-        "agents", "create", "--local", "--workspace", workspaceId, "--agent", config.agent,
+        "agents", "create", "--local", "--workspace", record.workspaceId, "--agent", record.agent,
         ...(request.model.model === "" ? [] : ["--model", request.model.model]),
         ...(typeof effort === "string" ? ["--effort", effort] : []),
         "--prompt", request.message,
@@ -343,6 +409,38 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       // No retry: a launch that finds its record without a terminal looks for the agent first.
       const answer = yield* call(cli, argv, 120_000);
       return (yield* decodeAnswer(AgentStarted, answer, argv)).sessionId;
+    });
+
+  /** The record with `terminal` as its agent and a `launch` turn. */
+  const withAgent = (record: ThreadRecord, terminal: string, request: LaunchRequest) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const started: ThreadRecord = {
+        ...record,
+        terminals: [...record.terminals, terminal],
+        turns: [...record.turns, { commandId: request.commandId, at: now, kind: "launch" }],
+      };
+      yield* save(started);
+      return started;
+    });
+
+  /**
+   * Steps 5 to 7 of a launch: the worktree, then the agent. A terminal already in the workspace
+   * is the agent an earlier attempt started, so it is taken and the worktree left alone; only
+   * with none there is the worktree checked against the base and the agent started.
+   */
+  const startAgent = (record: ThreadRecord, request: LaunchRequest, snapshotDone: boolean) =>
+    Effect.gen(function* () {
+      const got = yield* getWorkspace(record.workspaceId);
+      if (got.worktreePath === null) return yield* fail(`workspace ${record.workspaceId} has no worktree`);
+      const placed: ThreadRecord = { ...record, worktreePath: got.worktreePath };
+      yield* save(placed);
+      if (!snapshotDone) {
+        const found = agentTerminalIn(yield* snapshot(record.workspaceId), record.workspaceId, placed.terminals);
+        if (found !== null) return yield* withAgent(placed, found, request);
+      }
+      yield* baseCheck(got.worktreePath, request.baseRef);
+      return yield* withAgent(placed, yield* createAgent(placed, request), request);
     });
 
   const launched = (record: ThreadRecord) => ({
@@ -358,28 +456,16 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     const earlier = workspaceId === null ? null : yield* local(readThread(dataDir, workspaceId));
     if (earlier !== null && earlier.terminals.length > 0) return launched(earlier);
     if (earlier !== null) {
-      // It stopped between the record and the agent's start: the agent may be there already,
-      // started after its base check.
+      // It stopped between the record and the agent's start: the agent may be there already.
       const found = agentTerminalIn(yield* snapshot(earlier.workspaceId), earlier.workspaceId, []);
-      if (found !== null) {
-        const now = yield* Clock.currentTimeMillis;
-        const adopted: ThreadRecord = {
-          ...earlier,
-          terminals: [found],
-          turns: [{ commandId: request.commandId, at: now, kind: "launch" }],
-        };
-        yield* save(adopted);
-        return launched(adopted);
-      }
-      return launched(yield* startAgent(earlier, request, null));
+      if (found !== null) return launched(yield* withAgent(earlier, found, request));
+      yield* fetchBase(yield* projectOf(earlier.projectId), request.baseRef);
+      return launched(yield* startAgent(earlier, request, true));
     }
 
     // 2. The base into the repo clone.
-    const project = (yield* local(listProjects)).find((p) => p.id === request.projectId);
-    if (project === undefined) {
-      return yield* Effect.fail(new Error(`no Paradev project ${request.projectId} on this Mac`));
-    }
-    yield* fetchBase(project.path, request.baseRef);
+    const project = yield* projectOf(request.projectId);
+    yield* fetchBase(project, request.baseRef);
 
     // 3. The workspace, with no agent: a repeat create with `--agent` starts a second one (X7).
     const argv = [
@@ -412,7 +498,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     if (record.terminals.length > 0) return launched(record);
 
     // 5 to 7.
-    return launched(yield* startAgent(record, request, project.path));
+    return launched(yield* startAgent(record, request, false));
   }, (effect) => effect.pipe(Effect.mapError(failWith("launch"))));
 
   // ---- status -------------------------------------------------------------------------------
@@ -433,7 +519,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
           const silent = explained.lastEventAt === null || now - explained.lastEventAt > SILENT_WORKING_MS;
           if (!silent) return { run: "running" as RunStatus, completedAt: null };
           const pid =
-            record.worktreePath === null ? null : yield* processes.find(agentCommand, record.worktreePath);
+            record.worktreePath === null ? null : yield* processes.find(commandOf(record), record.worktreePath);
           return { run: (pid === null ? "interrupted" : "running") as RunStatus, completedAt: null };
         }
         case "blocked":
@@ -446,7 +532,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         case "exited":
           return { run: "interrupted" as RunStatus, completedAt: explained.lastEventAt };
         default:
-          return yield* Effect.fail(new Error(`agents explain answered an unknown state: ${explained.state}`));
+          return yield* fail(`agents explain answered an unknown state: ${explained.state}`);
       }
     });
 
@@ -523,11 +609,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     if (!(yield* fs.exists(`${path}/.git`))) return null;
     const head = yield* gitOk(path, ["rev-parse", "--verify", "HEAD^{commit}"]);
     if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) {
-      return yield* Effect.fail(new Error(`HEAD is not a commit id: ${head}`));
+      return yield* fail(`HEAD is not a commit id: ${head}`);
     }
     const branch = yield* git(path, ["symbolic-ref", "-q", "--short", "HEAD"]);
     if (branch.timedOut || (branch.exitCode !== 0 && branch.exitCode !== 1)) {
-      return yield* Effect.fail(new Error(`git symbolic-ref exited ${branch.exitCode}`));
+      return yield* fail(`git symbolic-ref exited ${branch.exitCode}`);
     }
     return { head, branch: branch.exitCode === 0 ? branch.tail.trim() : null };
   }, (effect) => effect.pipe(Effect.mapError(failWith("worktree-head"))));

@@ -9,7 +9,9 @@ import * as NodeCrypto from "node:crypto";
 
 import { parseRunId, type RunId } from "../ledger/runId.ts";
 
-const sha256 = (text: string): string => NodeCrypto.createHash("sha256").update(text).digest("hex");
+/** The sha256 of `text`, as lowercase hex. */
+export const sha256 = (text: string): string =>
+  NodeCrypto.createHash("sha256").update(text).digest("hex");
 
 /** A run's command id, `softfac:<run id>:<what>`. A run id holds no `:`. */
 const RUN_COMMAND = /^softfac:([^:]+):(.+)$/;

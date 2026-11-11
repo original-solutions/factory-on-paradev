@@ -6,19 +6,14 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { CliError, type CliErrorKind } from "./cli.ts";
+import { CliError, type CliErrorKind, type SupersetCli } from "./cli.ts";
 
 /** Failures a second call may not repeat. Offline, signed out and not found answer the same. */
 const RETRYABLE: ReadonlySet<CliErrorKind> = new Set(["TRANSIENT", "TIMEOUT"]);
 
 const RETRY_DELAY = "2 seconds";
 
-export interface Cli {
-  readonly run: (
-    argv: ReadonlyArray<string>,
-    options?: { readonly timeoutMs?: number },
-  ) => Effect.Effect<unknown, CliError>;
-}
+type Cli = SupersetCli["Service"];
 
 export const call = (cli: Cli, argv: ReadonlyArray<string>, timeoutMs: number) =>
   cli.run(argv, { timeoutMs });

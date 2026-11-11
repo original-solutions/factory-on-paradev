@@ -1,11 +1,8 @@
-// @effect-diagnostics nodeBuiltinImport:off - Hashes a command id, synchronously.
 /**
  * The adapter's own records under `<data>/paradev/`: one thread record per workspace, and one
  * launch file per launch command id that points at its thread. Each is written whole through
  * `files.ts`, and a file that does not read back as a whole record is treated as missing.
  */
-import * as NodeCrypto from "node:crypto";
-
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -13,6 +10,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import { writeFileAtomically } from "../files.ts";
+import { sha256 } from "./branches.ts";
 
 const Turn = Schema.Struct({
   commandId: Schema.String,
@@ -66,7 +64,7 @@ const launchFile = (path: Path.Path, dataDir: string, commandId: string) =>
     dataDir,
     "paradev",
     "launches",
-    `${NodeCrypto.createHash("sha256").update(commandId).digest("hex")}.json`,
+    `${sha256(commandId)}.json`,
   );
 
 /** The file's text; null when it does not exist. */

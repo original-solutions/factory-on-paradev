@@ -11,7 +11,7 @@ import { type CliError, SupersetCli } from "./cli.ts";
 import { callWithRetry, decodeAnswer } from "./call.ts";
 
 const Projects = Schema.Array(
-  Schema.Struct({ id: Schema.String, name: Schema.String, path: Schema.String }),
+  Schema.Struct({ id: Schema.String, name: Schema.String, path: Schema.String, repo: Schema.String }),
 );
 export type ParadevProject = (typeof Projects.Type)[number];
 

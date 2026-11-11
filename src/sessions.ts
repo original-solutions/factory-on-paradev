@@ -224,8 +224,9 @@ export class FactorySessions extends Context.Service<
      */
     readonly worktreeCheckout: (path: string) => Effect.Effect<Checkout | null, SessionsError>;
     /**
-     * How many unarchived threads, a person's or the factory's, have an agent at work: a run
-     * preparing, starting or running. A run waiting on a person does not count.
+     * How many of the factory's unarchived threads have an agent at work: a run preparing,
+     * starting or running. A person's own agents are not counted, and a run waiting on a person
+     * does not count.
      */
     readonly runningThreads: Effect.Effect<number, SessionsError>;
     /**

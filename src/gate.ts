@@ -10,7 +10,13 @@ import * as Schema from "effect/Schema";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-import { configFlags, HARDENED_GIT_CONFIG, HARDENED_GIT_ENV } from "./gitHardening.ts";
+import {
+  configFlags,
+  FETCH_CREDENTIAL_FLAGS,
+  fetchCredentialEnv,
+  HARDENED_GIT_CONFIG,
+  HARDENED_GIT_ENV,
+} from "./gitHardening.ts";
 import type { AppendIo } from "./ledger/appendFile.ts";
 import { errnoCode, ledgerCall, type LedgerError } from "./ledger/errors.ts";
 import { makeCause } from "./ledger/events.ts";
@@ -521,16 +527,8 @@ export const makeWorkspace = (runner: Runner, options: GateOptions = {}) => {
   const hardening = configFlags([...HARDENED_GIT_CONFIG, `protocol.file.allow=${fileTransport}`]);
 
   const gitEnv = (fetch: boolean): Record<string, string> => {
-    const env: Record<string, string> = { ...HARDENED_GIT_ENV };
-    if (fetch) {
-      for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "XDG_CONFIG_HOME"]) {
-        const value = globalThis.process.env[name];
-        if (value !== undefined) env[name] = value;
-      }
-      const ghConfigDir = options.ghConfigDir ?? globalThis.process.env.GH_CONFIG_DIR;
-      if (ghConfigDir !== undefined) env.GH_CONFIG_DIR = ghConfigDir;
-    }
-    return { ...env, ...options.env };
+    const credentials = fetch ? fetchCredentialEnv(options.ghConfigDir) : {};
+    return { ...HARDENED_GIT_ENV, ...credentials, ...options.env };
   };
 
   /** One git call in `dir`: its output when it exits 0, else the failure. */
@@ -612,14 +610,7 @@ export const makeWorkspace = (runner: Runner, options: GateOptions = {}) => {
     // FETCH_HEAD, no tags, no submodules. The URL is the gate's, not git config's.
     // HTTP/1.1, because the HTTP/2 framing layer is what a flaky link breaks first.
     const fetch = git(dir, {
-      pre: [
-        "-c",
-        "credential.helper=",
-        "-c",
-        "credential.helper=!gh auth git-credential",
-        "-c",
-        "http.version=HTTP/1.1",
-      ],
+      pre: [...FETCH_CREDENTIAL_FLAGS, "-c", "http.version=HTTP/1.1"],
       args: [
         "fetch",
         "--no-tags",
