@@ -29,6 +29,7 @@ import {
   ThreadNotFoundError,
   type ThreadStatus,
 } from "../sessions.ts";
+import { isCommitId } from "../text.ts";
 import { isSafeBranchName } from "../tracker/github.ts";
 import { launchBranch, worktreesRootOf } from "./branches.ts";
 import { call, callWithRetry, decodeAnswer } from "./call.ts";
@@ -423,7 +424,12 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const head = yield* gitOk(worktreePath, ["rev-parse", "--verify", "HEAD^{commit}"]);
       if (head === base) return "at-base" as const;
       const blank = yield* blankFilters(worktreePath);
-      const changed = yield* gitOk(worktreePath, ["status", "--porcelain", "--untracked-files=normal"], { pre: blank });
+      // No submodule recursion: a submodule's own config and filters are not blanked here.
+      const changed = yield* gitOk(
+        worktreePath,
+        ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=all"],
+        { pre: ["--no-optional-locks", ...blank] },
+      );
       // A commit only the checked-out branch has is work; one another branch has is not.
       const onBranch = yield* git(worktreePath, ["symbolic-ref", "-q", "HEAD"]);
       // `--exclude` before `--branches` takes the name without `refs/heads/`.
@@ -433,7 +439,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         "rev-list", "--max-count=1", "HEAD", "--not", ...exclude, "--branches", "--remotes",
       ]);
       if (changed !== "" || ownCommit !== "") return "kept" as const;
-      yield* gitOk(worktreePath, ["reset", "--hard", "-q", base], { pre: blank });
+      yield* gitOk(worktreePath, ["reset", "--hard", "--no-recurse-submodules", "-q", base], {
+        pre: ["-c", "submodule.recurse=false", ...blank],
+      });
       return "reset" as const;
     });
 
@@ -598,7 +606,6 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
     const notFound = () => new ThreadNotFoundError({ threadId });
     const explained = yield* explain(record, terminal).pipe(
-      Effect.map((answer): Explanation => answer),
       Effect.catchIf(
         (error) => error.kind === "AGENT_EXITED",
         (): Effect.Effect<Explanation> =>
@@ -658,7 +665,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const worktreeCheckout = Effect.fn("ParadevSessions.worktreeCheckout")(function* (path: string) {
     if (!(yield* fs.exists(`${path}/.git`))) return null;
     const head = yield* gitOk(path, ["rev-parse", "--verify", "HEAD^{commit}"]);
-    if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) {
+    if (!isCommitId(head)) {
       return yield* fail(`HEAD is not a commit id: ${head}`);
     }
     const branch = yield* git(path, ["symbolic-ref", "-q", "--short", "HEAD"]);
