@@ -21,6 +21,8 @@ export const DEFAULT_TIMEOUT_MS = 30_000;
 const TERM_GRACE_MS = 2_000;
 /** Stdout longer than this is cut, and a cut answer cannot be parsed: `PARADEV_SHAPE`. */
 const OUTPUT_CAP_BYTES = 64 * 1024 * 1024;
+/** Stderr is only read for its `Error: ` line or a crash's last 2000 chars. */
+const STDERR_CAP_BYTES = 64 * 1024;
 
 export const CliErrorKind = Schema.Literals([
   "PARADEV_OFFLINE",
@@ -39,7 +41,7 @@ export type CliErrorKind = typeof CliErrorKind.Type;
 
 export class CliError extends Schema.TaggedError<CliError>()("ParadevCliError", {
   kind: CliErrorKind,
-  /** The argv the runner passed, `--json` included. */
+  /** The argv the runner passed, `--json` included, each long argument cut to its start. */
   argv: Schema.Array(Schema.String),
   /** The CLI's `Error: ` line, or what the runner saw instead. */
   text: Schema.String,
@@ -47,11 +49,11 @@ export class CliError extends Schema.TaggedError<CliError>()("ParadevCliError", 
   hint: Schema.NullOr(Schema.String),
 }) {
   override get message(): string {
-    return `superset ${this.argv.map(shorten).join(" ")} failed (${this.kind}): ${this.text}`;
+    return `superset ${this.argv.join(" ")} failed (${this.kind}): ${this.text}`;
   }
 }
 
-/** A prompt or a belt payload is an argument too; the log gets only its start. */
+/** A prompt or a belt payload is an argument too; the error keeps only its start. */
 const shorten = (arg: string): string =>
   arg.length > 80 ? `${arg.slice(0, 80)}…(${arg.length} chars)` : arg;
 
@@ -120,7 +122,7 @@ export const layer = (config: CliConfig = {}): Layer.Layer<SupersetCli, never, F
         run: Effect.fn("SupersetCli.run")(function* (argv, options) {
           const args = [...argv, "--json"];
           const fail = (kind: CliErrorKind, text: string, hint: string | null = null) =>
-            new CliError({ kind, argv: args, text, hint });
+            new CliError({ kind, argv: args.map(shorten), text, hint });
           const result = yield* runner
             .run({
               command: binary,
@@ -130,6 +132,7 @@ export const layer = (config: CliConfig = {}): Layer.Layer<SupersetCli, never, F
               timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
               termGraceMs: TERM_GRACE_MS,
               tailBytes: OUTPUT_CAP_BYTES,
+              stderrTailBytes: STDERR_CAP_BYTES,
             })
             .pipe(
               Effect.mapError((error) =>
@@ -147,7 +150,7 @@ export const layer = (config: CliConfig = {}): Layer.Layer<SupersetCli, never, F
             const { kind, text, hint } = classify(result.stderrTail);
             return yield* fail(kind, text, hint);
           }
-          if (result.truncated) {
+          if (result.tailTruncated) {
             return yield* fail("PARADEV_SHAPE", `stdout is over ${OUTPUT_CAP_BYTES} bytes`);
           }
           return yield* Effect.try({

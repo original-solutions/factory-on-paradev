@@ -65,6 +65,8 @@ export interface RunInput {
   readonly timeoutMs?: number;
   /** Default 16 KiB. */
   readonly tailBytes?: number;
+  /** The cap for `stderrTail` when `separateStderr` is set. Default `tailBytes`. */
+  readonly stderrTailBytes?: number;
   /** How long after SIGTERM to send SIGKILL. Default 10_000. Exists so a test can be fast. */
   readonly termGraceMs?: number;
   /**
@@ -93,10 +95,12 @@ export interface RunResult {
    * stdout alone when `separateStderr` was set.
    */
   readonly tail: string;
-  /** The last `tailBytes` of stderr; "" unless `separateStderr` was set. */
+  /** The last `stderrTailBytes` of stderr; "" unless `separateStderr` was set. */
   readonly stderrTail: string;
-  /** True when a tail dropped bytes, i.e. the output was longer than `tailBytes`. */
+  /** True when a tail dropped bytes, i.e. the output was longer than its cap. */
   readonly truncated: boolean;
+  /** True when `tail` itself dropped bytes; a cut `stderrTail` does not count. */
+  readonly tailTruncated: boolean;
 }
 
 /**
@@ -184,7 +188,7 @@ const run = Effect.fn("FactoryProcess.run")(function* (input: RunInput) {
   const args = input.args ?? [];
   const separate = input.separateStderr === true;
   const tail = new Tail(input.tailBytes ?? DEFAULT_TAIL_BYTES);
-  const stderrTail = new Tail(input.tailBytes ?? DEFAULT_TAIL_BYTES);
+  const stderrTail = new Tail(input.stderrTailBytes ?? input.tailBytes ?? DEFAULT_TAIL_BYTES);
 
   // By default one pipe for both streams: Node cannot hand one pipe to two
   // fds, so the wrapper shell merges stderr into stdout. With separateStderr
@@ -335,6 +339,7 @@ const run = Effect.fn("FactoryProcess.run")(function* (input: RunInput) {
       tail: out,
       stderrTail: err,
       truncated: tail.truncated || stderrTail.truncated,
+      tailTruncated: tail.truncated,
     } satisfies RunResult;
   });
 

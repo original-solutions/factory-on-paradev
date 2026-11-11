@@ -455,6 +455,39 @@ it.live("truncated is true only when a tail dropped bytes", () =>
   }),
 );
 
+it.live("stderrTailBytes caps stderr on its own, and tailTruncated covers tail alone", () =>
+  Effect.gen(function* () {
+    const stderrCut = yield* run({
+      command: "printf abcd; printf abcdefgh >&2",
+      shell: true,
+      tailBytes: 4,
+      stderrTailBytes: 2,
+      separateStderr: true,
+    });
+    assert.strictEqual(stderrCut.tail, "abcd");
+    assert.strictEqual(stderrCut.stderrTail, "gh");
+    assert.isFalse(stderrCut.tailTruncated);
+    assert.isTrue(stderrCut.truncated);
+
+    const stdoutCut = yield* run({
+      command: "printf abcdefgh",
+      shell: true,
+      tailBytes: 4,
+      separateStderr: true,
+    });
+    assert.isTrue(stdoutCut.tailTruncated);
+
+    // Unset, stderr gets tailBytes as before.
+    const shared = yield* run({
+      command: "printf abcdefgh >&2",
+      shell: true,
+      tailBytes: 4,
+      separateStderr: true,
+    });
+    assert.strictEqual(shared.stderrTail, "efgh");
+  }),
+);
+
 it.live("a priority that cannot be set leaves the command running and logs one warning", () =>
   Effect.gen(function* () {
     const logs: Array<string> = [];

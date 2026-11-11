@@ -24,6 +24,8 @@ export interface Step {
 }
 
 export interface Answer {
+  /** The argv the spike ran, without `--json`. */
+  readonly argv: ReadonlyArray<string>;
   readonly exit: number;
   readonly stdout: string;
   readonly stderr: string;
@@ -33,10 +35,11 @@ export interface Answer {
 export const readFixture = (name: string): Answer => {
   const meta = JSON.parse(
     NodeFS.readFileSync(NodePath.join(FIXTURES_DIR, `${name}.meta.json`), "utf8"),
-  ) as { readonly exit: number; readonly stderr: string };
+  ) as { readonly argv: ReadonlyArray<string>; readonly exit: number; readonly stderr: string };
   const stdoutPath = NodePath.join(FIXTURES_DIR, `${name}.json`);
   const stdout = NodeFS.existsSync(stdoutPath) ? NodeFS.readFileSync(stdoutPath, "utf8") : "";
-  return { exit: meta.exit, stdout, stderr: meta.stderr };
+  const argv = meta.argv.filter((arg) => arg !== "--json");
+  return { argv, exit: meta.exit, stdout, stderr: meta.stderr };
 };
 
 const stripJson = (args: ReadonlyArray<string>): ReadonlyArray<string> =>
@@ -70,6 +73,7 @@ export const fakeSuperset = (script: ReadonlyArray<Step>) => {
         tail: answer.stdout,
         stderrTail: answer.stderr,
         truncated: false,
+        tailTruncated: false,
       } satisfies RunResult);
     });
   return {

@@ -20,18 +20,11 @@ const failed = NodeFS.readdirSync(FIXTURES_DIR)
   .map((file) => file.slice(0, -".meta.json".length))
   .filter((name) => readFixture(name).exit === 1);
 
-const argvOf = (name: string): ReadonlyArray<string> => {
-  const meta = JSON.parse(
-    NodeFS.readFileSync(`${FIXTURES_DIR}/${name}.meta.json`, "utf8"),
-  ) as { readonly argv: ReadonlyArray<string> };
-  return meta.argv.filter((arg) => arg !== "--json");
-};
-
 const runThrough = (name: string) => {
-  const fake = fakeSuperset([{ argv: argvOf(name), fixture: name }]);
+  const fake = fakeSuperset([{ argv: readFixture(name).argv, fixture: name }]);
   return Effect.gen(function* () {
     const cli = yield* SupersetCli;
-    return yield* Effect.flip(cli.run(argvOf(name)));
+    return yield* Effect.flip(cli.run(readFixture(name).argv));
   }).pipe(Effect.provide(layer({ cli: "superset" }).pipe(Layer.provide(fake.layer))));
 };
 

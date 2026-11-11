@@ -322,7 +322,7 @@ The CLI error "No transcript for that terminal" gives `null`. The adapter reads 
 `paradev/cli.ts` is the only code that spawns `superset`.
 
 - Binary: `paradev.cli` from the config, default `/Applications/Superset.app/Contents/Resources/resources/bin/superset`.
-- Every call gets `--json` and an explicit `--local`. `snapshot` takes no `--local` and defaults to this machine.
+- The runner adds `--json` to every call. Callers pass `--local` themselves: `snapshot`, `schema`, `auth whoami` and the `pages` commands take none, and `snapshot` defaults to this machine.
 - Environment: `HOME`, `PATH`, `USER`, `LANG` and `TMPDIR` only, through `process.ts`'s allowlist. No `SUPERSET_API_KEY`.
 - Login: a CLI started outside a Paradev terminal has no host login. P0 saw every call fail with `Not logged in` from Terminal.app until `superset auth login`, after which `auth whoami` said `authSource: oauth`. The LaunchAgent is outside Paradev, so `install` runs `superset auth whoami --json` and exits 1 with the login command when it fails.
 - Exit 0: parse stdout as JSON; a parse failure is `PARADEV_SHAPE`.

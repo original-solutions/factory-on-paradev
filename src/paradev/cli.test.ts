@@ -16,6 +16,7 @@ const done = (exitCode: number | null, stdout: string, stderr = ""): RunResult =
   tail: stdout,
   stderrTail: stderr,
   truncated: false,
+  tailTruncated: false,
 });
 
 /** A FactoryProcess that records each call and answers with `reply`. */
@@ -56,6 +57,18 @@ it.effect("runs the default binary with --json added, the five-name env and stde
     assert.deepStrictEqual([...input!.inheritEnv!], ["HOME", "PATH", "USER", "LANG", "TMPDIR"]);
     assert.strictEqual(input!.env, undefined);
     assert.isTrue(input!.separateStderr);
+    assert.strictEqual(input!.tailBytes, 64 * 1024 * 1024);
+    assert.strictEqual(input!.stderrTailBytes, 64 * 1024);
+    assert.strictEqual(input!.timeoutMs, 30_000);
+    assert.strictEqual(input!.termGraceMs, 2_000);
+  }),
+);
+
+it.effect("a call's timeout reaches the process runner", () =>
+  Effect.gen(function* () {
+    const fake = recorder(done(0, "{}"));
+    yield* call(fake.layer, ["snapshot"], {}, 500);
+    assert.strictEqual(fake.calls[0]!.timeoutMs, 500);
   }),
 );
 
@@ -78,9 +91,16 @@ it.effect("stdout that is not JSON on exit 0 is PARADEV_SHAPE", () =>
 it.effect("stdout cut at the cap on exit 0 is PARADEV_SHAPE", () =>
   Effect.gen(function* () {
     const error = yield* Effect.flip(
-      call(recorder({ ...done(0, "{}"), truncated: true }).layer, ["x"]),
+      call(recorder({ ...done(0, "{}"), truncated: true, tailTruncated: true }).layer, ["x"]),
     );
     assert.strictEqual(error.kind, "PARADEV_SHAPE");
+  }),
+);
+
+it.effect("a long stderr on exit 0 does not make the answer a cut one", () =>
+  Effect.gen(function* () {
+    const reply = { ...done(0, '{"ok":true}', "warning\n"), truncated: true };
+    assert.deepStrictEqual(yield* call(recorder(reply).layer, ["x"]), { ok: true });
   }),
 );
 
@@ -177,6 +197,16 @@ it.live("the CLI sees only HOME, PATH, USER, LANG and TMPDIR", () =>
   ),
 );
 
+it.live("an answer longer than the process runner's default 16 KiB tail parses whole", () =>
+  withTempDir((dir) =>
+    Effect.gen(function* () {
+      const binary = writeBinary(dir, `printf '"%s"' "$(head -c 40000 /dev/zero | tr '\\0' x)"\n`);
+      const answer = yield* call(Process.layer, ["snapshot"], { cli: binary });
+      assert.strictEqual(answer, "x".repeat(40_000));
+    }),
+  ),
+);
+
 it.live("a call past its timeout kills the CLI and its grandchild, and fails TIMEOUT", () =>
   withTempDir((dir) =>
     Effect.gen(function* () {
@@ -208,8 +238,10 @@ it.effect("the error message cuts a long argument, so a payload does not reach t
     const fake = recorder(done(1, "", "Error: A stored value is at most 65536 bytes\n"));
     const payload = "x".repeat(70_000);
     const error = yield* Effect.flip(call(fake.layer, ["pages", "storage", "--set", payload]));
-    assert.strictEqual(error.argv[3], payload);
     assert.isBelow(error.message.length, 500);
+    // A logger that writes the error's fields gets the cut argv too.
+    assert.isBelow(JSON.stringify(error).length, 1000);
+    assert.include(error.argv[3], "70000 chars");
     assert.include(error.message, "pages storage --set xxx");
     assert.include(error.message, "70000 chars");
   }),
