@@ -384,7 +384,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       return yield* gitOk(scratch, ["rev-parse", "--verify", "--end-of-options", `refs/heads/${baseRef}^{commit}`]);
     });
 
-  /** `-c` flags that blank every filter driver the repository's config names. */
+  /**
+   * `-c` flags that blank every filter driver the repository's config names. `-c` splits at the
+   * first `=`, so a driver whose name has anything outside `[A-Za-z0-9._-]` cannot be blanked
+   * that way: the launch fails rather than run git where its filter would run.
+   */
   const blankFilters = (dir: string) =>
     Effect.gen(function* () {
       const listed = yield* git(dir, ["config", "--name-only", "--get-regexp", "^filter\\."]);
@@ -396,6 +400,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
             })
           : [],
       );
+      for (const driver of drivers) {
+        if (!/^[A-Za-z0-9._-]+$/.test(driver)) {
+          return yield* fail(`the filter driver ${JSON.stringify(driver)} cannot be turned off safely; the worktree was left as it is`);
+        }
+      }
       return [...drivers].flatMap((driver) =>
         ["smudge=", "clean=", "process=", "required=false"].flatMap((key) => ["-c", `filter.${driver}.${key}`]),
       );
