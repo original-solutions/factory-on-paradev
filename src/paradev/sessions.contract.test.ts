@@ -11,7 +11,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { useTempDirs } from "../ledger/testSupport.ts";
 import { FactoryPaths } from "../paths.ts";
-import { layer as processLayer } from "../process.ts";
+import { FactoryProcess, layer as processLayer } from "../process.ts";
 import { ThreadNotFoundError, type LaunchRequest } from "../sessions.ts";
 import { layer as cliLayer } from "./cli.ts";
 import { fakeSuperset, readFixture, type Step } from "./fake-superset.ts";
@@ -115,6 +115,8 @@ interface Rig {
   readonly calls: Array<ReadonlyArray<string>>;
   readonly unused: () => ReadonlyArray<Step>;
   readonly lookups: Array<readonly [string, string]>;
+  /** Every git call the adapter made, with the environment it added. */
+  readonly gitCalls: Array<{ readonly args: ReadonlyArray<string>; readonly env: Readonly<Record<string, string>> }>;
   readonly run: <A, E>(
     body: (sessions: ParadevSessions) => Effect.Effect<A, E, never>,
   ) => Effect.Effect<A, E, never>;
@@ -127,9 +129,22 @@ const rig = (
   const fake = fakeSuperset(script);
   const data = tempDir("data");
   const lookups: Array<readonly [string, string]> = [];
+  const gitCalls: Rig["gitCalls"] = [];
+  const recording = Layer.effect(
+    FactoryProcess,
+    Effect.gen(function* () {
+      const real = yield* FactoryProcess;
+      return FactoryProcess.of({
+        run: (input) => {
+          if (input.command === "git") gitCalls.push({ args: input.args ?? [], env: input.env ?? {} });
+          return real.run(input);
+        },
+      });
+    }),
+  ).pipe(Layer.provide(processLayer));
   const layer = Layer.mergeAll(
     cliLayer({ cli: "superset" }).pipe(Layer.provide(fake.layer)),
-    processLayer,
+    recording,
     NodeServices.layer,
     Layer.succeed(FactoryPaths, {
       baseDir: data,
@@ -153,6 +168,7 @@ const rig = (
     calls: fake.calls,
     unused: fake.unused,
     lookups,
+    gitCalls,
     run: (body) =>
       Effect.gen(function* () {
         return yield* body(yield* make({ ...CONFIG, ...options.config }));
@@ -366,6 +382,11 @@ describe("launch", () => {
       git(r.clone, "config", "remote.origin.uploadpack", `touch ${marks}/uploadpack; git-upload-pack`);
       git(r.clone, "config", "filter.x.smudge", `sh -c 'touch ${marks}/smudge; cat'`);
       git(r.clone, "config", "filter.x.process", `sh -c 'touch ${marks}/process'`);
+      git(r.clone, "config", "core.alternateRefsCommand", `sh -c 'touch ${marks}/alternate-refs'`);
+      NodeFS.writeFileSync(
+        NodePath.join(r.clone, ".git", "objects", "info", "alternates"),
+        `${NodePath.join(r.seed, ".git", "objects")}\n`,
+      );
       NodeFS.writeFileSync(NodePath.join(r.clone, ".git", "info", "attributes"), "* filter=x\n");
       const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase } });
       yield* t.run((s) => s.launch(request({ baseRef: "x8-origin-only" })));
@@ -438,22 +459,122 @@ describe("launch", () => {
     }),
   );
 
-  it.live("adopts a terminal whose agent has not sent its first hook yet", () =>
+  it.live("a terminal with no agent yet stops the launch rather than starting a second agent", () =>
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/x8", "main");
-      // Before its first hook a starting agent's terminal shows no agent (X1, explain says none).
+      // An agent before its first hook may show no agent; so may a person's shell. Neither is
+      // taken, and no agent is started beside it: the next pass tries again.
+      const script = launchScript(r)
+        .map((step) =>
+          step.fixture === "snapshot-local-before-kill"
+            ? { ...step, edit: snapshotOf(X8_WS, [{ id: "t-starting", title: "", agent: null }]) }
+            : step,
+        )
+        .filter((step) => step.fixture !== "agents-create-local-resume");
+      const t = rig(script, { config: { remoteBase: r.remoteBase } });
+      const error = yield* Effect.flip(t.run((s) => s.launch(request())));
+      assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+      const saved = yield* readThread(t.data, X8_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.deepStrictEqual(saved!.terminals, []);
+    }),
+  );
+
+  it.live("takes no terminal of another preset as its agent", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
       const script = launchScript(r).map((step) =>
         step.fixture === "snapshot-local-before-kill"
-          ? { ...step, edit: snapshotOf(X8_WS, [{ id: "t-starting", title: "", agent: null }]) }
+          ? { ...step, edit: snapshotOf(X8_WS, [{ id: "t-codex", title: "", agent: { id: "codex", state: "working" } }]) }
           : step,
-      ).filter((step) => step.fixture !== "agents-create-local-resume");
+      );
+      const t = rig(script, { config: { remoteBase: r.remoteBase } });
+      const error = yield* Effect.flip(t.run((s) => s.launch(request())));
+      assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+    }),
+  );
+
+  it.live("the base check keeps a worktree with work in it, and the launch stops when no agent is there", () =>
+    Effect.gen(function* () {
+      for (const leave of ["commit", "edit"] as const) {
+        const r = repos();
+        r.addWorktree("fac/x8", "main");
+        const work = leave === "commit" ? commit(r.worktree, "work.txt") : r.main;
+        if (leave === "edit") NodeFS.writeFileSync(NodePath.join(r.worktree, "a.txt"), "edited");
+        const t = rig(launchScript(r).filter((step) => step.fixture !== "agents-create-local-resume"), {
+          config: { remoteBase: r.remoteBase },
+        });
+        const error = yield* Effect.flip(t.run((s) => s.launch(request({ baseRef: "x8-origin-only" }))));
+        assert.strictEqual(error._tag, "FactorySessionsError", leave);
+        assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), work, leave);
+        if (leave === "edit") assert.strictEqual(NodeFS.readFileSync(NodePath.join(r.worktree, "a.txt"), "utf8"), "edited");
+        assert.isUndefined(t.calls.find(argvIs("agents", "create")), leave);
+      }
+    }),
+  );
+
+  it.live("resets to the commit it fetched, whatever the shared origin ref says by then", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      // Between the fetch and the base check another worktree's session moves the shared ref.
+      const script = launchScript(r).map((step) =>
+        step.fixture === "ws-get-local-x8"
+          ? {
+              ...step,
+              edit: (answer: unknown) => {
+                git(r.clone, "update-ref", "refs/remotes/origin/x8-origin-only", r.main);
+                return withPath(r.worktree)(answer);
+              },
+            }
+          : step,
+      );
       const t = rig(script, { config: { remoteBase: r.remoteBase } });
       yield* t.run((s) => s.launch(request({ baseRef: "x8-origin-only" })));
-      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
-      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.main);
-      const saved = yield* readThread(t.data, X8_WS).pipe(Effect.provide(NodeServices.layer));
-      assert.deepStrictEqual(saved!.terminals, ["t-starting"]);
+      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.originOnly);
+    }),
+  );
+
+  it.live("only the fetch into the adapter's own repository carries credentials", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase, ghConfigDir: "/factory/gh" } });
+      yield* t.run((s) => s.launch(request({ baseRef: "x8-origin-only" })));
+      const helper = "credential.helper=!gh auth git-credential";
+      const credentialed = t.gitCalls.filter((c) => c.args.includes(helper) || "GH_CONFIG_DIR" in c.env);
+      assert.strictEqual(credentialed.length, 1);
+      const [fetch] = credentialed;
+      assert.isTrue(fetch!.args.includes(helper));
+      assert.strictEqual(fetch!.env.GH_CONFIG_DIR, "/factory/gh");
+      assert.include(fetch!.args, `${r.remoteBase}/original-solutions/factory-paradev-spike.git`);
+      const dir = fetch!.args[fetch!.args.indexOf("-C") + 1]!;
+      assert.isTrue(dir.startsWith(NodePath.join(t.data, "paradev")), dir);
+      // Every call in the clone or the worktree runs with no credentials.
+      for (const call of t.gitCalls.filter((c) => c !== fetch)) {
+        assert.notInclude(call.args, helper);
+        assert.notProperty(call.env, "GH_TOKEN");
+      }
+    }),
+  );
+
+  it.live("refuses a base that is not a plain branch name, before it fetches or creates", () =>
+    Effect.gen(function* () {
+      for (const baseRef of ["main:refs/heads/evil", "-x", "x8-origin-only:refs/remotes/origin/main"]) {
+        const r = repos();
+        const before = git(r.clone, "for-each-ref");
+        const t = rig(
+          [{ argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) }],
+          { config: { remoteBase: r.remoteBase } },
+        );
+        const error = yield* Effect.flip(t.run((s) => s.launch(request({ baseRef }))));
+        assert.strictEqual(error._tag, "FactorySessionsError", baseRef);
+        assert.deepStrictEqual(t.calls, [["projects", "list", "--local"]], baseRef);
+        assert.strictEqual(git(r.clone, "for-each-ref"), before, baseRef);
+      }
     }),
   );
 
@@ -481,6 +602,30 @@ describe("launch", () => {
 });
 
 describe("launch after a crash between the launch file and the agent's start", () => {
+  it.live("an earlier attempt's work with no agent left stops the launch, and nothing is reset", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/2-1", "main");
+      const work = commit(r.worktree, "agent.txt");
+      const t = rig(
+        [
+          { argv: ["snapshot", "--workspace", L5_WS], fixture: "snapshot-local-before-kill", edit: snapshotOf(L5_WS, []) },
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: ["workspaces", "get", L5_WS, "--local"], fixture: "ws-get-local-x8", edit: withPath(r.worktree) },
+        ],
+        { config: { remoteBase: r.remoteBase } },
+      );
+      yield* Effect.gen(function* () {
+        yield* writeThread(t.data, record({ threadId: `local:${L5_WS}`, workspaceId: L5_WS, branch: "fac/2-1", worktreePath: null, terminals: [], turns: [] }));
+        yield* writeLaunch(t.data, LAUNCH_ID, `local:${L5_WS}`);
+      }).pipe(Effect.provide(NodeServices.layer));
+      const error = yield* Effect.flip(t.run((s) => s.launch(request({ baseRef: "x8-origin-only" }))));
+      assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), work);
+      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+    }),
+  );
+
   const crashed = (data: string, worktreePath: string | null) =>
     Effect.gen(function* () {
       yield* writeThread(data, record({ threadId: `local:${L5_WS}`, workspaceId: L5_WS, branch: "fac/2-1", worktreePath, terminals: [], turns: [] }));
