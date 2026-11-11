@@ -1,8 +1,8 @@
 /**
  * The only code that runs Paradev's `superset` CLI. It adds `--json` to every call, passes the CLI
  * a five-name environment, parses stdout as JSON on exit 0, and on a failure maps the CLI's
- * `Error: ` line to a {@link CliErrorKind}. Callers pass `--local` themselves: `snapshot`, `schema`
- * and `auth whoami` take none.
+ * `Error: ` line to a {@link CliErrorKind}. Callers pass `--local` themselves: `snapshot`, `schema`,
+ * `auth whoami` and the `pages` commands take none.
  */
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
