@@ -262,7 +262,7 @@ Paradev puts a local worktree at `~/.paradev/worktrees/<project name>/<branch>`,
 
 ### Method by method
 
-All calls pass `--local` and `--json`. Timeouts are the runner's own: it kills the `superset` child's process group when one passes.
+Every call but `snapshot` passes `--local`, and the runner adds `--json`. Timeouts are the runner's own: it kills the `superset` child's process group when one passes.
 
 | Method | CLI calls, in order | Fields read | Timeout, retry |
 |---|---|---|---|
@@ -593,7 +593,7 @@ From `spike/RESULTS.md` in factory-on-paradev, local runs on 2026-11-10 and 2026
 | L5b | A killed agent stays `working`, its terminal live at a shell prompt. The session id is the newest `.jsonl` in Claude's project folder, and `--resume-session` with `--prompt` continues the conversation in a new terminal | the liveness check, resume |
 | X2 | Not run (host only, to keep this Mac's other agents online) | nothing: the rate-limit path reads the transcript |
 | X4 | Page `storage.get` and `subscribe` work; publish worked only with `--workspace`; a value over 65536 bytes fails | belt page, #27's publish check |
-| X6 | No flag and `--local` give the same answer today | every call still passes `--local` |
+| X6 | No flag and `--local` give the same answer today | every call that takes `--local` still passes it (`snapshot` takes none) |
 | X7 | A repeat create with `--agent` returns `alreadyExists: true` and starts a second agent | launch without `--agent` |
 | X8 | `--base-branch` does not fetch, and a missing branch silently falls back to the project default | the base check |
 | X9 | PRs open as the active `gh` login; commits carry the worktree's git email | T2, launch message |
