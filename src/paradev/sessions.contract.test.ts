@@ -503,7 +503,8 @@ describe("launch", () => {
   // Fetch ends with `maintenance run --auto`, which repacks when the clone holds several packs and
   // reads `gc.recentObjectsHook` and the like from the clone's config. Git 2.54 never ran that
   // hook in any case this test could set up, so the observable is the repack itself: the packs
-  // the clone held before the launch are the packs it holds after.
+  // the clone held before the launch are the packs it holds after. Maintenance detaches by
+  // default, so the clone turns that off: a repack would finish before the fetch returns.
   it.live("starts no automatic maintenance in the clone", () =>
     Effect.gen(function* () {
       const r = repos();
@@ -513,6 +514,8 @@ describe("launch", () => {
       git(r.clone, "config", "gc.auto", "1");
       git(r.clone, "config", "gc.autoPackLimit", "1");
       git(r.clone, "config", "maintenance.auto", "true");
+      git(r.clone, "config", "maintenance.autoDetach", "false");
+      git(r.clone, "config", "gc.autoDetach", "false");
       // Several packs make a repack due.
       for (const name of ["a", "b", "c", "d"]) {
         const oid = NodeChildProcess.execFileSync("git", ["-C", r.clone, "hash-object", "-w", "--stdin"], {
