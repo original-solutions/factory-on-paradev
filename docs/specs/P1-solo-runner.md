@@ -105,7 +105,7 @@ Only the folder changes, plus mechanical import edits in every file: `./t3/sessi
 
 | From | To | Edit |
 |---|---|---|
-| `t3/sessions.ts` | `src/sessions.ts` | Keep the types, the errors and the `FactorySessions` service shape. Drop every T3 import and the implementation. `Model.options` becomes `{ readonly effort?: string }` in place of T3's `ModelSelection["options"]`. Drop `brokenWorktrees`, `liveBranches`, `ThreadOnBrokenWorktree`, `latestRun` and `threadStatusOf`. `isLaunchBranch` and `launchBranchOf` move to `paradev/branches.ts` and are re-exported here |
+| `t3/sessions.ts` | `src/sessions.ts` | Keep the types, the errors and the `FactorySessions` service shape. Drop every T3 import and the implementation. `Model.options` keeps the ledger's array shape, `ReadonlyArray<{ readonly id: string; readonly value: string | boolean }>`, defined here with no T3 import, so `session_launched.model_options` and its readers and writers stay as they are; the Paradev adapter reads the `effort` entry. Drop `brokenWorktrees`, `liveBranches`, `latestRun` and `threadStatusOf`. `ThreadOnBrokenWorktree` moves to `pass.ts` beside `PruneReport`. `isLaunchBranch` and `launchBranchOf` move to `paradev/branches.ts` and are re-exported here |
 | `t3/files.ts` | `src/files.ts` | Its one T3 import, `writeFileStringAtomically` from `@t3tools/shared/atomicWrite`, becomes a local copy of that function from `packages/shared/src/atomicWrite.ts` at the source commit. `t3/files.test.ts` moves with it |
 | `t3/paths.ts` | `src/paths.ts` | The data dir is `~/.config/factory-runner`, or `FACTORY_RUNNER_HOME` when set. No `ServerConfig` |
 | `index.ts` | `src/main.ts` | Build the pass world from the Paradev layers. No `Events` stream, `ServerExit`, `WatchedRepos` over T3, stall attribution or branch prune. `t3Starts` and `t3Stops` answer `[]`, because a runner restart does not stop a Paradev agent. `threadsOnBrokenWorktrees` answers `[]`. `pruneBranches` answers an empty report. After each pass, hand the status to the belt writer. Write `runner started` to the log once the first pass begins |
@@ -223,7 +223,7 @@ Callers today:
 - `index.ts`: `findProject`, `brokenWorktrees`, `archive`, `liveBranches`, `worktreesDirectory`, `runningThreads`.
 - `cooldown.ts`, `pass.ts`, `runner/progress.ts`, `runner/launchTarget.ts`: types only.
 
-The P1 interface is the same minus `brokenWorktrees`, `liveBranches` and `ThreadOnBrokenWorktree`, with `Model.options` narrowed to `{ readonly effort?: string }` and the service key renamed `factory-runner/sessions/FactorySessions`.
+The P1 interface is the same minus `brokenWorktrees` and `liveBranches`, with `ThreadOnBrokenWorktree` moved to `pass.ts`, `Model.options` keeping the ledger's array shape `ReadonlyArray<{ readonly id: string; readonly value: string | boolean }>`, and the service key renamed `factory-runner/sessions/FactorySessions`.
 
 ### Ids and the adapter's records
 
