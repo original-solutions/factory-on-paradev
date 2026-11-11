@@ -234,3 +234,10 @@ it.effect("a binary that cannot start keeps the cause", () =>
     assert.include(error.text, "EACCES /x");
   }),
 );
+
+it("stderr with no Error line keeps only its last 2000 characters", () => {
+  const stderr = `${"trace line\n".repeat(1000)}the end\n`;
+  const { text } = classify(stderr);
+  assert.strictEqual(text.length, 2000);
+  assert.isTrue(text.endsWith("the end"));
+});

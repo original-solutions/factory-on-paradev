@@ -76,7 +76,8 @@ export const classify = (
   const lines = stderr.split("\n").map((line) => line.trimEnd());
   const at = lines.findIndex((line) => line.startsWith("Error: "));
   if (at === -1) {
-    const text = lines.filter((line) => line !== "").join("\n");
+    // A crash's stack trace can be long; its end says most.
+    const text = lines.filter((line) => line !== "").join("\n").slice(-2000);
     return { kind: "UNKNOWN", text: text === "" ? "no error message" : text, hint: null };
   }
   const text = lines[at]!.slice("Error: ".length);

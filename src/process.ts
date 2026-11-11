@@ -138,7 +138,8 @@ class Tail {
   private trim(): Buffer {
     let buf = Buffer.concat(this.chunks, this.length);
     if (buf.length > this.cap) {
-      buf = buf.subarray(buf.length - this.cap);
+      // A copy, so the kept end does not hold the whole joined buffer alive.
+      buf = Buffer.from(buf.subarray(buf.length - this.cap));
       this.dropped = true;
     }
     this.chunks = [buf];
