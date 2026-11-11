@@ -364,7 +364,8 @@ describe("launch", () => {
       const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase } });
       yield* t.run((s) => s.launch(request({ baseRef: "x8-origin-only" })));
       const status = t.gitCalls.find((c) => c.args.includes("status"))!;
-      assert.include(status.args, "--ignore-submodules=all");
+      // `dirty`, not `all`: a changed submodule commit is still work, and no status runs inside it.
+      assert.include(status.args, "--ignore-submodules=dirty");
       assert.include(status.args, "--no-optional-locks");
       const reset = t.gitCalls.find((c) => c.args.includes("reset"))!;
       assert.include(reset.args, "--no-recurse-submodules");
