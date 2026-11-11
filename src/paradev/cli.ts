@@ -47,9 +47,13 @@ export class CliError extends Schema.TaggedError<CliError>()("ParadevCliError", 
   hint: Schema.NullOr(Schema.String),
 }) {
   override get message(): string {
-    return `superset ${this.argv.join(" ")} failed (${this.kind}): ${this.text}`;
+    return `superset ${this.argv.map(shorten).join(" ")} failed (${this.kind}): ${this.text}`;
   }
 }
+
+/** A prompt or a belt payload is an argument too; the log gets only its start. */
+const shorten = (arg: string): string =>
+  arg.length > 80 ? `${arg.slice(0, 80)}…(${arg.length} chars)` : arg;
 
 /** Matched in order against the start of the `Error: ` line. */
 const KINDS: ReadonlyArray<readonly [prefix: string | RegExp, kind: CliErrorKind]> = [
@@ -126,10 +130,17 @@ export const layer = (config: CliConfig = {}): Layer.Layer<SupersetCli, never, F
               termGraceMs: TERM_GRACE_MS,
               tailBytes: OUTPUT_CAP_BYTES,
             })
-            .pipe(Effect.mapError((error) => fail("UNKNOWN", error.message)));
+            .pipe(
+              Effect.mapError((error) =>
+                fail("UNKNOWN", `${error.message} ${String(error.cause)}`),
+              ),
+            );
           if (result.timedOut) {
             const ms = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
             return yield* fail("TIMEOUT", `no answer within ${ms} ms`);
+          }
+          if (result.exitCode === null) {
+            return yield* fail("UNKNOWN", "the CLI was ended by a signal");
           }
           if (result.exitCode !== 0) {
             const { kind, text, hint } = classify(result.stderrTail);

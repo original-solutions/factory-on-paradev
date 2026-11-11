@@ -202,3 +202,35 @@ it.live("a call past its timeout kills the CLI and its grandchild, and fails TIM
     }),
   ),
 );
+
+it.effect("the error message cuts a long argument, so a payload does not reach the log", () =>
+  Effect.gen(function* () {
+    const fake = recorder(done(1, "", "Error: A stored value is at most 65536 bytes\n"));
+    const payload = "x".repeat(70_000);
+    const error = yield* Effect.flip(call(fake.layer, ["pages", "storage", "--set", payload]));
+    assert.strictEqual(error.argv[3], payload);
+    assert.isBelow(error.message.length, 500);
+    assert.include(error.message, "pages storage --set xxx");
+    assert.include(error.message, "70000 chars");
+  }),
+);
+
+it.effect("a CLI killed by a signal says so", () =>
+  Effect.gen(function* () {
+    const error = yield* Effect.flip(call(recorder(done(null, "")).layer, ["snapshot"]));
+    assert.strictEqual(error.kind, "UNKNOWN");
+    assert.include(error.text, "signal");
+  }),
+);
+
+it.effect("a binary that cannot start keeps the cause", () =>
+  Effect.gen(function* () {
+    const process = FactoryProcess.of({
+      run: () =>
+        Effect.fail(new Process.RunSpawnError({ shell: false, cause: new Error("EACCES /x") })),
+    });
+    const error = yield* Effect.flip(call(Layer.succeed(FactoryProcess, process), ["snapshot"]));
+    assert.strictEqual(error.kind, "UNKNOWN");
+    assert.include(error.text, "EACCES /x");
+  }),
+);
