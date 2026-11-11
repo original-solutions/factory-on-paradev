@@ -465,7 +465,7 @@ describe("launch", () => {
     },
     {
       name: "a partial clone whose promisor remote has an uploadpack, and a ref to a missing object",
-      outcome: "launches",
+      outcome: "refuses",
       plant: (clone, _scratch, marks) => {
         git(clone, "config", "core.repositoryformatversion", "1");
         git(clone, "config", "extensions.partialClone", "origin");

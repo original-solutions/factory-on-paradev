@@ -228,14 +228,17 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * One git call, hardened as the gate's are: a session can write the clone's config and hooks.
    * The invariant: no git call the adapter runs in the clone or a worktree executes a command
    * that repo's config names. Each exec-capable key is pinned one way:
-   * - hooks, fsmonitor, `ext` transport, alternate refs: HARDENED_GIT_CONFIG;
+   * - hooks directory, fsmonitor, `ext` transport, alternate refs, auto gc and maintenance:
+   *   HARDENED_GIT_CONFIG;
+   * - lazy fetch from a promisor remote: `GIT_NO_LAZY_FETCH` in HARDENED_GIT_ENV;
    * - `remote.<name>.uploadpack`: the clone-side fetch passes `--upload-pack` on the command line;
    * - `protocol.<name>.allow` (with `insteadOf` and `core.sshCommand`): `GIT_ALLOW_PROTOCOL`,
    *   which overrides every `protocol.*.allow`, so no `-c protocol` flag is needed;
-   * - filter drivers: `blankFilters` blanks each one listed, and refuses the launch when the
-   *   listing is not complete.
-   * Only the by-URL fetch gets credentials, through `gh`, and only into a repository whose
-   * config is the adapter's own.
+   * - filter drivers and config hooks (`hook.<name>.*`): `sessionRepo` blanks each one listed, and
+   *   refuses the launch when the listing is not complete.
+   * So `git` is for the adapter's own scratch repository and the listing itself; every call in the
+   * clone or a worktree goes through `sessionRepo`. Only the by-URL fetch gets credentials,
+   * through `gh`, and only into a repository whose config is the adapter's own.
    */
   const git = (
     dir: string,
@@ -396,50 +399,66 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
           env: { GIT_ALLOW_PROTOCOL: fileTransportFor(remoteBase) === "always" ? "https:file" : "https" },
         },
       );
-      yield* gitOk(
-        project.path,
+      const clone = yield* sessionRepo(project.path);
+      yield* clone.gitOk(
         [
           ...fetchArgs,
+          "--no-auto-maintenance",
           "--upload-pack=git-upload-pack",
           scratch,
           `+refs/heads/${baseRef}:refs/remotes/origin/${baseRef}`,
         ],
-        { env: { GIT_ALLOW_PROTOCOL: "file" }, timeoutMs: 120_000 },
+        { timeoutMs: 120_000 },
       );
       return yield* gitOk(scratch, ["rev-parse", "--verify", "--end-of-options", `refs/heads/${baseRef}^{commit}`]);
     });
 
   /**
-   * `-c` flags that blank every filter driver the repository's config names. `-c` splits at the
-   * first `=`, so a driver whose name has anything outside `[A-Za-z0-9._-]` cannot be blanked
-   * that way: the launch fails rather than run git where its filter would run. The listing must
+   * `git` and `gitOk` for a repository a session can write (the clone, or a worktree of it), with
+   * every filter driver and config hook its config names turned off, and only `file` transport. The
+   * names come from one listing, taken here: they are what the calls of this operation run with.
+   * `-c` splits at the first `=`, so a name with anything outside `[A-Za-z0-9._-]` cannot be
+   * turned off that way: the launch fails rather than run git where it would run. The listing must
    * be complete: a truncated one, or a failure other than "none configured" (exit 1), fails the
-   * launch too, since a driver left out of it would not be blanked.
+   * launch too, since a name left out of it would not be turned off. A hook is turned off with
+   * `enabled=false`; an empty `command` would make git fail the call it hooks.
    */
-  const blankFilters = (dir: string) =>
+  const sessionRepo = (dir: string) =>
     Effect.gen(function* () {
-      const listed = yield* git(dir, ["config", "-z", "--name-only", "--get-regexp", "^filter\\."], {
+      const listed = yield* git(dir, ["config", "-z", "--name-only", "--get-regexp", "^(filter|hook)\\."], {
         tailBytes: 1024 * 1024,
       });
       if (listed.timedOut || listed.tailTruncated || (listed.exitCode !== 0 && listed.exitCode !== 1)) {
-        return yield* fail("the filter drivers of the repository could not be listed in full; the worktree was left as it is");
+        return yield* fail("the filter drivers and hooks of the repository could not be listed in full; nothing was run in it");
       }
-      const drivers = new Set(
+      const names = new Set(
         listed.exitCode === 0
-          ? listed.tail.split("\0").flatMap((name) => {
-              const match = /^filter\.(.+)\.[^.]+$/s.exec(name);
-              return match === null ? [] : [match[1]!];
+          ? listed.tail.split("\0").flatMap((key) => {
+              const match = /^(filter|hook)\.(.+)\.[^.]+$/s.exec(key);
+              return match === null ? [] : [`${match[1]}.${match[2]}`];
             })
           : [],
       );
-      for (const driver of drivers) {
-        if (!/^[A-Za-z0-9._-]+$/.test(driver)) {
-          return yield* fail(`the filter driver ${JSON.stringify(driver)} cannot be turned off safely; the worktree was left as it is`);
+      for (const name of names) {
+        if (!/^(filter|hook)\.[A-Za-z0-9._-]+$/.test(name)) {
+          return yield* fail(`${JSON.stringify(name)} in the repository's config cannot be turned off safely; nothing was run in it`);
         }
       }
-      return [...drivers].flatMap((driver) =>
-        ["smudge=", "clean=", "process=", "required=false"].flatMap((key) => ["-c", `filter.${driver}.${key}`]),
+      const pins = [...names].flatMap((name) =>
+        (name.startsWith("filter.")
+          ? ["smudge=", "clean=", "process=", "required=false"].map((key) => `${name}.${key}`)
+          : [`${name}.enabled=false`]
+        ).flatMap((setting) => ["-c", setting]),
       );
+      const options = (given: Parameters<typeof git>[2] = {}): Parameters<typeof git>[2] => ({
+        ...given,
+        pre: [...pins, ...(given.pre ?? [])],
+        env: { GIT_ALLOW_PROTOCOL: "file", ...given.env },
+      });
+      return {
+        git: (args: ReadonlyArray<string>, given?: Parameters<typeof git>[2]) => git(dir, args, options(given)),
+        gitOk: (args: ReadonlyArray<string>, given?: Parameters<typeof git>[2]) => gitOk(dir, args, options(given)),
+      };
     });
 
   /**
@@ -447,32 +466,31 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * branch the runner never moves, or the project's default branch for one the clone lacks (X8).
    * So the new worktree's HEAD must be `base`, the commit just fetched, else it is reset there.
    * A worktree holding work (an edit, or a commit no other branch has) is never reset: that is an
-   * earlier attempt's agent, and the answer is `kept`. Filter drivers a session put in the shared
-   * config are blanked for the status and the checkout.
+   * earlier attempt's agent, and the answer is `kept`. Filter drivers and hooks a session put in
+   * the shared config are turned off for every call.
    */
   const baseCheck = (worktreePath: string, base: string) =>
     Effect.gen(function* () {
-      const head = yield* gitOk(worktreePath, ["rev-parse", "--verify", "HEAD^{commit}"]);
+      const repo = yield* sessionRepo(worktreePath);
+      const head = yield* repo.gitOk(["rev-parse", "--verify", "HEAD^{commit}"]);
       if (head === base) return "at-base" as const;
-      const blank = yield* blankFilters(worktreePath);
       // No status inside a submodule: its own config and filters are not blanked here. `dirty`
       // still shows a changed submodule commit, which is work.
-      const changed = yield* gitOk(
-        worktreePath,
+      const changed = yield* repo.gitOk(
         ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=dirty"],
-        { pre: ["--no-optional-locks", ...blank] },
+        { pre: ["--no-optional-locks"] },
       );
       // A commit only the checked-out branch has is work; one another branch has is not.
-      const onBranch = yield* git(worktreePath, ["symbolic-ref", "-q", "HEAD"]);
+      const onBranch = yield* repo.git(["symbolic-ref", "-q", "HEAD"]);
       // `--exclude` before `--branches` takes the name without `refs/heads/`.
       const exclude =
         onBranch.exitCode === 0 ? [`--exclude=${onBranch.tail.trim().replace(/^refs\/heads\//, "")}`] : [];
-      const ownCommit = yield* gitOk(worktreePath, [
+      const ownCommit = yield* repo.gitOk([
         "rev-list", "--max-count=1", "HEAD", "--not", ...exclude, "--branches", "--remotes",
       ]);
       if (changed !== "" || ownCommit !== "") return "kept" as const;
-      yield* gitOk(worktreePath, ["reset", "--hard", "--no-recurse-submodules", "-q", base], {
-        pre: ["-c", "submodule.recurse=false", ...blank],
+      yield* repo.gitOk(["reset", "--hard", "--no-recurse-submodules", "-q", base], {
+        pre: ["-c", "submodule.recurse=false"],
       });
       return "reset" as const;
     });
@@ -696,11 +714,12 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   const worktreeCheckout = Effect.fn("ParadevSessions.worktreeCheckout")(function* (path: string) {
     if (!(yield* fs.exists(`${path}/.git`))) return null;
-    const head = yield* gitOk(path, ["rev-parse", "--verify", "HEAD^{commit}"]);
+    const repo = yield* sessionRepo(path);
+    const head = yield* repo.gitOk(["rev-parse", "--verify", "HEAD^{commit}"]);
     if (!isCommitId(head)) {
       return yield* fail(`HEAD is not a commit id: ${head}`);
     }
-    const branch = yield* git(path, ["symbolic-ref", "-q", "--short", "HEAD"]);
+    const branch = yield* repo.git(["symbolic-ref", "-q", "--short", "HEAD"]);
     if (branch.timedOut || (branch.exitCode !== 0 && branch.exitCode !== 1)) {
       return yield* fail(`git symbolic-ref exited ${branch.exitCode}`);
     }

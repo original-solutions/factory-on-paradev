@@ -1,7 +1,8 @@
 /**
  * What every factory git call runs with in a repository a session can write to: no system or
- * global config, hooks, fsmonitor, eol conversion or `ext` transport, so nothing a session puts in
- * the repository's config or hooks runs as the factory.
+ * global config, hooks directory, fsmonitor, eol conversion, `ext` transport or automatic
+ * maintenance. Config-defined hooks (`hook.<name>.*`) and filter drivers are named by the
+ * repository's own config, so a caller that cannot trust it blanks them one by one.
  */
 export const HARDENED_GIT_CONFIG: ReadonlyArray<string> = [
   "core.fsmonitor=false",
@@ -14,6 +15,10 @@ export const HARDENED_GIT_CONFIG: ReadonlyArray<string> = [
   "protocol.ext.allow=never",
   // Fetch-pack runs this to list an alternate's refs; empty turns it off.
   "core.alternateRefsCommand=",
+  // Fetch, commit and others start `gc --auto` or `maintenance run --auto` on exit; both read
+  // `gc.recentObjectsHook` from the config.
+  "maintenance.auto=false",
+  "gc.auto=0",
 ];
 
 /** The environment of a hardened git call; `-c` flags cannot turn the system and global config off. */
@@ -23,6 +28,9 @@ export const HARDENED_GIT_ENV: Readonly<Record<string, string>> = {
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_NO_REPLACE_OBJECTS: "1",
   GIT_LFS_SKIP_SMUDGE: "1",
+  // A partial clone fetches a missing object from its promisor remote by running `git fetch`, which
+  // reads that remote's `uploadpack` from the repository's config.
+  GIT_NO_LAZY_FETCH: "1",
   // Git's messages in English, whatever the locale the server started in.
   LC_ALL: "C",
 };
