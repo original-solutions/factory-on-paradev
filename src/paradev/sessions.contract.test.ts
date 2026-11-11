@@ -1353,6 +1353,16 @@ describe("worktreeCheckout", () => {
       assert.isNull(yield* t.run((s) => s.worktreeCheckout(tempDir("empty"))));
     }),
   );
+
+  it.live("still answers when the clone's config holds a filter it cannot name with -c", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/1-1", "main");
+      git(r.clone, "config", "filter.x=y.smudge", "false");
+      const t = rig([]);
+      assert.deepStrictEqual(yield* t.run((s) => s.worktreeCheckout(r.worktree)), { head: r.main, branch: "fac/1-1" });
+    }),
+  );
 });
 
 describe("the real process lookup", () => {
