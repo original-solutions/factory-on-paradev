@@ -43,7 +43,7 @@ export interface Model {
   /** The model id, e.g. `claude-sonnet-5-5`. */
   readonly model: string;
   /** The provider options the selection carries (a reasoning effort, say), when it has any. */
-  readonly options?: { readonly effort?: string };
+  readonly options?: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }>;
 }
 
 /** The T3 project of a watched repo, as `findProject` answers it. */
