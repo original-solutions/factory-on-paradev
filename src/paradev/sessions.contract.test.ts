@@ -124,7 +124,12 @@ interface Rig {
 
 const rig = (
   script: ReadonlyArray<Step>,
-  options: { readonly agentRunning?: boolean; readonly config?: Partial<ParadevSessionsConfig> } = {},
+  options: {
+    readonly agentRunning?: boolean;
+    readonly config?: Partial<ParadevSessionsConfig>;
+    /** Changes what a git call answers, from its argv; the call still runs. */
+    readonly gitResult?: (args: ReadonlyArray<string>) => { readonly tailTruncated?: boolean; readonly exitCode?: number } | undefined;
+  } = {},
 ): Rig => {
   const fake = fakeSuperset(script);
   const data = tempDir("data");
@@ -137,7 +142,10 @@ const rig = (
       return FactoryProcess.of({
         run: (input) => {
           if (input.command === "git") gitCalls.push({ args: input.args ?? [], env: input.env ?? {} });
-          return real.run(input);
+          const changed = input.command === "git" ? options.gitResult?.(input.args ?? []) : undefined;
+          return changed === undefined
+            ? real.run(input)
+            : Effect.map(real.run(input), (result) => ({ ...result, ...changed }));
         },
       });
     }),
@@ -413,18 +421,22 @@ describe("launch", () => {
   );
 
   // The invariant: no git call the adapter runs in the clone or a worktree runs a command the
-  // repo's config names. Each case plants one exec-capable shape a session could write.
+  // repo's config names. Each case plants one exec-capable shape a session could write, and says
+  // what the launch comes to: it starts at the fetched base, or it is refused and touches nothing.
   const planted: ReadonlyArray<{
     readonly name: string;
+    readonly outcome: "launches" | "refuses";
     readonly plant: (clone: string, scratch: string, marks: string) => void;
   }> = [
     {
       name: "remote.<scratch>.uploadpack",
+      outcome: "launches",
       plant: (clone, scratch, marks) =>
         git(clone, "config", `remote.${scratch}.uploadpack`, `touch ${marks}/uploadpack; git-upload-pack`),
     },
     {
       name: "protocol.ssh.allow with an ssh insteadOf of the scratch path and core.sshCommand",
+      outcome: "refuses",
       plant: (clone, scratch, marks) => {
         git(clone, "config", "protocol.ssh.allow", "always");
         git(clone, "config", "url.ssh://x/y.insteadOf", scratch);
@@ -433,6 +445,7 @@ describe("launch", () => {
     },
     {
       name: "a filter driver listed before more than 16 KiB of other filter keys",
+      outcome: "launches",
       plant: (clone, _scratch, marks) => {
         git(clone, "config", "filter.evil.smudge", `sh -c 'touch ${marks}/smudge; cat'`);
         git(clone, "config", "filter.evil.clean", `sh -c 'touch ${marks}/clean; cat'`);
@@ -441,17 +454,84 @@ describe("launch", () => {
         NodeFS.writeFileSync(NodePath.join(clone, ".git", "info", "attributes"), "* filter=evil\n");
       },
     },
+    {
+      name: "a config hook on reference-transaction and post-index-change",
+      outcome: "launches",
+      plant: (clone, _scratch, marks) => {
+        git(clone, "config", "hook.x.event", "reference-transaction");
+        git(clone, "config", "--add", "hook.x.event", "post-index-change");
+        git(clone, "config", "hook.x.command", `touch ${marks}/hook`);
+      },
+    },
+    {
+      name: "a partial clone whose promisor remote has an uploadpack, and a ref to a missing object",
+      outcome: "launches",
+      plant: (clone, _scratch, marks) => {
+        git(clone, "config", "core.repositoryformatversion", "1");
+        git(clone, "config", "extensions.partialClone", "origin");
+        git(clone, "config", "remote.origin.promisor", "true");
+        git(clone, "config", "remote.origin.url", clone);
+        git(clone, "config", "remote.origin.uploadpack", `touch ${marks}/promisor; git-upload-pack`);
+        NodeFS.writeFileSync(NodePath.join(clone, ".git", "refs", "heads", "zzz"), `${"1".repeat(40)}\n`);
+      },
+    },
+    {
+      name: "gc.recentObjectsHook with auto gc due",
+      outcome: "launches",
+      plant: (clone, _scratch, marks) => {
+        git(clone, "config", "gc.recentObjectsHook", `touch ${marks}/gc`);
+        git(clone, "config", "gc.auto", "1");
+        git(clone, "config", "gc.autoPackLimit", "1");
+      },
+    },
   ];
-  for (const { name, plant } of planted) {
+  for (const { name, outcome, plant } of planted) {
     it.live(`runs nothing the clone's config names: ${name}`, () =>
       Effect.gen(function* () {
         const r = repos();
         r.addWorktree("fac/x8", "main");
         const marks = tempDir("marks");
-        const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase } });
+        const t = rig(launchScript(r).filter((step) => outcome === "launches" || step.fixture !== "agents-create-local-resume"), {
+          config: { remoteBase: r.remoteBase },
+        });
         plant(r.clone, `${t.data}/paradev/fetch/${SPIKE_PROJECT}.git`, marks);
-        yield* Effect.exit(t.run((s) => s.launch(request({ baseRef: "x8-origin-only" }))));
+        const exit = yield* Effect.exit(t.run((s) => s.launch(request({ baseRef: "x8-origin-only" }))));
         assert.deepStrictEqual(NodeFS.readdirSync(marks), []);
+        if (outcome === "launches") {
+          assert.isTrue(exit._tag === "Success");
+          assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.originOnly);
+        } else {
+          assert.isTrue(exit._tag === "Failure");
+          assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.main);
+          assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+        }
+      }),
+    );
+  }
+
+  // The config listing that decides which filters and hooks are blanked must be complete.
+  const listing = (args: ReadonlyArray<string>) => args.includes("--get-regexp") && args.includes("-z");
+  const listingFailures: ReadonlyArray<readonly [string, { readonly tailTruncated?: boolean; readonly exitCode?: number }]> = [
+    ["overflows its tail", { tailTruncated: true }],
+    ["exits 128", { exitCode: 128 }],
+  ];
+  for (const [name, answer] of listingFailures) {
+    it.live(`refuses the launch when the filter and hook listing ${name}`, () =>
+      Effect.gen(function* () {
+        const r = repos();
+        r.addWorktree("fac/x8", "main");
+        const marks = tempDir("marks");
+        git(r.clone, "config", "filter.evil.smudge", `sh -c 'touch ${marks}/smudge; cat'`);
+        NodeFS.writeFileSync(NodePath.join(r.clone, ".git", "info", "attributes"), "* filter=evil\n");
+        const t = rig(launchScript(r).filter((step) => step.fixture !== "agents-create-local-resume"), {
+          config: { remoteBase: r.remoteBase },
+          gitResult: (args) => (listing(args) ? answer : undefined),
+        });
+        const error = yield* Effect.flip(t.run((s) => s.launch(request({ baseRef: "x8-origin-only" }))));
+        assert.strictEqual(error._tag, "FactorySessionsError");
+        assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.main);
+        assert.deepStrictEqual(NodeFS.readdirSync(marks), []);
+        assert.isUndefined(t.calls.find(argvIs("agents", "create")));
       }),
     );
   }
