@@ -412,6 +412,50 @@ describe("launch", () => {
     }),
   );
 
+  // The invariant: no git call the adapter runs in the clone or a worktree runs a command the
+  // repo's config names. Each case plants one exec-capable shape a session could write.
+  const planted: ReadonlyArray<{
+    readonly name: string;
+    readonly plant: (clone: string, scratch: string, marks: string) => void;
+  }> = [
+    {
+      name: "remote.<scratch>.uploadpack",
+      plant: (clone, scratch, marks) =>
+        git(clone, "config", `remote.${scratch}.uploadpack`, `touch ${marks}/uploadpack; git-upload-pack`),
+    },
+    {
+      name: "protocol.ssh.allow with an ssh insteadOf of the scratch path and core.sshCommand",
+      plant: (clone, scratch, marks) => {
+        git(clone, "config", "protocol.ssh.allow", "always");
+        git(clone, "config", "url.ssh://x/y.insteadOf", scratch);
+        git(clone, "config", "core.sshCommand", `touch ${marks}/ssh; false`);
+      },
+    },
+    {
+      name: "a filter driver listed before more than 16 KiB of other filter keys",
+      plant: (clone, _scratch, marks) => {
+        git(clone, "config", "filter.evil.smudge", `sh -c 'touch ${marks}/smudge; cat'`);
+        git(clone, "config", "filter.evil.clean", `sh -c 'touch ${marks}/clean; cat'`);
+        const filler = Array.from({ length: 1500 }, (_, i) => `[filter "pad${i}"]\n\tsmudge =\n`).join("");
+        NodeFS.appendFileSync(NodePath.join(clone, ".git", "config"), filler);
+        NodeFS.writeFileSync(NodePath.join(clone, ".git", "info", "attributes"), "* filter=evil\n");
+      },
+    },
+  ];
+  for (const { name, plant } of planted) {
+    it.live(`runs nothing the clone's config names: ${name}`, () =>
+      Effect.gen(function* () {
+        const r = repos();
+        r.addWorktree("fac/x8", "main");
+        const marks = tempDir("marks");
+        const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase } });
+        plant(r.clone, `${t.data}/paradev/fetch/${SPIKE_PROJECT}.git`, marks);
+        yield* Effect.exit(t.run((s) => s.launch(request({ baseRef: "x8-origin-only" }))));
+        assert.deepStrictEqual(NodeFS.readdirSync(marks), []);
+      }),
+    );
+  }
+
   it.live("refuses a filter driver it cannot blank with -c, and touches the worktree not at all", () =>
     Effect.gen(function* () {
       const r = repos();
@@ -467,7 +511,7 @@ describe("launch", () => {
     }),
   );
 
-  it.live("a transient failure of a step is retried once after 2 s, and Workspace not found is not retried", () =>
+  it.live("a transient failure of a step is retried once, and Workspace not found is not retried", () =>
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/x8", "main");
