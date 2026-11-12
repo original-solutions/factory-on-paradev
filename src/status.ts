@@ -6,8 +6,7 @@
  */
 import type { AttentionItem } from "./attention.ts";
 import type { MachineHealth } from "./health.ts";
-import { deployWait, loadDeploySnooze, loadHandPause, loadPendingDeploy } from "./claims.ts";
-import { DEFAULT_DEPLOY_WAIT_MINUTES } from "./config.ts";
+import { loadHandPause } from "./claims.ts";
 import { scanMachineLogBack, type MachineEntry } from "./ledger/machineLog.ts";
 import { dataText } from "./ledger/read.ts";
 import {
@@ -24,8 +23,6 @@ import { formatTs } from "./ledger/time.ts";
 export interface StatusSettings {
   readonly pollSeconds: number;
   readonly maxConcurrentRuns: number;
-  /** Minutes a waiting build waits for the runs in progress before autodeploy installs it anyway. */
-  readonly deployWaitMinutes: number;
   /** The `repo` of every repo the last pass listed as watched, `owner/name`; empty before the first pass lists them. */
   readonly repos: ReadonlyArray<string>;
 }
@@ -71,24 +68,6 @@ export interface StatusReport {
   readonly threads: { readonly running: number | null };
   /** Claims held back by a person, or null. */
   readonly paused_by_hand: { readonly since: string; readonly for_ms: number } | null;
-  /**
-   * The build autodeploy has waiting, which holds claims back unless snoozed; null when there is
-   * none or its marker is stale.
-   */
-  readonly deploy_pending: {
-    /** The newest build waiting, as a hex sha, when the marker names one. */
-    readonly commit: string | null;
-    /** When the first build left waiting was found. */
-    readonly since: string;
-    readonly waited_ms: number;
-    /**
-     * When autodeploy installs it over the runs in progress: `deploy_wait_minutes` after the first
-     * wait or the end of the last snooze, whichever is later. Null while snoozed.
-     */
-    readonly deploy_by: string | null;
-    /** When the snooze in force ends, or null. */
-    readonly snoozed_until: string | null;
-  } | null;
   /** The runs that are not finished, oldest first. */
   readonly runs: ReadonlyArray<{
     readonly id: string;
@@ -333,8 +312,6 @@ export const buildStatus = (input: {
 
   const watched = settings === null ? null : settings.repos.map(asciiLower);
   const pause = loadHandPause(dataDir);
-  const wait = deployWait(loadPendingDeploy(dataDir), loadDeploySnooze(dataDir), nowMs);
-  const waitMinutes = settings === null ? DEFAULT_DEPLOY_WAIT_MINUTES : settings.deployWaitMinutes;
   return {
     state: input.status.state,
     reason: input.status.state === "idle" ? input.status.reason : null,
@@ -349,17 +326,6 @@ export const buildStatus = (input: {
       pause === null
         ? null
         : { since: formatTs(pause.sinceMs), for_ms: Math.max(0, nowMs - pause.sinceMs) },
-    deploy_pending:
-      wait === null
-        ? null
-        : {
-            commit: wait.pending.commit,
-            since: formatTs(wait.pending.sinceMs),
-            waited_ms: Math.max(0, nowMs - wait.pending.sinceMs),
-            deploy_by:
-              wait.clockFromMs === null ? null : formatTs(wait.clockFromMs + waitMinutes * 60_000),
-            snoozed_until: wait.snoozedUntilMs === null ? null : formatTs(wait.snoozedUntilMs),
-          },
     runs: open.map((read) => runRow(read, nowMs)),
     left_out:
       watched === null

@@ -8,7 +8,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 
 import type { Attention, NewItem } from "./attention.ts";
-import { deployWait, PENDING_STALE_MS, type HandPause, type PendingDeploy } from "./claims.ts";
+import type { HandPause } from "./claims.ts";
 import {
   ambiguousMessage,
   ambiguousRepos,
@@ -68,6 +68,13 @@ import {
 // Local copies of the types `t3/branchPrune.ts` and `t3/sessions.ts` gave the pass world at the
 // source commit. The P1 runner has neither: `pruneBranches` answers an empty report and
 // `threadsOnBrokenWorktrees` answers none.
+
+/** Why the Paradev hold holds claims: what failed, in the CLI's or the check's words. */
+export interface ParadevDown {
+  /** `offline`: the host service does not answer. `signed-out`: no login. `cli-check`: `superset schema` lacks what the runner uses. */
+  readonly reason: "offline" | "signed-out" | "cli-check";
+  readonly message: string;
+}
 
 /** Why a `t3/*` branch was pruned. */
 export type PruneReason = "merged" | "pr-merged" | "pr-closed" | "stale";
@@ -367,10 +374,13 @@ export interface PassWorld {
   ) => Effect.Effect<void, LedgerError>;
   /** The claims pause a person made, when there is one. */
   readonly handPause: () => HandPause | null;
-  /** The build autodeploy has waiting for the runs in progress to end, when there is one. */
-  readonly pendingDeploy: () => PendingDeploy | null;
-  /** The end of the snooze in `deploy-snoozed`, in epoch ms, whether or not it has passed. */
-  readonly deploySnooze: () => number | null;
+  /**
+   * Why Paradev cannot take a new session now: the CLI check at start failed, or `superset
+   * status` fails this pass. Null when it can. Read once a pass.
+   */
+  readonly paradevDown: () => Effect.Effect<ParadevDown | null>;
+  /** How many passes in a row the Paradev hold has held claims; kept from pass to pass. */
+  readonly paradevHold: { passes: number };
   /**
    * The free space of the fuller of the volumes that hold the sessions' worktrees and the gate's
    * checkouts; not read when `min_free_gib` is 0.
@@ -606,8 +616,8 @@ class Pass {
   lowDisk = false;
   /** The load is above `max_load_per_core`: nothing is claimed. */
   highLoad = false;
-  /** A build autodeploy has waiting: nothing is claimed until it is installed. */
-  draining = false;
+  /** Paradev does not answer, or its CLI lacks what the runner uses: nothing is claimed. */
+  paradevOffline = false;
   /** The machine's `model_fallbacks`. */
   fallbacks: Readonly<Record<string, string>> = {};
   readonly startedMs: number;
@@ -793,7 +803,7 @@ export const runPass = Effect.fn("Pass.runPass")(function* (
   const repos = yield* loadRepos(world, watched, pass);
   pass.lowDisk = yield* lowDisk(world, machine, pass);
   pass.highLoad = yield* highLoad(world, machine, pass);
-  pass.draining = yield* drainingForDeploy(world, machine, pass);
+  pass.paradevOffline = yield* paradevOffline(world, pass);
   yield* brokenWorktrees(world, pass);
   // Without the ledger there is no telling how many runs are active, so nothing is claimed.
   const infos = yield* runs(world, pass);
@@ -900,9 +910,8 @@ const pruneStaleBranches = Effect.fn("Pass.pruneStaleBranches")(function* (
       yield* pass.fail(null, passError(kind, `${name}: branch prune: `, message));
       continue;
     }
-    const verb = machine.pruneBranchesDryRun ? "would prune" : "pruned";
     for (const { ref, sha, reason } of result.success.pruned) {
-      pass.line(plain(`${name}: ${verb} ${ref} at ${sha} (${reason})`));
+      pass.line(plain(`${name}: pruned ${ref} at ${sha} (${reason})`));
     }
     for (const { ref, why } of result.success.left) {
       pass.line(plain(`${name}: left ${ref}: ${why}`));
@@ -990,63 +999,52 @@ const highLoad = Effect.fn("Pass.highLoad")(function* (
   return true;
 });
 
-/** The machine's attention item while a build has waited past `deploy_wait_minutes`. */
-const DEPLOY_WAITING_ITEM_ID = "deploy-waiting";
+/** The machine's attention item while the Paradev hold has lasted `PARADEV_HOLD_PASSES` passes. */
+export const PARADEV_OFFLINE_ITEM_ID = "paradev-offline";
+
+/** Passes in a row the Paradev hold lasts before it raises its attention item. */
+export const PARADEV_HOLD_PASSES = 3;
+
+/** The attention text of a Paradev hold, by what failed. */
+const paradevHoldText = (down: ParadevDown): string => {
+  const held = `no issue has been claimed for ${PARADEV_HOLD_PASSES} passes`;
+  switch (down.reason) {
+    case "offline":
+      return `Paradev is offline: ${held}; open the Paradev app, or start its host service (superset status fails)`;
+    case "signed-out":
+      return `Paradev is signed out: ${held}; run superset auth login`;
+    case "cli-check":
+      return `the Paradev CLI check failed: ${held}; ${plain(down.message)}`;
+  }
+};
 
 /**
- * Whether a waiting autodeploy build holds claims back: yes until installed, unless the marker is
- * stale or a person's snooze lasts; an ended snooze restarts the wait. Past `deploy_wait_minutes`
- * an attention item says autodeploy installs over the runs in progress.
+ * Whether Paradev holds claims back: while the CLI check or `superset status` fails, the pass
+ * claims nothing and records `claim_skipped` with reason `paradev-offline`. Running builds are
+ * worked as usual. Once the hold has lasted `PARADEV_HOLD_PASSES` passes in a row one attention
+ * item is raised; it clears on the first pass Paradev answers.
  */
-const drainingForDeploy = Effect.fn("Pass.drainingForDeploy")(function* (
-  world: PassWorld,
-  machine: MachineConfig,
-  pass: Pass,
-) {
-  const clear = world.attention.clear((item) => item.id === DEPLOY_WAITING_ITEM_ID);
-  const pending = world.pendingDeploy();
-  if (pending === null) {
-    yield* clear;
+const paradevOffline = Effect.fn("Pass.paradevOffline")(function* (world: PassWorld, pass: Pass) {
+  const down = yield* world.paradevDown();
+  if (down === null) {
+    world.paradevHold.passes = 0;
+    yield* world.attention.clear((item) => item.id === PARADEV_OFFLINE_ITEM_ID);
     return false;
   }
-  const now = world.nowMs();
-  const age = now - pending.writtenMs;
-  if (age > PENDING_STALE_MS) {
-    pass.line(
-      `deploy-pending is stale: autodeploy last wrote it ${duration(age)} ago; no build is taken to be waiting; delete it if autodeploy is off`,
-    );
-    yield* clear;
-    return false;
-  }
-  const build = pending.commit === null ? "a build" : `build ${pending.commit.slice(0, 9)}`;
-  const wait = deployWait(pending, world.deploySnooze(), now);
-  // Null only for a missing or stale marker, which returned above.
-  if (wait === null) return false;
-  if (wait.snoozedUntilMs !== null) {
-    pass.line(
-      `deploy snoozed until ${formatTs(wait.snoozedUntilMs)}: ${build} is waiting; claiming as normal`,
-    );
-    yield* clear;
-    return false;
-  }
-  const waited = Math.max(0, now - wait.clockFromMs);
+  world.paradevHold.passes += 1;
   pass.line(
-    `draining for deploy: ${build} has waited ${duration(waited)} for the runs in progress to finish; no ready issue claimed until it is installed`,
+    `paradev offline: ${plain(down.message)}; no ready issue claimed until Paradev answers`,
   );
-  yield* pass.record({ event: "claim_skipped", data: { reason: "deploy-pending" } });
-  if (waited < machine.deployWaitMinutes * 60_000) {
-    yield* clear;
-    return true;
-  }
+  yield* pass.record({ event: "claim_skipped", data: { reason: "paradev-offline" } });
+  if (world.paradevHold.passes < PARADEV_HOLD_PASSES) return true;
   pass.report.attention += 1;
   yield* world.attention.raise({
-    id: DEPLOY_WAITING_ITEM_ID,
+    id: PARADEV_OFFLINE_ITEM_ID,
     kind: "attention",
     repo: null,
     issue: null,
     run: null,
-    // No figures: an open item is not raised again, so they would go stale.
-    message: `deploy waiting: a build has waited longer than deploy_wait_minutes ${machine.deployWaitMinutes} for the runs in progress to finish; autodeploy installs it once it can, factory runs resume on the new build and a person's thread is interrupted`,
+    message: paradevHoldText(down),
   });
   return true;
 });
@@ -2353,8 +2351,8 @@ const claim = Effect.fn("Pass.claim")(function* (
   if (pass.lowDisk) return;
   // Said once by `highLoad`: a run claimed now would gate on a machine too busy to pass it.
   if (pass.highLoad) return;
-  // Said once by `drainingForDeploy`: a build is waiting for the runs in progress to end.
-  if (pass.draining) return;
+  // Said once by `paradevOffline`: a session cannot be started now.
+  if (pass.paradevOffline) return;
   const paused = world.handPause();
   // Ready issues that were not tried because the limit was reached. Every repo this machine
   // may claim on is still listed, so the count is the whole machine's.

@@ -66,17 +66,11 @@ export const DEFAULT_MAX_CONCURRENT_GATES = 2;
  * 7,200 of the 5,000 points an hour a login has. One read in 10 minutes is about 720.
  */
 export const DEFAULT_FEEDBACK_SECONDS = 600;
-/**
- * Installed versions autodeploy.sh keeps besides `current`. The script reads the key itself and
- * has its own copy of this default in `prune_versions`; change both together.
- */
-const DEFAULT_KEEP_VERSIONS = 3;
 export const DEFAULT_MIN_FREE_GIB = 10;
-
-/** Minutes a waiting autodeploy build may hold claims back; see {@link MachineConfig.deployWaitMinutes}. */
-export const DEFAULT_DEPLOY_WAIT_MINUTES = 120;
 export const DEFAULT_MAX_LOAD_PER_CORE = 1;
-const DEFAULT_PRUNE_BRANCHES_AFTER_DAYS = 14;
+/** `paradev.cli` when the block does not set it: the CLI bundled with the Paradev app. */
+export const DEFAULT_PARADEV_CLI =
+  "/Applications/Superset.app/Contents/Resources/resources/bin/superset";
 
 /** What a repo's runs are timed by when none of its project configs has loaded. */
 export const timeLimitOnlyProjectConfig = (): ProjectConfig => ({
@@ -188,26 +182,50 @@ export interface MachineConfig {
    */
   readonly maxLoadPerCore: number;
   /**
-   * The minutes a build autodeploy has waiting may hold claims back before it installs with runs
-   * in progress. autodeploy.sh reads the key itself with its own copy of the default: change both
-   * together.
-   */
-  readonly deployWaitMinutes: number;
-  /**
-   * The model a session moves to while its own model's provider rate limit cools down, by model
-   * id, on the same provider instance: `model_fallbacks`. Empty keeps the plain backoff.
+   * The model a session moves to while its own model's provider rate limit cools down:
+   * `model_fallbacks`. Always empty here: Paradev cannot move a running session to another model
+   * through the CLI, so a non-empty one is refused at load.
    */
   readonly modelFallbacks: Readonly<Record<string, string>>;
-  /** Days after its last commit an unmerged `t3/*` branch with no pull request is pruned. */
-  readonly pruneBranchesAfterDays: number;
-  /** The branch prune only logs what it would delete. */
-  readonly pruneBranchesDryRun: boolean;
+  /** `repos`: the repos this runner builds, each with the runner's own clone, in file order. */
+  readonly repos: ReadonlyArray<WatchedRepo>;
+  /** `paradev`: how the runner starts sessions in Paradev on this Mac. */
+  readonly paradev: ParadevConfig;
   /**
    * `default_project`: the block a T3 project with no `factory` block of its own is watched with.
    * Absent, such a project is not watched.
    */
   readonly defaultProject?: DefaultProject;
 }
+
+/** Who can read the belt page: `org` only when every member can read every watched repo. */
+export type BeltVisibility = "just_me" | "org";
+
+/** The `paradev` block of the machine config. */
+export interface ParadevConfig {
+  /** The `superset` binary; default {@link DEFAULT_PARADEV_CLI}. */
+  readonly cli: string;
+  /** The agent preset id a session runs, e.g. `claude`, from `superset agents list --local`. */
+  readonly agent: string;
+  /** Passed as `--model`; absent, the agent's default. */
+  readonly model?: string;
+  /** Passed as `--effort`. */
+  readonly effort?: string;
+  readonly belt: { readonly enabled: boolean; readonly visibility: BeltVisibility };
+}
+
+/**
+ * The model a launch runs on: the preset as the instance, `paradev.model` (empty for the agent's
+ * default), and `paradev.effort` as the one option when it is set. The options keep the ledger's
+ * array shape, so `session_launched.model_options` reads as it did.
+ */
+export const paradevModel = (paradev: ParadevConfig) => ({
+  instanceId: paradev.agent,
+  model: paradev.model ?? "",
+  ...(paradev.effort === undefined
+    ? {}
+    : { options: [{ id: "effort", value: paradev.effort }] as const }),
+});
 
 type Mapping = Record<string, unknown>;
 
@@ -514,39 +532,161 @@ const MACHINE_KEYS = [
   "max_concurrent_gates",
   "feedback_seconds",
   "notify",
-  "keep_versions",
   "min_free_gib",
   "max_load_per_core",
-  "deploy_wait_minutes",
   "model_fallbacks",
-  "prune_branches_after_days",
-  "prune_branches_dry_run",
   "default_project",
+  "repos",
+  "paradev",
 ] as const;
 
 /**
- * Keys the factory reads no more: the model keys (the model comes from the T3 project's default,
- * then the T3 settings default) and `repos` (the factory watches the T3 projects). A file with
- * them still loads with a warning per key, and a settings save keeps them (`settings.ts`) so a
- * rollback still loads. Remove them by hand once no rollback is possible.
+ * Keys t3fac read that the runner does not: the model keys (the model comes from `paradev`), the
+ * branch prune (P1 prunes no branch), and autodeploy's `deploy_wait_minutes` and `keep_versions`
+ * (the runner has no autodeploy). A file with them still loads, with a warning per key, so a
+ * t3fac config can be copied over as it stands.
  */
-export const RETIRED_MACHINE_KEYS = ["model_instance", "model", "repos"] as const;
+export const RETIRED_MACHINE_KEYS = [
+  "model_instance",
+  "model",
+  "prune_branches_after_days",
+  "prune_branches_dry_run",
+  "deploy_wait_minutes",
+  "keep_versions",
+] as const;
 
 const RETIRED_KEY_MESSAGES: Record<(typeof RETIRED_MACHINE_KEYS)[number], string> = {
-  model_instance:
-    "is no longer used: the model comes from the T3 project's default model, then the T3 settings default",
-  model:
-    "is no longer used: the model comes from the T3 project's default model, then the T3 settings default",
-  repos:
-    "is no longer used: the factory watches the T3 projects of this environment whose checkout has a .dw/config.yml with a factory block",
+  model_instance: "is no longer used: the model comes from the paradev block",
+  model: "is no longer used: the model comes from the paradev block",
+  prune_branches_after_days: "is no longer used: the runner prunes no branch",
+  prune_branches_dry_run: "is no longer used: the runner prunes no branch",
+  deploy_wait_minutes: "is no longer used: the runner has no autodeploy",
+  keep_versions: "is no longer used: the runner has no autodeploy",
 };
+
+/** The phase-4 control plane block, which no P1 config may depend on. */
+const CONTROL_PLANE_KEY = "control_plane";
 
 /** Unknown keys at the top level, after the known-field errors; a retired key is a warning. */
 const checkUnknownKeys = (c: Checker, root: Mapping) => {
   for (const key of RETIRED_MACHINE_KEYS) {
     if (Object.hasOwn(root, key)) c.warn(key, RETIRED_KEY_MESSAGES[key]);
   }
-  c.unknownKeys(root, [...MACHINE_KEYS, ...RETIRED_MACHINE_KEYS], "");
+  if (Object.hasOwn(root, CONTROL_PLANE_KEY)) {
+    c.err(CONTROL_PLANE_KEY, "the control plane arrives in phase 4");
+  }
+  c.unknownKeys(root, [...MACHINE_KEYS, ...RETIRED_MACHINE_KEYS, CONTROL_PLANE_KEY], "");
+};
+
+const REPO_KEYS = ["repo", "path"] as const;
+/** `owner/name` as GitHub allows them. */
+const REPO_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+/** `repos`: a list of `{ repo: owner/name, path: <absolute clone path> }`, no repo twice. */
+const reposFrom = (c: Checker, root: Mapping): ReadonlyArray<WatchedRepo> | undefined => {
+  const value = c.child(root, "", "repos");
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    c.err("repos", "must be a list of `repo` and `path` entries");
+    return undefined;
+  }
+  let ok = true;
+  const out: Array<WatchedRepo> = [];
+  const seen = new Set<string>();
+  value.forEach((item, i) => {
+    const path = `repos[${i}]`;
+    const entry = c.mapping(item, path);
+    if (entry === undefined) {
+      ok = false;
+      return;
+    }
+    const repo = c.nonEmptyString(c.child(entry, path, "repo"), `${path}.repo`);
+    const clone = c.nonEmptyString(c.child(entry, path, "path"), `${path}.path`);
+    c.unknownFields(entry, REPO_KEYS, path);
+    if (repo === undefined || clone === undefined) {
+      ok = false;
+      return;
+    }
+    if (!REPO_NAME.test(repo)) {
+      c.err(`${path}.repo`, "must be `owner/name`");
+      ok = false;
+      return;
+    }
+    if (!clone.startsWith("/")) {
+      c.err(`${path}.path`, "must be an absolute path");
+      ok = false;
+      return;
+    }
+    if (seen.has(asciiLower(repo))) {
+      c.err(`${path}.repo`, `${repo} is listed twice; one clone per repo`);
+      ok = false;
+      return;
+    }
+    seen.add(asciiLower(repo));
+    out.push({ repo, path: clone });
+  });
+  return ok ? out : undefined;
+};
+
+const PARADEV_KEYS = ["cli", "agent", "model", "effort", "belt"] as const;
+const BELT_KEYS = ["enabled", "visibility"] as const;
+
+/** `paradev`: required, with `agent`; `cli`, `model`, `effort` and `belt` are optional. */
+const paradevFrom = (c: Checker, root: Mapping): ParadevConfig | undefined => {
+  const block = c.mapping(c.child(root, "", "paradev"), "paradev");
+  if (block === undefined) return undefined;
+  const cli = c.optionalNonEmptyString(block, "paradev", "cli", DEFAULT_PARADEV_CLI);
+  const agent = c.nonEmptyString(c.child(block, "paradev", "agent"), "paradev.agent");
+  const model = Object.hasOwn(block, "model")
+    ? c.nonEmptyString(block["model"], "paradev.model")
+    : null;
+  const effort = Object.hasOwn(block, "effort")
+    ? c.nonEmptyString(block["effort"], "paradev.effort")
+    : null;
+  c.unknownFields(block, PARADEV_KEYS, "paradev");
+  const beltBlock = Object.hasOwn(block, "belt") ? c.mapping(block["belt"], "paradev.belt") : {};
+  const enabled = c.optionalBoolean(beltBlock, "paradev.belt", "enabled", true);
+  const visibility = beltVisibility(c, beltBlock);
+  if (beltBlock !== undefined) c.unknownFields(beltBlock, BELT_KEYS, "paradev.belt");
+  if (
+    cli === undefined ||
+    agent === undefined ||
+    model === undefined ||
+    effort === undefined ||
+    enabled === undefined ||
+    visibility === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    cli,
+    agent,
+    ...(model !== null && { model }),
+    ...(effort !== null && { effort }),
+    belt: { enabled, visibility },
+  };
+};
+
+/** `paradev.belt.visibility`: `just_me` (default) or `org`, which warns; `everyone` is refused. */
+const beltVisibility = (c: Checker, belt: Mapping | undefined): BeltVisibility | undefined => {
+  if (belt === undefined) return undefined;
+  const path = "paradev.belt.visibility";
+  if (!Object.hasOwn(belt, "visibility")) return "just_me";
+  const value = belt["visibility"];
+  if (value === "just_me") return value;
+  if (value === "org") {
+    c.warn(
+      path,
+      "org lets every member of the Paradev org read the belt: set it only when each of them can read every watched repo",
+    );
+    return value;
+  }
+  if (value === "everyone") {
+    c.err(path, "everyone is refused: the belt names private repos and issues; use just_me or org");
+    return undefined;
+  }
+  c.err(path, "must be just_me or org");
+  return undefined;
 };
 
 const machineFrom = (c: Checker, root: Mapping): MachineConfig | undefined => {
@@ -566,9 +706,6 @@ const machineFrom = (c: Checker, root: Mapping): MachineConfig | undefined => {
   );
   const feedbackSeconds = c.optionalUint(root, "", "feedback_seconds", DEFAULT_FEEDBACK_SECONDS, 0);
   const notify = c.optionalBoolean(root, "", "notify", true);
-  // Only checked here, so a bad value fails the load where a person sees it: autodeploy.sh reads
-  // keep_versions from the file and the server has no use for it.
-  const keepVersions = c.optionalUint(root, "", "keep_versions", DEFAULT_KEEP_VERSIONS, 0);
   const minFreeGib = c.optionalUint(root, "", "min_free_gib", DEFAULT_MIN_FREE_GIB, 0);
   const maxLoadPerCore = c.optionalUint(
     root,
@@ -577,23 +714,10 @@ const machineFrom = (c: Checker, root: Mapping): MachineConfig | undefined => {
     DEFAULT_MAX_LOAD_PER_CORE,
     0,
   );
-  const deployWaitMinutes = c.optionalUint(
-    root,
-    "",
-    "deploy_wait_minutes",
-    DEFAULT_DEPLOY_WAIT_MINUTES,
-    1,
-  );
   const modelFallbacks = fallbacksFrom(c, root);
-  const pruneBranchesAfterDays = c.optionalUint(
-    root,
-    "",
-    "prune_branches_after_days",
-    DEFAULT_PRUNE_BRANCHES_AFTER_DAYS,
-    1,
-  );
-  const pruneBranchesDryRun = c.optionalBoolean(root, "", "prune_branches_dry_run", false);
   const defaultProject = defaultProjectFrom(c, root);
+  const repos = reposFrom(c, root);
+  const paradev = paradevFrom(c, root);
   checkUnknownKeys(c, root);
 
   if (
@@ -603,14 +727,12 @@ const machineFrom = (c: Checker, root: Mapping): MachineConfig | undefined => {
     maxConcurrentGates === undefined ||
     feedbackSeconds === undefined ||
     notify === undefined ||
-    keepVersions === undefined ||
     minFreeGib === undefined ||
     maxLoadPerCore === undefined ||
-    deployWaitMinutes === undefined ||
     modelFallbacks === undefined ||
-    pruneBranchesAfterDays === undefined ||
-    pruneBranchesDryRun === undefined ||
-    defaultProject === undefined
+    defaultProject === undefined ||
+    repos === undefined ||
+    paradev === undefined
   ) {
     return undefined;
   }
@@ -623,10 +745,9 @@ const machineFrom = (c: Checker, root: Mapping): MachineConfig | undefined => {
     notify,
     minFreeGib,
     maxLoadPerCore,
-    deployWaitMinutes,
     modelFallbacks,
-    pruneBranchesAfterDays,
-    pruneBranchesDryRun,
+    repos,
+    paradev,
     ...(defaultProject !== null && { defaultProject }),
   };
 };
@@ -654,23 +775,19 @@ const defaultProjectFrom = (c: Checker, root: Mapping): DefaultProject | null | 
   return { instructors, limits };
 };
 
-/** `model_fallbacks`: model id to another model id; absent is none. */
+/**
+ * `model_fallbacks`: absent or empty. Paradev cannot move a running session to another model
+ * through the CLI, so a fallback could never be followed.
+ */
 const fallbacksFrom = (c: Checker, root: Mapping): Readonly<Record<string, string>> | undefined => {
   if (!Object.hasOwn(root, "model_fallbacks")) return {};
-  const value = c.mapping(root["model_fallbacks"], "model_fallbacks");
-  if (value === undefined) return undefined;
-  const out: Record<string, string> = {};
-  let ok = true;
-  for (const [from, raw] of Object.entries(value)) {
-    const path = join("model_fallbacks", from);
-    const to = c.nonEmptyString(raw, path);
-    if (to === undefined) ok = false;
-    else if (to === from) {
-      c.err(path, "must name another model");
-      ok = false;
-    } else out[from] = to;
-  }
-  return ok ? out : undefined;
+  const value = root["model_fallbacks"];
+  if (value === null || (isMapping(value) && Object.keys(value).length === 0)) return {};
+  c.err(
+    "model_fallbacks",
+    "must be empty: Paradev cannot move a running session to another model through the CLI",
+  );
+  return undefined;
 };
 
 export const parseProjectConfig = (
