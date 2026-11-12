@@ -225,6 +225,16 @@ const SEND_POLL_MS = 2_000;
 /** ...for this long after the text, then this long after Enter. */
 const SEND_WAITS_MS: readonly [number, number] = [20_000, 10_000];
 
+/** A failed `terminals send` of these kinds typed nothing: Paradev refused it before the terminal. */
+const UNTYPED: ReadonlyArray<CliError["kind"]> = [
+  "PARADEV_OFFLINE",
+  "PARADEV_SIGNED_OUT",
+  "PARADEV_PLAN",
+  "NOT_FOUND",
+  "AGENT_EXITED",
+  "TOO_LARGE",
+];
+
 export type ParadevSessions = FactorySessions["Service"];
 
 type Operation = SessionsError["operation"];
@@ -980,7 +990,12 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const typing: ThreadRecord = { ...record, pendingSend: { commandId, before } };
       yield* save(typing);
       const terminalArgv = ["terminals", "send", "--local", "--workspace", record.workspaceId, "--terminal", terminal];
-      yield* call(cli, [...terminalArgv, "--text", text], 30_000);
+      yield* call(cli, [...terminalArgv, "--text", text], 30_000).pipe(
+        // Paradev answered that it typed nothing: a repeat should type the text, not wait for a hook.
+        Effect.tapError((error) =>
+          error._tag === "ParadevCliError" && UNTYPED.includes(error.kind) ? save({ ...typing, pendingSend: null }) : Effect.void,
+        ),
+      );
       const [first, second] = sendWaitsMs;
       if ((yield* reactedWithin(typing, terminal, before, first)) !== null) {
         yield* call(cli, [...terminalArgv, "--keys", "enter"], 30_000);
