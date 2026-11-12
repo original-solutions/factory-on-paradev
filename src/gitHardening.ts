@@ -1,9 +1,11 @@
+import * as Effect from "effect/Effect";
+
 /**
  * What every factory git call runs with in a repository a session can write to: no system or
  * global config, hooks directory, fsmonitor, eol conversion or `ext` transport. Automatic
  * maintenance is not pinned here: a caller in a repository a session can write passes
  * `--no-auto-maintenance` to the commands that start it. Config-defined hooks (`hook.<name>.*`) and filter drivers are named by the
- * repository's own config, so a caller that cannot trust it blanks them one by one.
+ * repository's own config, so a caller that cannot trust it turns them off with {@link listSessionPins}.
  */
 export const HARDENED_GIT_CONFIG: ReadonlyArray<string> = [
   "core.fsmonitor=false",
@@ -76,3 +78,85 @@ export const FETCH_ARGS: ReadonlyArray<string> = ["--no-tags", "--no-recurse-sub
 
 /** HTTP/1.1, because the HTTP/2 framing layer is what a flaky link breaks first. */
 export const FETCH_HTTP_FLAGS: ReadonlyArray<string> = ["-c", "http.version=HTTP/1.1"];
+
+/** How many times a by-URL fetch is tried before its failure is returned. */
+export const FETCH_ATTEMPTS = 3;
+/** The wait before the second and the third fetch, in milliseconds. */
+export const FETCH_RETRY_DELAYS_MS: ReadonlyArray<number> = [5_000, 15_000];
+/**
+ * What git's stderr says when the network dropped the fetch: HTTP/2 stream error, TLS handshake
+ * timeout, unresolved name, failed or timed-out connection, or a cut-off pack or answer. Anything else
+ * (missing ref, refused login) returns at once. `RPC failed` counts only with a curl code right
+ * after it; `RPC failed; HTTP 403 curl 22` means the server answered and refused.
+ */
+export const TRANSIENT_FETCH =
+  /Error in the HTTP2 framing layer|TLS handshake timeout|Could not resolve host|Failed to connect|Connection timed out|SSL_ERROR_SYSCALL|early EOF|unexpected EOF|RPC failed; curl \d+/;
+
+// ---- filter drivers and config hooks in a repository a session can write ---------------------
+
+/** The git arguments that list every filter driver and config hook key, NUL-separated. */
+export const SESSION_PINS_LISTING: ReadonlyArray<string> = [
+  "config", "-z", "--name-only", "--get-regexp", "^(filter|hook)\\.",
+];
+/** The most of that listing read back; a longer one is truncated, and so refused. */
+export const SESSION_PINS_LISTING_BYTES = 1024 * 1024;
+
+/** What the listing call answered. */
+export interface SessionPinsListing {
+  readonly exitCode: number | null;
+  readonly timedOut: boolean;
+  readonly tailTruncated: boolean;
+  readonly tail: string;
+}
+
+/**
+ * The environment that turns off every filter driver and config hook the listing names, or why
+ * it cannot. A filter gets an empty `smudge`, `clean` and `process` and `required=false`; a hook
+ * gets `enabled=false`, since an empty `command` would make git fail the call it hooks. The pins
+ * go in `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`, not `-c`: git hands `-c` flags to every child it
+ * starts as one variable, and Linux refuses to start a child with a variable over 128 KiB. The
+ * listing must be complete, since a name left out of it would not be turned off: a truncated or
+ * timed-out one, or a failure other than "none configured" (exit 1), is refused. So is a name
+ * with anything outside `[A-Za-z0-9._-]`.
+ */
+export const sessionPins = (
+  listed: SessionPinsListing,
+): { readonly env: Readonly<Record<string, string>> } | { readonly refused: string } => {
+  if (listed.timedOut || listed.tailTruncated || (listed.exitCode !== 0 && listed.exitCode !== 1)) {
+    return { refused: "the filter drivers and hooks of the repository could not be listed in full" };
+  }
+  const names = new Set(
+    listed.exitCode === 0
+      ? listed.tail.split("\0").flatMap((key) => {
+          const match = /^(filter|hook)\.(.+)\.[^.]+$/s.exec(key);
+          return match === null ? [] : [`${match[1]}.${match[2]}`];
+        })
+      : [],
+  );
+  const env: Record<string, string> = {};
+  let count = 0;
+  for (const name of names) {
+    if (!/^(filter|hook)\.[A-Za-z0-9._-]+$/.test(name)) {
+      return { refused: `${JSON.stringify(name)} in the repository's config cannot be turned off safely` };
+    }
+    const settings: ReadonlyArray<readonly [string, string]> = name.startsWith("filter.")
+      ? [["smudge", ""], ["clean", ""], ["process", ""], ["required", "false"]]
+      : [["enabled", "false"]];
+    for (const [key, value] of settings) {
+      env[`GIT_CONFIG_KEY_${count}`] = `${name}.${key}`;
+      env[`GIT_CONFIG_VALUE_${count}`] = value;
+      count += 1;
+    }
+  }
+  env.GIT_CONFIG_COUNT = String(count);
+  return { env };
+};
+
+/**
+ * {@link sessionPins} for the repository `list` runs the listing in: `list` gets the listing's
+ * arguments and how many bytes to read back, and runs them as a hardened git call there.
+ */
+export const listSessionPins = <E, R>(
+  list: (args: ReadonlyArray<string>, tailBytes: number) => Effect.Effect<SessionPinsListing, E, R>,
+): Effect.Effect<ReturnType<typeof sessionPins>, E, R> =>
+  Effect.map(list(SESSION_PINS_LISTING, SESSION_PINS_LISTING_BYTES), sessionPins);

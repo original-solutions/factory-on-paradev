@@ -128,7 +128,9 @@ const rig = (
     readonly agentRunning?: boolean;
     readonly config?: Partial<ParadevSessionsConfig>;
     /** Changes what a git call answers, from its argv; the call still runs. */
-    readonly gitResult?: (args: ReadonlyArray<string>) => { readonly tailTruncated?: boolean; readonly exitCode?: number } | undefined;
+    readonly gitResult?: (
+      args: ReadonlyArray<string>,
+    ) => { readonly tailTruncated?: boolean; readonly exitCode?: number; readonly stderrTail?: string } | undefined;
   } = {},
 ): Rig => {
   const fake = fakeSuperset(script);
@@ -731,25 +733,63 @@ describe("launch", () => {
     }),
   );
 
-  it.live("a terminal with no agent yet stops the launch rather than starting a second agent", () =>
+  it.live("a terminal that shows no agent after every look stops the launch, and nothing is reset or started", () =>
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/x8", "main");
+      const before = reflog(r.worktree);
       // An agent before its first hook may show no agent; so may a person's shell. Neither is
-      // taken, and no agent is started beside it: the next pass tries again.
-      const script = launchScript(r)
-        .map((step) =>
-          step.fixture === "snapshot-local-before-kill"
-            ? { ...step, edit: snapshotOf(X8_WS, [{ id: "t-starting", title: "", agent: null }]) }
-            : step,
-        )
-        .filter((step) => step.fixture !== "agents-create-local-resume");
-      const t = rig(script, { config: { remoteBase: r.remoteBase } });
-      const error = yield* Effect.flip(t.run((s) => s.launch(request())));
+      // taken, and no agent is started beside it, after the snapshot is read three times.
+      const starting = snapshotOf(X8_WS, [{ id: "t-starting", title: "", agent: null }]);
+      const snapshot = { argv: ["snapshot", "--workspace", X8_WS], fixture: "snapshot-local-before-kill", edit: starting };
+      const script = [
+        ...launchScript(r).filter(
+          (step) => step.fixture !== "agents-create-local-resume" && step.fixture !== "snapshot-local-before-kill",
+        ),
+        snapshot,
+        snapshot,
+        snapshot,
+      ];
+      const t = rig(script, { config: { remoteBase: r.remoteBase, agentPollDelaysMs: [0, 0] } });
+      const error = yield* Effect.flip(t.run((s) => s.launch(request({ baseRef: "x8-origin-only" }))));
       assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.strictEqual(t.calls.filter(argvIs("snapshot")).length, 3);
       assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+      // The base was behind, but the reset waits for an answer on the agent.
+      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.main);
+      assert.strictEqual(reflog(r.worktree), before);
       const saved = yield* readThread(t.data, X8_WS).pipe(Effect.provide(NodeServices.layer));
       assert.deepStrictEqual(saved!.terminals, []);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("takes the agent that hooks in while the launch looks again, and starts none beside it", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const script = [
+        ...launchScript(r).filter(
+          (step) => step.fixture !== "agents-create-local-resume" && step.fixture !== "snapshot-local-before-kill",
+        ),
+        {
+          argv: ["snapshot", "--workspace", X8_WS],
+          fixture: "snapshot-local-before-kill",
+          edit: snapshotOf(X8_WS, [{ id: "t-starting", title: "", agent: null }]),
+        },
+        {
+          argv: ["snapshot", "--workspace", X8_WS],
+          fixture: "snapshot-local-before-kill",
+          edit: snapshotOf(X8_WS, [{ id: "t-starting", title: "", agent: { id: "claude", state: "working" } }]),
+        },
+      ];
+      const t = rig(script, { config: { remoteBase: r.remoteBase, agentPollDelaysMs: [0, 0] } });
+      const launched = yield* t.run((s) => s.launch(request()));
+      assert.strictEqual(launched.threadId, `local:${X8_WS}`);
+      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+      const saved = yield* readThread(t.data, X8_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.deepStrictEqual(saved!.terminals, ["t-starting"]);
+      assert.deepStrictEqual(t.unused(), []);
     }),
   );
 
@@ -762,10 +802,97 @@ describe("launch", () => {
           ? { ...step, edit: snapshotOf(X8_WS, [{ id: "t-codex", title: "", agent: { id: "codex", state: "working" } }]) }
           : step,
       );
-      const t = rig(script, { config: { remoteBase: r.remoteBase } });
+      // One look: another preset reads as no agent of this one, however often it is looked at.
+      const t = rig(script, { config: { remoteBase: r.remoteBase, agentPollDelaysMs: [] } });
       const error = yield* Effect.flip(t.run((s) => s.launch(request())));
       assert.strictEqual(error._tag, "FactorySessionsError");
       assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+    }),
+  );
+
+  it.live("a repeat create never resets the worktree under the agent an earlier attempt started", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      // The lost attempt's agent works on a clean worktree at the old base; the base moved since.
+      r.addWorktree("fac/1-1", "main");
+      const before = reflog(r.worktree);
+      const t = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          // X7: create on a branch that already has a workspace answers it with alreadyExists.
+          { argv: argvIs("workspaces", "create"), fixture: "ws-create-local-repeat" },
+          { argv: ["workspaces", "get", L1_WS, "--local"], fixture: "ws-get-local", edit: withPath(r.worktree) },
+          { argv: ["snapshot", "--workspace", L1_WS], fixture: "snapshot-local-before-kill", edit: snapshotOf(L1_WS) },
+        ],
+        { config: { remoteBase: r.remoteBase } },
+      );
+      const launched = yield* t.run((s) => s.launch(request({ baseRef: "x8-origin-only" })));
+      assert.strictEqual(launched.threadId, `local:${L1_WS}`);
+      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.main);
+      assert.strictEqual(reflog(r.worktree), before);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("the base check keeps a worktree whose own branch was pushed, and resets nothing", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/1-1", "main");
+      // The earlier agent committed and pushed: the clone's origin/fac/1-1 has the commit too,
+      // and the worktree is clean.
+      const work = commit(r.worktree, "agent.txt");
+      git(r.worktree, "push", "-q", "origin", "fac/1-1");
+      assert.strictEqual(git(r.clone, "rev-parse", "refs/remotes/origin/fac/1-1"), work);
+      const before = reflog(r.worktree);
+      const t = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: argvIs("workspaces", "create"), fixture: "ws-create-local-repeat" },
+          { argv: ["workspaces", "get", L1_WS, "--local"], fixture: "ws-get-local", edit: withPath(r.worktree) },
+          { argv: ["snapshot", "--workspace", L1_WS], fixture: "snapshot-local-before-kill", edit: snapshotOf(L1_WS, []) },
+        ],
+        { config: { remoteBase: r.remoteBase } },
+      );
+      const error = yield* Effect.flip(t.run((s) => s.launch(request({ baseRef: "x8-origin-only" }))));
+      assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), work);
+      assert.strictEqual(reflog(r.worktree), before);
+      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("a base fetch the network dropped is tried again, and one the server refused is not", () =>
+    Effect.gen(function* () {
+      for (const [stderr, outcome] of [
+        ["fatal: unable to access 'https://github.com/x/y.git/': Could not resolve host: github.com\n", "launches"],
+        ["fatal: couldn't find remote ref refs/heads/x8-origin-only\n", "refuses"],
+      ] as const) {
+        const r = repos();
+        r.addWorktree("fac/x8", "main");
+        const url = `${r.remoteBase}/original-solutions/factory-paradev-spike.git`;
+        let failed = false;
+        const t = rig(outcome === "launches" ? launchScript(r) : launchScript(r).slice(0, 1), {
+          config: { remoteBase: r.remoteBase, fetchRetryDelaysMs: [0, 0] },
+          gitResult: (args) => {
+            if (failed || !args.includes(url)) return undefined;
+            failed = true;
+            return { exitCode: 128, stderrTail: stderr };
+          },
+        });
+        const exit = yield* Effect.exit(t.run((s) => s.launch(request({ baseRef: "x8-origin-only" }))));
+        const fetches = t.gitCalls.filter((c) => c.args.includes(url)).length;
+        if (outcome === "launches") {
+          assert.isTrue(exit._tag === "Success", stderr);
+          assert.strictEqual(fetches, 2, stderr);
+          assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.originOnly);
+        } else {
+          assert.isTrue(exit._tag === "Failure", stderr);
+          assert.strictEqual(fetches, 1, stderr);
+          assert.isUndefined(t.calls.find(argvIs("workspaces", "create")), stderr);
+        }
+      }
     }),
   );
 
@@ -1357,7 +1484,7 @@ describe("worktreeCheckout", () => {
     }),
   );
 
-  it.live("still answers when the clone's config holds a filter it cannot name with -c", () =>
+  it.live("still answers when the clone's config holds a filter name the pins refuse", () =>
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/1-1", "main");

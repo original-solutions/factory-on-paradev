@@ -15,13 +15,17 @@ import * as Schema from "effect/Schema";
 import {
   configFlags,
   FETCH_ARGS,
+  FETCH_ATTEMPTS,
   FETCH_CREDENTIAL_FLAGS,
   FETCH_HTTP_FLAGS,
+  FETCH_RETRY_DELAYS_MS,
   fetchCredentialEnv,
   fileTransportFor,
   HARDENED_GIT_CONFIG,
   HARDENED_GIT_ENV,
+  listSessionPins,
   normalizeRemoteBase,
+  TRANSIENT_FETCH,
 } from "../gitHardening.ts";
 import { FactoryPaths } from "../paths.ts";
 import { FactoryProcess } from "../process.ts";
@@ -192,7 +196,16 @@ export interface ParadevSessionsConfig {
   readonly remoteBase?: string;
   /** `gh_config_dir`: the `gh` login a base fetch authenticates as, as for the gate. */
   readonly ghConfigDir?: string;
+  /** The waits before the base fetch is tried again after a dropped connection. Default the gate's. */
+  readonly fetchRetryDelaysMs?: ReadonlyArray<number>;
+  /**
+   * The waits before the snapshot is read again while it shows a terminal with no agent yet: an
+   * agent shows none until its first hook. Default 5, 10 and 15 seconds.
+   */
+  readonly agentPollDelaysMs?: ReadonlyArray<number>;
 }
+
+const AGENT_POLL_DELAYS_MS: ReadonlyArray<number> = [5_000, 10_000, 15_000];
 
 /** What this issue builds of `FactorySessions`. */
 export type ParadevSessions = Omit<FactorySessions["Service"], "send" | "archive" | "removeWorktree">;
@@ -214,6 +227,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const services = yield* Effect.context<FileSystem.FileSystem | Path.Path | SupersetCli>();
   const fs = yield* FileSystem.FileSystem;
   const remoteBase = normalizeRemoteBase(config.remoteBase);
+  const fetchRetryDelaysMs = config.fetchRetryDelaysMs ?? FETCH_RETRY_DELAYS_MS;
+  const agentPollDelaysMs = config.agentPollDelaysMs ?? AGENT_POLL_DELAYS_MS;
   /** The process a record's preset runs: the configured command for the configured preset. */
   const commandOf = (record: ThreadRecord) =>
     record.agent === config.agent ? (config.agentCommand ?? config.agent) : record.agent;
@@ -244,8 +259,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * - `remote.<name>.uploadpack`: the clone-side fetch passes `--upload-pack` on the command line;
    * - `protocol.<name>.allow` (with `insteadOf` and `core.sshCommand`): `GIT_ALLOW_PROTOCOL`,
    *   which overrides every `protocol.*.allow`, so no `-c protocol` flag is needed;
-   * - filter drivers and config hooks (`hook.<name>.*`): `sessionRepo` blanks each one listed, and
-   *   refuses the launch when the listing is not complete.
+   * - filter drivers and config hooks (`hook.<name>.*`): `sessionRepo` turns off each one listed
+   *   (`listSessionPins` in `gitHardening.ts`), and refuses the launch when the listing is not complete.
    * So `git` is for the adapter's own scratch repository and the listing itself; every call in the clone or a
    * worktree that can run a filter, hook or transport goes through `sessionRepo`. The one exception is `worktreeCheckout`'s two reads (`rev-parse` and
    * `symbolic-ref`): they run no filter, hook or transport, and `GIT_NO_LAZY_FETCH` is set in every
@@ -345,6 +360,20 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     return others.length > 0 ? "unclear" : null;
   };
 
+  /**
+   * {@link agentIn} on a fresh snapshot, read again after each of `agentPollDelaysMs` while it is
+   * `unclear`: a starting agent gets its first hook within seconds.
+   */
+  const findAgent = (workspaceId: string, preset: string, skip: ReadonlyArray<string>) =>
+    Effect.gen(function* () {
+      for (let polled = 0; ; polled += 1) {
+        const found = agentIn(yield* snapshot(workspaceId), workspaceId, preset, skip);
+        const wait = agentPollDelaysMs[polled];
+        if (found !== "unclear" || wait === undefined) return found;
+        yield* Effect.sleep(wait);
+      }
+    });
+
   // ---- records ------------------------------------------------------------------------------
 
   /** The record of a thread id; `ThreadNotFoundError` for an id or a record the adapter lacks. */
@@ -393,17 +422,27 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         yield* gitOk(scratch, ["init", "--quiet", "--bare", "--template="]);
       }
       const fetchArgs = ["fetch", "--quiet", ...FETCH_ARGS];
-      // No retry here, unlike the gate's: a launch that fails on the network is retried by the next pass.
-      yield* gitOk(
-        scratch,
-        [...fetchArgs, `${remoteBase}/${repo}.git`, `+refs/heads/${baseRef}:refs/heads/${baseRef}`],
-        {
+      // A dropped connection is tried again, as the gate's fetch is: a failed launch sends the run
+      // to stuck, and no later pass launches it again.
+      const byUrl = [...fetchArgs, `${remoteBase}/${repo}.git`, `+refs/heads/${baseRef}:refs/heads/${baseRef}`];
+      for (let tried = 1; ; tried += 1) {
+        const fetched = yield* git(scratch, byUrl, {
           fetch: true,
           timeoutMs: 120_000,
           pre: FETCH_HTTP_FLAGS,
           env: { GIT_ALLOW_PROTOCOL: fileTransportFor(remoteBase) === "always" ? "https:file" : "https" },
-        },
-      );
+        });
+        if (fetched.exitCode === 0 && !fetched.timedOut) break;
+        const reason = fetched.timedOut ? undefined : TRANSIENT_FETCH.exec(fetched.stderrTail)?.[0];
+        if (reason === undefined || tried >= FETCH_ATTEMPTS) {
+          return yield* fail(
+            `git ${byUrl.join(" ")} ${fetched.timedOut ? "timed out" : `exited ${fetched.exitCode}`}: ${fetched.stderrTail.trim()}`,
+          );
+        }
+        const wait = fetchRetryDelaysMs[tried - 1] ?? 0;
+        yield* Effect.logInfo(`the base fetch failed (${reason}); trying again in ${wait / 1000} s`);
+        yield* Effect.sleep(wait);
+      }
       const clone = yield* sessionRepo(project.path);
       yield* clone.gitOk(
         [
@@ -420,53 +459,18 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   /**
    * `git` and `gitOk` for a repository a session can write (the clone, or a worktree of it), with
-   * every filter driver and config hook its config names turned off, and only `file` transport. The
-   * names come from one listing, taken here: they are what the calls of this operation run with.
-   * A name with anything outside `[A-Za-z0-9._-]` is refused: the call fails rather than run git
-   * where it would run. The listing must
-   * be complete: a truncated one, or a failure other than "none configured" (exit 1), fails the
-   * call too, since a name left out of it would not be turned off. A hook is turned off with
-   * `enabled=false`; an empty `command` would make git fail the call it hooks.
+   * every filter driver and config hook its config names turned off ({@link listSessionPins}), and
+   * only `file` transport. The names come from one listing, taken here: they are what the calls of
+   * this operation run with. A listing that is not complete, or a name that cannot be turned off,
+   * fails the call rather than run git where it would run.
    */
   const sessionRepo = (dir: string) =>
     Effect.gen(function* () {
-      const listed = yield* git(dir, ["config", "-z", "--name-only", "--get-regexp", "^(filter|hook)\\."], {
-        tailBytes: 1024 * 1024,
-      });
-      if (listed.timedOut || listed.tailTruncated || (listed.exitCode !== 0 && listed.exitCode !== 1)) {
-        return yield* fail("the filter drivers and hooks of the repository could not be listed in full; nothing was run in it");
-      }
-      const names = new Set(
-        listed.exitCode === 0
-          ? listed.tail.split("\0").flatMap((key) => {
-              const match = /^(filter|hook)\.(.+)\.[^.]+$/s.exec(key);
-              return match === null ? [] : [`${match[1]}.${match[2]}`];
-            })
-          : [],
-      );
-      for (const name of names) {
-        if (!/^(filter|hook)\.[A-Za-z0-9._-]+$/.test(name)) {
-          return yield* fail(`${JSON.stringify(name)} in the repository's config cannot be turned off safely; nothing was run in it`);
-        }
-      }
-      // In the environment, not as `-c` flags: git hands `-c` flags to every child it starts as one
-      // variable, and Linux refuses to start a child with a variable over 128 KiB.
-      const pins: Record<string, string> = {};
-      let count = 0;
-      for (const name of names) {
-        const settings: ReadonlyArray<readonly [string, string]> = name.startsWith("filter.")
-          ? [["smudge", ""], ["clean", ""], ["process", ""], ["required", "false"]]
-          : [["enabled", "false"]];
-        for (const [key, value] of settings) {
-          pins[`GIT_CONFIG_KEY_${count}`] = `${name}.${key}`;
-          pins[`GIT_CONFIG_VALUE_${count}`] = value;
-          count += 1;
-        }
-      }
-      pins.GIT_CONFIG_COUNT = String(count);
+      const pinned = yield* listSessionPins((args, tailBytes) => git(dir, args, { tailBytes }));
+      if ("refused" in pinned) return yield* fail(`${pinned.refused}; nothing was run in it`);
       const options = (given: GitOptions = {}): GitOptions => ({
         ...given,
-        env: { GIT_ALLOW_PROTOCOL: "file", ...given.env, ...pins },
+        env: { GIT_ALLOW_PROTOCOL: "file", ...given.env, ...pinned.env },
       });
       return {
         git: (args: ReadonlyArray<string>, given?: GitOptions) => git(dir, args, options(given)),
@@ -478,34 +482,38 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * Paradev does not fetch the base, and builds a worktree from the clone's own refs: a local
    * branch the runner never moves, or the project's default branch for one the clone lacks (X8).
    * So the new worktree's HEAD must be `base`, the commit just fetched, else it is reset there.
-   * A worktree holding work (an edit, or a commit no other branch has) is never reset: that is an
-   * earlier attempt's agent, and the answer is `kept`. Filter drivers and hooks a session put in
-   * the shared config are turned off for every call.
+   * A worktree holding work (an edit, or a commit no other branch has, its own remote-tracking
+   * branch included) is never reset: that is an earlier attempt's agent, and the answer is `kept`.
+   * The check only reads; `behind` carries the reset, which the caller runs once it knows no
+   * agent works there. Filter drivers and hooks a session put in the shared config are turned off
+   * for every call.
    */
   const baseCheck = (worktreePath: string, base: string) =>
     Effect.gen(function* () {
       const repo = yield* sessionRepo(worktreePath);
       const head = yield* repo.gitOk(["rev-parse", "--verify", "HEAD^{commit}"]);
-      if (head === base) return "at-base" as const;
+      if (head === base) return { state: "at-base" } as const;
       // No status inside a submodule: its own config and filters are not blanked here. `dirty`
       // still shows a changed submodule commit, which is work.
       const changed = yield* repo.gitOk(
         ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=dirty"],
         { pre: ["--no-optional-locks"] },
       );
-      // A commit only the checked-out branch has is work; one another branch has is not.
+      // A commit only the checked-out branch has is work, pushed or not; one another branch has
+      // is not. Each `--exclude` applies to the `--branches` or `--remotes` after it, and takes
+      // the name without `refs/heads/` or `refs/remotes/`.
       const onBranch = yield* repo.git(["symbolic-ref", "-q", "HEAD"]);
-      // `--exclude` before `--branches` takes the name without `refs/heads/`.
-      const exclude =
-        onBranch.exitCode === 0 ? [`--exclude=${onBranch.tail.trim().replace(/^refs\/heads\//, "")}`] : [];
+      const branch = onBranch.exitCode === 0 ? onBranch.tail.trim().replace(/^refs\/heads\//, "") : null;
       const ownCommit = yield* repo.gitOk([
-        "rev-list", "--max-count=1", "HEAD", "--not", ...exclude, "--branches", "--remotes",
+        "rev-list", "--max-count=1", "HEAD", "--not",
+        ...(branch === null ? [] : [`--exclude=${branch}`]), "--branches",
+        ...(branch === null ? [] : [`--exclude=*/${branch}`]), "--remotes",
       ]);
-      if (changed !== "" || ownCommit !== "") return "kept" as const;
-      yield* repo.gitOk(["reset", "--hard", "--no-recurse-submodules", "-q", base], {
+      if (changed !== "" || ownCommit !== "") return { state: "kept" } as const;
+      const reset = repo.gitOk(["reset", "--hard", "--no-recurse-submodules", "-q", base], {
         pre: ["-c", "submodule.recurse=false"],
       });
-      return "reset" as const;
+      return { state: "behind", reset } as const;
     });
 
   const createAgent = (record: ThreadRecord, request: LaunchRequest) =>
@@ -547,21 +555,23 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const placed: ThreadRecord = { ...record, worktreePath: got.worktreePath };
       yield* save(placed);
       const checked = yield* baseCheck(got.worktreePath, base);
+      // The reset waits for the snapshot: an agent an earlier attempt started works there.
       if (!snapshotDone) {
-        const found = agentIn(yield* snapshot(record.workspaceId), record.workspaceId, placed.agent, placed.terminals);
+        const found = yield* findAgent(record.workspaceId, placed.agent, placed.terminals);
         if (found === "unclear") return yield* noAgentYet(placed);
         if (found !== null) return yield* withAgent(placed, found.terminal, request);
       }
-      if (checked === "kept") {
+      if (checked.state === "kept") {
         return yield* fail(
           `the worktree ${got.worktreePath} holds work off the base and no agent runs there; it was left as it is`,
         );
       }
+      if (checked.state === "behind") yield* checked.reset;
       return yield* withAgent(placed, yield* createAgent(placed, request), request);
     });
 
   const noAgentYet = (record: ThreadRecord) =>
-    fail(`workspace ${record.workspaceId} has a terminal with no ${record.agent} agent in it yet; the next attempt looks again`);
+    fail(`workspace ${record.workspaceId} has a terminal with no ${record.agent} agent in it, after ${agentPollDelaysMs.length + 1} looks`);
 
   const launched = (record: ThreadRecord) => ({
     threadId: record.threadId,
@@ -577,7 +587,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     if (earlier !== null && earlier.terminals.length > 0) return launched(earlier);
     if (earlier !== null) {
       // It stopped between the record and the agent's start: the agent may be there already.
-      const found = agentIn(yield* snapshot(earlier.workspaceId), earlier.workspaceId, earlier.agent, []);
+      const found = yield* findAgent(earlier.workspaceId, earlier.agent, []);
       if (found === "unclear") return yield* noAgentYet(earlier);
       if (found !== null) return launched(yield* withAgent(earlier, found.terminal, request));
       const base = yield* fetchBase(yield* projectOf(earlier.projectId), request.baseRef);
