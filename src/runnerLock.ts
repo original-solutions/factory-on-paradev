@@ -122,3 +122,7 @@ export const takeRunnerLock = (
     NodeFS.rmSync(mine, { force: true });
   }
 };
+
+/** The pid in `<dataDir>/runner.lock`, or null when there is no lock or it holds no pid. */
+export const lockHolder = (dataDir: string): number | null =>
+  readPid(NodePath.join(dataDir, LOCK_FILE));

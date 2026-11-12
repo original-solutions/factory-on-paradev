@@ -6,6 +6,7 @@
  */
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -139,7 +140,7 @@ import {
 guardLogStreams();
 
 /** The runner's version, as `package.json` has it. */
-export const version = "0.0.0";
+export const version = Paths.packageVersion(NodePath.resolve(import.meta.dirname, ".."));
 
 /**
  * The running factory, for the code that wakes it. Its `status` follows `reload`.
