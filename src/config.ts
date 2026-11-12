@@ -546,8 +546,9 @@ const MACHINE_KEYS = [
 /**
  * Keys t3fac read that the runner does not: the model keys (the model comes from `paradev`), the
  * branch prune (P1 prunes no branch), and autodeploy's `deploy_wait_minutes` and `keep_versions`
- * (the runner has no autodeploy). A file with them still loads, with a warning per key, so a
- * t3fac config can be copied over as it stands.
+ * (the runner has no autodeploy). A file with them still loads, with a warning per key. A t3fac
+ * config does not load as it stands: it needs the `repos` list and the `paradev` block. t3fac
+ * ignored a `repos` list, and the runner watches every repo on it, so one copied over is live.
  */
 export const RETIRED_MACHINE_KEYS = [
   "model_instance",

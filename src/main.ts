@@ -27,6 +27,7 @@ import {
   factoryOptIn,
   formatConfigError,
   loadMachineConfig,
+  paradevModel,
   parseProjectConfig,
   PROJECT_CONFIG_PATH,
   type ConfigError,
@@ -744,11 +745,9 @@ export const liveWorld = (
     resumeAfterCooldown: (repo, run, base, model) =>
       resumeAfterCooldown(interruptContext(repo, runProject(repo.project, base)), run, model),
     cooldowns,
-    projectModel: (repo) =>
-      sessions.findProject(repo.watched.path).pipe(
-        Effect.map((found) => found?.model ?? null),
-        Effect.mapError(asPassError("t3")),
-      ),
+    // Every Paradev session launches on the paradev block's model, whatever the project, so no
+    // CLI call is needed to read it.
+    projectModel: () => Effect.succeed(paradevModel(machine.paradev)),
     gateRunning: (run) =>
       gating.has(runIdToString(run)) || NodeFS.existsSync(gateLockFile(dataDir, run)),
     hasPendingGateSend: (run) =>

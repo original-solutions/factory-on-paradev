@@ -109,7 +109,7 @@ Only the folder changes, plus mechanical import edits in every file: `./t3/sessi
 | `t3/files.ts` | `src/files.ts` | Its one T3 import, `writeFileStringAtomically` from `@t3tools/shared/atomicWrite`, becomes a local copy of that function from `packages/shared/src/atomicWrite.ts` at the source commit. `t3/files.test.ts` moves with it |
 | `t3/paths.ts` | `src/paths.ts` | The data dir is `~/.config/factory-runner`, or `FACTORY_RUNNER_HOME` when set. No `ServerConfig` |
 | `index.ts` | `src/main.ts` | Build the pass world from the Paradev layers. No `Events` stream, `ServerExit`, `WatchedRepos` over T3, stall attribution or branch prune. `t3Starts` and `t3Stops` answer `[]`, because a runner restart does not stop a Paradev agent. `threadsOnBrokenWorktrees` answers `[]`. `pruneBranches` answers an empty report. After each pass, hand the status to the belt writer. Write `runner started` to the log once the first pass begins |
-| `pass.ts` | `src/pass.ts` | Replace the deploy-pending hold (`pendingDeploy`, `deploy_wait_minutes`, reason `deploy-pending`) with a Paradev hold: while the CLI check or `superset status` fails, the pass claims nothing, records `claim_skipped` with reason `paradev-offline`, and raises one attention item once the hold has lasted three passes. Same mechanics as the hold it replaces |
+| `pass.ts` | `src/pass.ts` | Replace the deploy-pending hold (`pendingDeploy`, `deploy_wait_minutes`, reason `deploy-pending`) with a Paradev hold: while the CLI check or `superset status` fails, the pass claims nothing and resumes no claim (a resume may launch a session), records `claim_skipped` with reason `paradev-offline`, and raises one attention item once the hold has lasted three passes. Same mechanics as the hold it replaces |
 | `config.ts` | `src/config.ts` | Read a `repos:` list again (T3). Add the `paradev:` block. Drop `deploy_wait_minutes`. Refuse a non-empty `model_fallbacks` with a clear error, since Paradev cannot move a running session to another model through the CLI |
 | `claims.ts` | `src/claims.ts` | Drop `loadPendingDeploy` |
 | `runner/messages.ts` | `src/runner/messages.ts` | `launchMessage` loses the T3 sentence "Your T3 server should have been started with GH_CONFIG_DIR=..." and says Paradev started the session with this Mac's `gh` login (T2). `INTERRUPTION_MESSAGE` says "Paradev" for "T3 Code". `messages.test.ts` changes with it |
@@ -334,7 +334,7 @@ The CLI error "No transcript for that terminal" gives `null`. The adapter reads 
 
 | stderr message | Kind | What the factory does |
 |---|---|---|
-| `Host service for this machine isn't running` (seen, L5a), `Host service manifest is stale` | `PARADEV_OFFLINE` | The pass holds claims (`paradev-offline`). Running builds are left as they are. Attention item after three passes |
+| `Host service for this machine isn't running` (seen, L5a), `Host service manifest is stale` | `PARADEV_OFFLINE` | The pass holds claims and their resumes (`paradev-offline`). Running builds are left as they are. Attention item after three passes |
 | `Not logged in` (seen), `No active organization` | `PARADEV_SIGNED_OUT` | As offline, with its own attention text naming `superset auth login` |
 | `Workspace not found on host ...` (seen, X10) | `NOT_FOUND` | `ThreadNotFoundError` in `status` and `thread`; archived in `archive` |
 | `Could not connect to API` | `TRANSIENT` | One retry, then `SessionsError` |
@@ -502,7 +502,7 @@ Timeout 20 s, no retry: the next pass writes again. A failure goes to the log as
 | Event | Paradev agents | Runner |
 |---|---|---|
 | Runner restart or crash | Keep running | Reads the ledger and the thread records on start and carries on. A gate that was running died with the runner's process group; the next pass runs it again from a fresh checkout, as t3fac does after a restart |
-| Paradev app Cmd+Q | Keep running: terminals live in a separate `pty-daemon` that stays up (L5a) | Every call fails `PARADEV_OFFLINE`. Claims hold. Runs keep their state, and their time limits keep counting. Picks up when the app opens, with the same terminal ids |
+| Paradev app Cmd+Q | Keep running: terminals live in a separate `pty-daemon` that stays up (L5a) | Every call fails `PARADEV_OFFLINE`. Claims and their resumes hold. Runs keep their state, and their time limits keep counting. Picks up when the app opens, with the same terminal ids |
 | The agent process dies (crash, `kill`) | That agent stops; its terminal stays at a shell prompt and explain still says `working` (L5b) | The liveness check reads `interrupted` after 10 minutes with no hook. The core sends its resume message; the adapter closes the dead terminal and resumes the Claude session in a new one |
 | "Quit Paradev Completely", reboot | Die. Not tried in P0: a full quit would have killed the recording terminal | Expected to read as the row above, or as `exited`/`none`. Same resume path, or the core relaunches from the pushed branch |
 | A person archives the workspace in Paradev | Stop | `status` reads `ThreadNotFoundError`; the core treats the session as gone and relaunches or ends the run, as it does when a T3 thread disappears |

@@ -1181,15 +1181,19 @@ describe("on the Paradev CLI", () => {
         Effect.gen(function* () {
           const worlds: Array<PassWorld> = [];
           const config = configFor([["a/b", "/b"]], "/gh", "", paradevBlock);
-          const { loop, factoryDir } = yield* started(config, noGhProcess, {
+          const { loop, factoryDir, paradev } = yield* started(config, noGhProcess, {
             onWorld: (world) => worlds.push(world),
           });
           yield* idleAfter(loop, factoryDir, 1);
-          return yield* worlds[0]!.projectModel({
+          const calls = paradev.calls.length;
+          const model = yield* worlds[0]!.projectModel({
             watched: A_B,
             project: timeLimitOnlyProjectConfig(),
             trackerUser: "rawphp",
           });
+          // The model is the paradev block's, whatever the project: no CLI call reads it.
+          assert.strictEqual(paradev.calls.length, calls);
+          return model;
         }),
       ).pipe(Effect.provide(NodeServices.layer));
 
@@ -3600,11 +3604,15 @@ describe("liveWorld: a model that cools down", () => {
         const cooldowns = new Map<string, Cooldown>();
         let now = T0;
         const world = liveWorld(
-          { ...baseMachine, modelFallbacks: { "claude-fable-5-1": "claude-opus-5-5" } },
+          {
+            ...baseMachine,
+            modelFallbacks: { "claude-fable-5-1": "claude-opus-5-5" },
+            paradev: { ...PARADEV, agent: FABLE.instanceId, model: FABLE.model },
+          },
           "/factory-test/data",
           noGh,
           NodeServices.layer,
-          sessionsOf({ findProject: () => Effect.succeed({ id: "proj-1", model: FABLE }) }),
+          stubSessions,
           () => now,
           "mac-mini",
           noAttention,

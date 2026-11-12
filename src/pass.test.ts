@@ -33,6 +33,7 @@ import { useTempDirs } from "./ledger/testSupport.ts";
 import { formatTs } from "./ledger/time.ts";
 import {
   PARADEV_OFFLINE_ITEM_ID,
+  PARADEV_WAIT,
   PRUNE_EVERY_MS,
   STUCK_READ_EVERY_MS,
   UNSETTLED_READ_EVERY_MS,
@@ -3080,7 +3081,7 @@ describe("the Paradev hold", () => {
         const { report, lines } = yield* pass(fake, [REPO], 5);
         assert.deepEqual(starts(fake), []);
         assert.deepEqual(holdLines(lines), [
-          `paradev offline: ${OFFLINE.message}; no ready issue claimed until Paradev answers`,
+          `paradev offline: ${OFFLINE.message}; no issue claimed or resumed until Paradev answers`,
         ]);
         assert.equal(skipped(fake).length, n);
         assert.deepEqual(holdItems(fake), []);
@@ -3121,15 +3122,23 @@ describe("the Paradev hold", () => {
     }),
   );
 
-  it.effect("a building run is still followed and a claim still resumed while held", () =>
+  it.effect("a building run is still followed, and no claim is resumed until Paradev answers", () =>
     Effect.gen(function* () {
+      // A resume may launch a session, which fails while Paradev is down and sends the run stuck.
       const fake = new Fake();
       fake.runIn(40, BUILDING, REPO, true);
-      fake.triage[REPO] = [7];
+      fake.runIn(8, "triage");
+      fake.triage[REPO] = [7, 8];
       fake.down = OFFLINE;
-      yield* pass(fake, [REPO], 5);
+      const { report, lines } = yield* pass(fake, [REPO], 5);
       assert.ok(fake.calls.includes(`advance ${REPO}#40`), fake.calls.join("\n"));
-      assert.deepEqual(starts(fake), [`resume ${REPO}#7`]);
+      assert.deepEqual(starts(fake), []);
+      assert.equal(runLine(lines, `${REPO}#8 `), `${REPO}#8 triage: ${PARADEV_WAIT}`);
+      assert.isUndefined(lines.find((l) => l.startsWith(`${REPO}#7 `)));
+      assert.deepEqual([report.errors, report.attention], [0, 0]);
+      fake.down = null;
+      yield* pass(fake, [REPO], 5);
+      assert.deepEqual(starts(fake).toSorted(), [`resume ${REPO}#7`, `resume ${REPO}#8`]);
     }),
   );
 

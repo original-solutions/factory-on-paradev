@@ -1005,6 +1005,12 @@ export const PARADEV_OFFLINE_ITEM_ID = "paradev-offline";
 /** Passes in a row the Paradev hold lasts before it raises its attention item. */
 export const PARADEV_HOLD_PASSES = 3;
 
+/**
+ * The line of a run in `triage` while Paradev is offline. Its resume may launch a session, and a
+ * launch that fails sends the run stuck, so it waits for Paradev as a new claim does.
+ */
+export const PARADEV_WAIT = "waits for Paradev to resume it";
+
 /** The attention text of a Paradev hold, by what failed. */
 const paradevHoldText = (down: ParadevDown): string => {
   const held = `no issue has been claimed for ${PARADEV_HOLD_PASSES} passes`;
@@ -1033,7 +1039,7 @@ const paradevOffline = Effect.fn("Pass.paradevOffline")(function* (world: PassWo
   }
   world.paradevHold.passes += 1;
   pass.line(
-    `paradev offline: ${plain(down.message)}; no ready issue claimed until Paradev answers`,
+    `paradev offline: ${plain(down.message)}; no issue claimed or resumed until Paradev answers`,
   );
   yield* pass.record({ event: "claim_skipped", data: { reason: "paradev-offline" } });
   if (world.paradevHold.passes < PARADEV_HOLD_PASSES) return true;
@@ -1691,6 +1697,10 @@ const resumeRun = Effect.fn("Pass.resumeRun")(function* (
   notes: Notes,
   pass: Pass,
 ) {
+  if (pass.paradevOffline) {
+    notes.parts.push(PARADEV_WAIT);
+    return;
+  }
   const issue = Number(info.id.issue);
   const outcome = yield* Effect.result(world.resume(repo, issue));
   if (outcome._tag === "Failure") {
@@ -2130,7 +2140,8 @@ const ownedRepos = Effect.fn("Pass.ownedRepos")(function* (
  * Claims `start` began that left no run it can go on from: the issue is `factory:triage`,
  * assigned to the factory's login alone, with no confirmed unfinished run (`RunInfo`). `resume`
  * finishes such an issue every pass until it is done. They are claims already made, so the limit
- * on new claims does not apply.
+ * on new claims does not apply. A resume may launch a session, so none runs while Paradev is
+ * offline; the hold's line says so once.
  */
 const untrackedClaims = Effect.fn("Pass.untrackedClaims")(function* (
   world: PassWorld,
@@ -2138,6 +2149,7 @@ const untrackedClaims = Effect.fn("Pass.untrackedClaims")(function* (
   known: Known,
   pass: Pass,
 ) {
+  if (pass.paradevOffline) return;
   for (const loaded of repos) {
     if (loaded.kind !== "ready") continue;
     const repo = loaded.repo;

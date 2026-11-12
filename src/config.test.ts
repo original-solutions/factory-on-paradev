@@ -889,8 +889,8 @@ describe("loaders", () => {
 });
 
 describe("the example machine config", () => {
-  // config.example.yml is copied as it stands to ~/.config/factory-runner/config.yml (by hand
-  // until `install` does it, #25), so it must load as it stands.
+  // config.example.yml is what a person copies to ~/.config/factory-runner/config.yml, and what
+  // `install` (#25) will copy when there is none, so it must load as it stands.
   effectIt.effect("the example machine config loads as it stands", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
@@ -899,7 +899,7 @@ describe("the example machine config", () => {
         Option.some({
           warnings: [],
           config: {
-            ghConfigDir: "/Users/tomkaczocha/.config/t3fac/gh",
+            ghConfigDir: "/Users/YOU/.config/factory-runner/gh",
             pollSeconds: 60,
             maxConcurrentRuns: 1,
             maxConcurrentGates: 1,
@@ -908,12 +908,7 @@ describe("the example machine config", () => {
             minFreeGib: 10,
             maxLoadPerCore: 1,
             modelFallbacks: {},
-            repos: [
-              {
-                repo: "original-solutions/factory-paradev-spike",
-                path: "/Users/tomkaczocha/factory-runner/original-solutions/factory-paradev-spike",
-              },
-            ],
+            repos: [],
             paradev: {
               cli: "/Applications/Superset.app/Contents/Resources/resources/bin/superset",
               agent: "claude",
