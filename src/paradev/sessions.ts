@@ -31,6 +31,7 @@ import { paradevModel } from "../config.ts";
 import { FactoryPaths } from "../paths.ts";
 import { FactoryProcess, type RunResult, type RunSpawnError } from "../process.ts";
 import {
+  type FactoryProject,
   type FactorySessions,
   type LaunchRequest,
   MessageRejectedError,
@@ -226,7 +227,12 @@ const SEND_POLL_MS = 2_000;
 /** ...for this long after the text, then this long after Enter. */
 const SEND_WAITS_MS: readonly [number, number] = [20_000, 10_000];
 
-export type ParadevSessions = FactorySessions["Service"];
+export type ParadevSessions = FactorySessions["Service"] & {
+  /** `findProject` for each of `workspaceRoots`, in order, from one `projects list`. */
+  readonly findProjects: (
+    workspaceRoots: ReadonlyArray<string>,
+  ) => Effect.Effect<ReadonlyArray<FactoryProject | null>, SessionsError>;
+};
 
 type Operation = SessionsError["operation"];
 
@@ -1010,14 +1016,32 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     yield* repo.gitOk(["worktree", "remove", "--force", path], { timeoutMs: 60_000 });
   }, (effect) => effect.pipe(Effect.mapError(failWith("remove-worktree"))));
 
-  const findProject = Effect.fn("ParadevSessions.findProject")(function* (workspaceRoot: string) {
-    const project = yield* local(Effect.flatMap(listProjects, (projects) => projectAt(projects, workspaceRoot)));
-    if (project === null) return null;
-    return { id: project.id, model: paradevModel(config), repo: GITHUB_REPO.exec(project.repo)?.[1] ?? null };
+  const findProjects = Effect.fn("ParadevSessions.findProjects")(function* (
+    workspaceRoots: ReadonlyArray<string>,
+  ) {
+    return yield* local(
+      Effect.gen(function* () {
+        const projects = yield* listProjects;
+        const found: Array<FactoryProject | null> = [];
+        for (const root of workspaceRoots) {
+          const project = yield* projectAt(projects, root);
+          found.push(
+            project === null
+              ? null
+              : { id: project.id, model: paradevModel(config), repo: GITHUB_REPO.exec(project.repo)?.[1] ?? null },
+          );
+        }
+        return found;
+      }),
+    );
   }, (effect) => effect.pipe(Effect.mapError(failWith("find-project"))));
+
+  const findProject = (workspaceRoot: string) =>
+    findProjects([workspaceRoot]).pipe(Effect.map((found) => found[0] ?? null));
 
   return {
     findProject,
+    findProjects,
     launch,
     status,
     thread,

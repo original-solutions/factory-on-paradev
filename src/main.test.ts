@@ -1117,6 +1117,28 @@ describe("on the Paradev CLI", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("one projects list a pass answers every repo in repos:", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { loop, factoryDir, paradev } = yield* started(
+          configFor([
+            ["a/b", "/b"],
+            ["c/d", "/d"],
+          ]),
+        );
+        const lists = () => paradev.calls.filter((argv) => argv.join(" ") === "projects list --local").length;
+        yield* idleAfter(loop, factoryDir, 1);
+        assert.strictEqual(lists(), 1);
+        yield* onePassMore(loop, factoryDir);
+        assert.strictEqual(lists(), 2);
+        assert.deepStrictEqual(
+          loop.status.state === "running" ? loop.status.settings.repos : null,
+          ["a/b", "c/d"],
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("a repo that is not a Paradev project is left out of the status's repos", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -1568,6 +1568,20 @@ describe("findProject", () => {
     }),
   );
 
+  it.live("findProjects answers each root, in order, from one projects list", () =>
+    Effect.gen(function* () {
+      const root = tempDir("project");
+      const t = rig([
+        { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(root) },
+      ]);
+      const found = yield* t.run((s) => s.findProjects([tempDir("none"), root, root]));
+      assert.deepStrictEqual(
+        found.map((project) => project?.id ?? null),
+        [null, SPIKE_PROJECT, SPIKE_PROJECT],
+      );
+    }),
+  );
+
   it.live("carries paradev.model and paradev.effort as the model launch passes on", () =>
     Effect.gen(function* () {
       const root = tempDir("project");

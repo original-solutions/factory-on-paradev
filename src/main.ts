@@ -1013,6 +1013,29 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       const status = yield* Effect.result(cli.run(["status"]));
       return Result.isFailure(status) ? downOf(status.failure) : null;
     });
+    // The loop is made after the world, so a gate that ends wakes whatever loop there is then.
+    const base = liveWorld(
+      machine,
+      factoryDir,
+      process,
+      Layer.mergeAll(
+        Layer.succeed(FileSystem.FileSystem)(fileSystem),
+        Layer.succeed(Path.Path)(path),
+      ),
+      sessions,
+      () => Date.now(),
+      hostName(),
+      attention,
+      {
+        gate,
+        wake: Effect.suspend(() => state.loop?.wake ?? Effect.void),
+        scope,
+        ...(options.readLoad !== undefined && { readLoad: options.readLoad }),
+      },
+      options.gateRemoteBase,
+      undefined,
+      shared,
+    );
     // The repos `repos:` lists, each with its clone a Paradev project on this Mac. A repo whose
     // clone is none, or is the project of another GitHub repo (a `path` copied from another
     // entry), is skipped with one item that says so: a session there would work on the other
@@ -1023,10 +1046,12 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     const listWatched = Effect.gen(function* () {
       const repos: Array<WatchedProject> = [];
       const unresolved: Array<string> = [];
-      for (const entry of machine.repos) {
-        const found = yield* Effect.result(sessions.findProject(entry.path));
-        if (Result.isSuccess(found)) {
-          const project = found.success;
+      // One `projects list` answers every repo.
+      const listing = yield* Effect.result(sessions.findProjects(machine.repos.map((entry) => entry.path)));
+      const projects = Result.isSuccess(listing) ? listing.success : null;
+      for (const [index, entry] of machine.repos.entries()) {
+        if (projects !== null) {
+          const project = projects[index] ?? null;
           const otherRepo =
             project !== null &&
             project.repo !== undefined &&
@@ -1052,7 +1077,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
                 item.id.startsWith(otherRepoItemPrefix(entry.repo))),
           );
           if (skip !== null) {
-            yield* world.record({
+            yield* base.record({
               event: "claim_skipped",
               data: { repo: entry.repo, reason: skip.reason },
             });
@@ -1092,30 +1117,8 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       }
       return { repos, departed, unresolved } satisfies WatchedListing;
     }).pipe(Effect.catch((error) => Effect.fail(asPassError("ledger")(error))));
-    // The loop is made after the world, so a gate that ends wakes whatever loop there is then.
     const world: PassWorld = {
-      ...liveWorld(
-        machine,
-        factoryDir,
-        process,
-        Layer.mergeAll(
-          Layer.succeed(FileSystem.FileSystem)(fileSystem),
-          Layer.succeed(Path.Path)(path),
-        ),
-        sessions,
-        () => Date.now(),
-        hostName(),
-        attention,
-        {
-          gate,
-          wake: Effect.suspend(() => state.loop?.wake ?? Effect.void),
-          scope,
-          ...(options.readLoad !== undefined && { readLoad: options.readLoad }),
-        },
-        options.gateRemoteBase,
-        undefined,
-        shared,
-      ),
+      ...base,
       watchedRepos: listWatched,
       paradevDown,
       // The sessions write under Paradev's worktrees folder, the gate under the factory dir.
