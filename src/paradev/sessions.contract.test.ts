@@ -1811,6 +1811,53 @@ describe("send", () => {
     }),
   );
 
+  it.live("a repeat to an agent now at a permission prompt counts the turn of the text that landed", () =>
+    Effect.gen(function* () {
+      const blockedSince = (answer: unknown) => ({
+        ...(answer as object),
+        state: "blocked",
+        lastEventType: "PermissionRequest",
+        lastEventAt: AFTER_GATE_AT + 1,
+      });
+      const t = rig([l1Snapshot(), { ...quiet(), edit: blockedSince }], { agentRunning: true, config: FAST_POLL });
+      yield* seed(t.data, record({ pendingSend: { commandId: SEND_ID, before: AFTER_GATE_AT } }));
+      yield* t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some(argvIs("terminals", "send")));
+      const saved = yield* savedL1(t.data);
+      assert.strictEqual(saved!.turns.at(-1)!.commandId, SEND_ID);
+      assert.isNull(saved!.pendingSend);
+    }),
+  );
+
+  it.live("a repeat that typed before an agent's first hook, to an agent with still none, keeps the send pending", () =>
+    Effect.gen(function* () {
+      const pending = record({ pendingSend: { commandId: SEND_ID, before: null } });
+      const noHook = (answer: unknown) => ({ ...(answer as object), lastEventAt: null });
+      const t = rig([l1Snapshot(), { ...quiet(), edit: noHook }], { agentRunning: true, config: FAST_POLL });
+      yield* seed(t.data, pending);
+      const error = yield* Effect.flip(t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT)));
+      assert.deepInclude(error, { _tag: "FactorySessionsError", operation: "send" });
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some(argvIs("terminals", "send")));
+      assert.deepStrictEqual(yield* savedL1(t.data), pending);
+    }),
+  );
+
+  it.live("a terminals send that Paradev refused before typing clears the send, so a repeat types it", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [l1Snapshot(), quiet(), { argv: textSend, fail: "Host service for this machine isn't running" }],
+        { agentRunning: true, config: FAST_POLL },
+      );
+      yield* seed(t.data, record());
+      const error = yield* Effect.flip(t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT)));
+      assert.deepInclude(error, { _tag: "FactorySessionsError", operation: "send" });
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual(yield* savedL1(t.data), record({ pendingSend: null }));
+    }),
+  );
+
   it.live("a send under another command id clears the pending one and types as a fresh send", () =>
     Effect.gen(function* () {
       const t = rig(
