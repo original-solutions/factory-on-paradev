@@ -4,7 +4,6 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
-import * as Random from "effect/Random";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as NodeFS from "node:fs";
@@ -13,7 +12,6 @@ import * as NodePath from "node:path";
 import {
   configFlags,
   FETCH_ARGS,
-  FETCH_ATTEMPTS,
   FETCH_CREDENTIAL_FLAGS,
   FETCH_HTTP_FLAGS,
   FETCH_RETRY_DELAYS_MS,
@@ -22,7 +20,7 @@ import {
   HARDENED_GIT_CONFIG,
   HARDENED_GIT_ENV,
   normalizeRemoteBase,
-  TRANSIENT_FETCH,
+  retryFetch,
 } from "./gitHardening.ts";
 import type { AppendIo } from "./ledger/appendFile.ts";
 import { errnoCode, ledgerCall, type LedgerError } from "./ledger/errors.ts";
@@ -614,26 +612,11 @@ export const makeWorkspace = (runner: Runner, options: GateOptions = {}) => {
       timeoutMs: checkoutTimeoutMs,
       fetch: true,
     });
-    for (let tried = 1; ; tried += 1) {
-      const fetched = yield* Effect.result(fetch);
-      if (Result.isSuccess(fetched)) break;
-      const error = fetched.failure;
-      const reason =
-        error._tag === "WorkspaceFailedError" ? TRANSIENT_FETCH.exec(error.stderr)?.[0] : undefined;
-      if (
-        error._tag !== "WorkspaceFailedError" ||
-        reason === undefined ||
-        tried >= FETCH_ATTEMPTS
-      ) {
-        return yield* error;
-      }
-      const wait = fetchRetryDelaysMs[tried - 1] ?? 0;
-      const delayMs = wait + (yield* Random.nextIntBetween(0, Math.min(1000, wait)));
-      yield* Effect.logInfo(
-        `\`git ${error.args}\` attempt ${tried} of ${FETCH_ATTEMPTS} failed (${reason}); trying again in ${(delayMs / 1000).toFixed(1)} s`,
-      );
-      yield* Effect.sleep(delayMs);
-    }
+    yield* retryFetch(fetch, {
+      delaysMs: fetchRetryDelaysMs,
+      stderrOf: (error) => (error._tag === "WorkspaceFailedError" ? error.stderr : undefined),
+      name: (error) => (error._tag === "WorkspaceFailedError" ? `\`git ${error.args}\`` : "the fetch"),
+    });
     yield* git(dir, {
       args: ["checkout", "--quiet", "--detach", "--no-recurse-submodules", sha],
       timeoutMs: checkoutTimeoutMs,

@@ -15,7 +15,6 @@ import * as Schema from "effect/Schema";
 import {
   configFlags,
   FETCH_ARGS,
-  FETCH_ATTEMPTS,
   FETCH_CREDENTIAL_FLAGS,
   FETCH_HTTP_FLAGS,
   FETCH_RETRY_DELAYS_MS,
@@ -25,10 +24,10 @@ import {
   HARDENED_GIT_ENV,
   listSessionPins,
   normalizeRemoteBase,
-  TRANSIENT_FETCH,
+  retryFetch,
 } from "../gitHardening.ts";
 import { FactoryPaths } from "../paths.ts";
-import { FactoryProcess } from "../process.ts";
+import { FactoryProcess, type RunResult, type RunSpawnError } from "../process.ts";
 import {
   type FactorySessions,
   type LaunchRequest,
@@ -425,24 +424,26 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       // A dropped connection is tried again, as the gate's fetch is: a failed launch sends the run
       // to stuck, and no later pass launches it again.
       const byUrl = [...fetchArgs, `${remoteBase}/${repo}.git`, `+refs/heads/${baseRef}:refs/heads/${baseRef}`];
-      for (let tried = 1; ; tried += 1) {
-        const fetched = yield* git(scratch, byUrl, {
-          fetch: true,
-          timeoutMs: 120_000,
-          pre: FETCH_HTTP_FLAGS,
-          env: { GIT_ALLOW_PROTOCOL: fileTransportFor(remoteBase) === "always" ? "https:file" : "https" },
-        });
-        if (fetched.exitCode === 0 && !fetched.timedOut) break;
-        const reason = fetched.timedOut ? undefined : TRANSIENT_FETCH.exec(fetched.stderrTail)?.[0];
-        if (reason === undefined || tried >= FETCH_ATTEMPTS) {
-          return yield* fail(
-            `git ${byUrl.join(" ")} ${fetched.timedOut ? "timed out" : `exited ${fetched.exitCode}`}: ${fetched.stderrTail.trim()}`,
-          );
-        }
-        const wait = fetchRetryDelaysMs[tried - 1] ?? 0;
-        yield* Effect.logInfo(`the base fetch failed (${reason}); trying again in ${wait / 1000} s`);
-        yield* Effect.sleep(wait);
-      }
+      const fetchOnce = git(scratch, byUrl, {
+        fetch: true,
+        timeoutMs: 120_000,
+        pre: FETCH_HTTP_FLAGS,
+        env: { GIT_ALLOW_PROTOCOL: fileTransportFor(remoteBase) === "always" ? "https:file" : "https" },
+      }).pipe(
+        Effect.flatMap((result) => (result.exitCode === 0 && !result.timedOut ? Effect.void : Effect.fail(result))),
+      );
+      const isResult = (error: RunResult | RunSpawnError): error is RunResult => "stderrTail" in error;
+      yield* retryFetch(fetchOnce, {
+        delaysMs: fetchRetryDelaysMs,
+        stderrOf: (error) => (isResult(error) && !error.timedOut ? error.stderrTail : undefined),
+        name: () => `\`git ${byUrl.join(" ")}\``,
+      }).pipe(
+        Effect.catchIf(isResult, (result) =>
+          fail(
+            `git ${byUrl.join(" ")} ${result.timedOut ? "timed out" : `exited ${result.exitCode}`}: ${result.stderrTail.trim()}`,
+          ),
+        ),
+      );
       const clone = yield* sessionRepo(project.path);
       yield* clone.gitOk(
         [
@@ -525,7 +526,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         ...(typeof effort === "string" ? ["--effort", effort] : []),
         "--prompt", request.message,
       ];
-      // No retry: a launch that finds its record without a terminal looks for the agent first.
+      // No retry: a second create could start a second agent. `startAgent` looks for the agent
+      // when this fails.
       const answer = yield* call(cli, argv, 120_000);
       return (yield* decodeAnswer(AgentStarted, answer, argv)).sessionId;
     });
@@ -567,7 +569,18 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         );
       }
       if (checked.state === "behind") yield* checked.reset;
-      return yield* withAgent(placed, yield* createAgent(placed, request), request);
+      // A create that timed out or failed may still have started the agent: a failed launch goes
+      // to stuck, so it looks for it now rather than leave it running unrecorded.
+      const started = yield* createAgent(placed, request).pipe(
+        Effect.catch((error) =>
+          findAgent(record.workspaceId, placed.agent, placed.terminals).pipe(
+            Effect.flatMap((found) =>
+              found !== null && found !== "unclear" ? Effect.succeed(found.terminal) : Effect.fail(error),
+            ),
+          ),
+        ),
+      );
+      return yield* withAgent(placed, started, request);
     });
 
   const noAgentYet = (record: ThreadRecord) =>

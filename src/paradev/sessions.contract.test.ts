@@ -142,13 +142,15 @@ const rig = (
     Effect.gen(function* () {
       const real = yield* FactoryProcess;
       return FactoryProcess.of({
-        run: (input) => {
-          if (input.command === "git") gitCalls.push({ args: input.args ?? [], env: input.env ?? {} });
-          const changed = input.command === "git" ? options.gitResult?.(input.args ?? []) : undefined;
-          return changed === undefined
-            ? real.run(input)
-            : Effect.map(real.run(input), (result) => ({ ...result, ...changed }));
-        },
+        // Recorded and changed each time the call runs: a retry runs the same effect again.
+        run: (input) =>
+          Effect.suspend(() => {
+            if (input.command === "git") gitCalls.push({ args: input.args ?? [], env: input.env ?? {} });
+            const changed = input.command === "git" ? options.gitResult?.(input.args ?? []) : undefined;
+            return changed === undefined
+              ? real.run(input)
+              : Effect.map(real.run(input), (result) => ({ ...result, ...changed }));
+          }),
       });
     }),
   ).pipe(Layer.provide(processLayer));
@@ -670,15 +672,47 @@ describe("launch", () => {
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/x8", "main");
-      const script = launchScript(r).map((step): Step =>
-        step.fixture === "agents-create-local-resume" ? { argv: step.argv, fail: "Could not connect to API" } : step,
-      );
+      const script = [
+        ...launchScript(r).map((step): Step =>
+          step.fixture === "agents-create-local-resume" ? { argv: step.argv, fail: "Could not connect to API" } : step,
+        ),
+        // The look after the failed create finds no terminal: nothing was started.
+        { argv: ["snapshot", "--workspace", X8_WS], fixture: "snapshot-local-before-kill", edit: snapshotOf(X8_WS, []) },
+      ];
       const t = rig(script, { config: { remoteBase: r.remoteBase } });
       const error = yield* Effect.flip(t.run((s) => s.launch(request())));
       assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.include(String(error.cause), "Could not connect to API");
       assert.strictEqual(t.calls.filter(argvIs("agents", "create")).length, 1);
       const saved = yield* readThread(t.data, X8_WS).pipe(Effect.provide(NodeServices.layer));
       assert.deepStrictEqual(saved!.terminals, []);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("agents create that fails after starting the agent takes that agent, and starts no second one", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const script = [
+        ...launchScript(r).map((step): Step =>
+          step.fixture === "agents-create-local-resume" ? { argv: step.argv, fail: "Request timed out" } : step,
+        ),
+        // Paradev started the agent before the call gave up.
+        {
+          argv: ["snapshot", "--workspace", X8_WS],
+          fixture: "snapshot-local-before-kill",
+          edit: snapshotOf(X8_WS, [{ id: "t-late", title: "", agent: { id: "claude", state: "working" } }]),
+        },
+      ];
+      const t = rig(script, { config: { remoteBase: r.remoteBase } });
+      const launched = yield* t.run((s) => s.launch(request()));
+      assert.strictEqual(launched.threadId, `local:${X8_WS}`);
+      assert.strictEqual(t.calls.filter(argvIs("agents", "create")).length, 1);
+      const saved = yield* readThread(t.data, X8_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.deepStrictEqual(saved!.terminals, ["t-late"]);
+      assert.deepStrictEqual(saved!.turns.map((turn) => turn.kind), ["launch"]);
+      assert.deepStrictEqual(t.unused(), []);
     }),
   );
 
@@ -1043,6 +1077,36 @@ describe("launch after a crash between the launch file and the agent's start", (
       yield* writeThread(data, record({ threadId: `local:${L5_WS}`, workspaceId: L5_WS, branch: "fac/2-1", worktreePath, terminals: [], turns: [] }));
       yield* writeLaunch(data, LAUNCH_ID, `local:${L5_WS}`);
     }).pipe(Effect.provide(NodeServices.layer));
+
+  it.live("a terminal with no agent after every look stops the launch, with nothing fetched, reset or started", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      // The earlier attempt's agent starts on a worktree behind the base, before its first hook.
+      r.addWorktree("fac/2-1", "main");
+      const before = reflog(r.worktree);
+      const starting = {
+        argv: ["snapshot", "--workspace", L5_WS],
+        fixture: "snapshot-local-before-kill",
+        edit: snapshotOf(L5_WS, [{ id: "t-starting", title: "", agent: null }]),
+      };
+      const t = rig([starting, starting, starting], {
+        config: { remoteBase: r.remoteBase, agentPollDelaysMs: [0, 0] },
+      });
+      yield* crashed(t.data, r.worktree);
+      const error = yield* Effect.flip(t.run((s) => s.launch(request({ baseRef: "x8-origin-only" }))));
+      assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.deepStrictEqual(t.calls, [
+        ["snapshot", "--workspace", L5_WS],
+        ["snapshot", "--workspace", L5_WS],
+        ["snapshot", "--workspace", L5_WS],
+      ]);
+      assert.deepStrictEqual(t.gitCalls, []);
+      assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), r.main);
+      assert.strictEqual(reflog(r.worktree), before);
+      const saved = yield* readThread(t.data, L5_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.deepStrictEqual(saved!.terminals, []);
+    }),
+  );
 
   it.live("adopts the agent the earlier attempt started, with no create call", () =>
     Effect.gen(function* () {

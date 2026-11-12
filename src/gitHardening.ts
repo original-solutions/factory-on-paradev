@@ -1,4 +1,6 @@
 import * as Effect from "effect/Effect";
+import * as Random from "effect/Random";
+import * as Result from "effect/Result";
 
 /**
  * What every factory git call runs with in a repository a session can write to: no system or
@@ -81,7 +83,7 @@ export const FETCH_HTTP_FLAGS: ReadonlyArray<string> = ["-c", "http.version=HTTP
 
 /** How many times a by-URL fetch is tried before its failure is returned. */
 export const FETCH_ATTEMPTS = 3;
-/** The wait before the second and the third fetch, in milliseconds. */
+/** The wait before the second and the third fetch, in milliseconds; each gets up to a second more. */
 export const FETCH_RETRY_DELAYS_MS: ReadonlyArray<number> = [5_000, 15_000];
 /**
  * What git's stderr says when the network dropped the fetch: HTTP/2 stream error, TLS handshake
@@ -91,6 +93,37 @@ export const FETCH_RETRY_DELAYS_MS: ReadonlyArray<number> = [5_000, 15_000];
  */
 export const TRANSIENT_FETCH =
   /Error in the HTTP2 framing layer|TLS handshake timeout|Could not resolve host|Failed to connect|Connection timed out|SSL_ERROR_SYSCALL|early EOF|unexpected EOF|RPC failed; curl \d+/;
+
+/**
+ * `fetch`, tried again up to {@link FETCH_ATTEMPTS} times in all while the stderr of its failure
+ * matches {@link TRANSIENT_FETCH}, after each of `delaysMs` plus up to a second of jitter, so
+ * fetches that failed together do not retry together. `stderrOf` is undefined for a failure that
+ * must not be tried again; `name` is what the log line calls the call.
+ */
+export const retryFetch = <A, E, R>(
+  fetch: Effect.Effect<A, E, R>,
+  options: {
+    readonly delaysMs: ReadonlyArray<number>;
+    readonly stderrOf: (error: E) => string | undefined;
+    readonly name: (error: E) => string;
+  },
+): Effect.Effect<A, E, R> =>
+  Effect.gen(function* () {
+    for (let tried = 1; ; tried += 1) {
+      const fetched = yield* Effect.result(fetch);
+      if (Result.isSuccess(fetched)) return fetched.success;
+      const error = fetched.failure;
+      const stderr = options.stderrOf(error);
+      const reason = stderr === undefined ? undefined : TRANSIENT_FETCH.exec(stderr)?.[0];
+      if (reason === undefined || tried >= FETCH_ATTEMPTS) return yield* Effect.fail(error);
+      const wait = options.delaysMs[tried - 1] ?? 0;
+      const delayMs = wait + (yield* Random.nextIntBetween(0, Math.min(1000, wait)));
+      yield* Effect.logInfo(
+        `${options.name(error)} attempt ${tried} of ${FETCH_ATTEMPTS} failed (${reason}); trying again in ${(delayMs / 1000).toFixed(1)} s`,
+      );
+      yield* Effect.sleep(delayMs);
+    }
+  });
 
 // ---- filter drivers and config hooks in a repository a session can write ---------------------
 
