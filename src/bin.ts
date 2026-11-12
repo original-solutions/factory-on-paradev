@@ -12,7 +12,6 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import type * as Path from "effect/Path";
 
 import { runCli, USAGE } from "./cli.ts";
 import type { InstallEnv } from "./install.ts";
@@ -21,21 +20,24 @@ import * as Paths from "./paths.ts";
 import { takeRunnerLock } from "./runnerLock.ts";
 
 /** The data dir of this process: `FACTORY_RUNNER_HOME`, else `~/.config/factory-runner`. */
-const realDataDir = (): string =>
-  // `dataDirOf` only calls `resolve` and `join`, which node:path has too.
-  Paths.dataDirOf(process.env, NodeOS.homedir(), NodePath as unknown as Path.Path);
+const realDataDir = (): string => Paths.dataDirOf(process.env, NodeOS.homedir(), NodePath);
+
+/** The folder holding `package.json`. */
+const packageRoot = NodePath.resolve(import.meta.dirname, "..");
 
 /** What install touches on this machine: the real HOME, commands (30 s each), clock and terminal. */
 const realInstallEnv = (): InstallEnv => {
   const set = process.env["FACTORY_RUNNER_HOME"];
+  const dataDir = realDataDir();
   return {
     home: NodeOS.homedir(),
-    dataDir: realDataDir(),
+    dataDir,
+    machineConfigPath: NodePath.join(dataDir, "config.yml"),
     factoryRunnerHome: set !== undefined && set !== "" ? set : undefined,
     uid: process.getuid?.() ?? 0,
     execPath: process.execPath,
     pathEnv: process.env["PATH"] ?? "/usr/bin:/bin",
-    packageRoot: NodePath.resolve(import.meta.dirname, ".."),
+    packageRoot,
     run: (command, args) => {
       const done = NodeChildProcess.spawnSync(command, [...args], {
         encoding: "utf8",
@@ -44,7 +46,11 @@ const realInstallEnv = (): InstallEnv => {
       return {
         status: done.status,
         stdout: done.stdout ?? "",
-        stderr: done.stderr ?? (done.error === undefined ? "" : done.error.message),
+        // A timeout or a missing CLI sets `error` and leaves stderr empty; say so.
+        stderr:
+          done.error !== undefined
+            ? `${done.error.message}\n${done.stderr ?? ""}`
+            : (done.stderr ?? ""),
       };
     },
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -86,7 +92,7 @@ if (command === "run") {
   void runCli(process.argv.slice(2), {
     dataDir,
     machineConfigPath: NodePath.join(dataDir, "config.yml"),
-    packageRoot: NodePath.resolve(import.meta.dirname, ".."),
+    packageRoot,
     now: Date.now,
     out: (line) => console.log(line),
     err: (line) => console.error(line),

@@ -15,7 +15,8 @@ import { parseMachineConfig } from "./config.ts";
 import { pauseClaimsNow, resumeClaimsNow, stopRun } from "./control.ts";
 import { install, uninstall, type InstallEnv } from "./install.ts";
 import { errnoCode } from "./ledger/errors.ts";
-import { isRunner, LOCK_FILE } from "./runnerLock.ts";
+import { packageVersion } from "./paths.ts";
+import { isRunner, lockHolder } from "./runnerLock.ts";
 import {
   buildStatus,
   type FactoryStatus,
@@ -50,9 +51,8 @@ const readOrNull = (path: string): string | null => {
 
 /** Running when a live runner holds the lock and the config loads; else idle, with the reason. */
 const factoryStatus = (io: CliIo): FactoryStatus => {
-  const pid = Number(readOrNull(NodePath.join(io.dataDir, LOCK_FILE))?.trim());
-  const live = (io.isRunner ?? isRunner)(pid);
-  if (!Number.isInteger(pid) || pid < 1 || !live) {
+  const pid = lockHolder(io.dataDir);
+  if (pid === null || !(io.isRunner ?? isRunner)(pid)) {
     return { state: "idle", reason: "the runner is not running" };
   }
   const text = readOrNull(io.machineConfigPath);
@@ -93,20 +93,10 @@ const status = (args: ReadonlyArray<string>, io: CliIo): number => {
     io.err(USAGE);
     return 2;
   }
-  const version = (
-    JSON.parse(
-      NodeFS.readFileSync(
-        NodePath.join(io.packageRoot, "package.json"),
-        "utf8",
-      ),
-    ) as {
-      version: string;
-    }
-  ).version;
   const { open, dismissed } = readAttentionFile(io.dataDir);
   const report = buildStatus({
     status: factoryStatus(io),
-    version,
+    version: packageVersion(io.packageRoot),
     machine: NodeOS.hostname() || "unknown",
     machineConfigPath: io.machineConfigPath,
     dataDir: io.dataDir,

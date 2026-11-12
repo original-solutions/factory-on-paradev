@@ -11,9 +11,9 @@ import * as Result from "effect/Result";
 
 import { DEFAULT_PARADEV_CLI, parseMachineConfig } from "./config.ts";
 import { errnoCode } from "./ledger/errors.ts";
+import { installPathsOf, LABEL, LOGROTATE_LABEL, packageVersion } from "./paths.ts";
 
-export const LABEL = "io.github.rawphp.factory-runner";
-export const LOGROTATE_LABEL = "io.github.rawphp.factory-runner.logrotate";
+export { LABEL, LOGROTATE_LABEL };
 
 const LAUNCHCTL = "/bin/launchctl";
 const STARTED_TEXT = "runner started";
@@ -40,8 +40,10 @@ export interface CommandResult {
 export interface InstallEnv {
   /** HOME; every path below derives from it. */
   readonly home: string;
-  /** The data dir; the machine config is `<dataDir>/config.yml`. */
+  /** The data dir. */
   readonly dataDir: string;
+  /** The machine config, `<dataDir>/config.yml`. */
+  readonly machineConfigPath: string;
   /** `FACTORY_RUNNER_HOME` when set and not empty; the runner agent gets it too. */
   readonly factoryRunnerHome: string | undefined;
   readonly uid: number;
@@ -156,9 +158,11 @@ const firstLine = (text: string): string => text.trim().split("\n")[0] ?? "";
 
 /** The superset CLI: the machine config's `paradev.cli` when that file loads, else the bundled one. */
 const supersetCli = (env: InstallEnv): string => {
-  const file = NodePath.join(env.dataDir, "config.yml");
   try {
-    const parsed = parseMachineConfig(NodeFS.readFileSync(file, "utf8"), file);
+    const parsed = parseMachineConfig(
+      NodeFS.readFileSync(env.machineConfigPath, "utf8"),
+      env.machineConfigPath,
+    );
     if (Result.isSuccess(parsed)) return parsed.success.config.paradev.cli;
   } catch {
     // No config, or one that cannot be read: the bundled CLI.
@@ -168,8 +172,7 @@ const supersetCli = (env: InstallEnv): string => {
 
 /** Copies the package to `versions/<version>` and points `current` at it. */
 const place = (env: InstallEnv, version: string): string => {
-  const share = NodePath.join(env.home, ".local", "share", "factory-runner");
-  const versions = NodePath.join(share, "versions");
+  const { versions, current } = installPathsOf(env.home);
   const target = NodePath.join(versions, version);
   NodeFS.mkdirSync(versions, { recursive: true });
   const installed =
@@ -190,7 +193,6 @@ const place = (env: InstallEnv, version: string): string => {
     NodeFS.rmSync(target, { recursive: true, force: true });
     NodeFS.renameSync(temp, target);
   }
-  const current = NodePath.join(share, "current");
   const link = `${current}.${process.pid}.tmp`;
   NodeFS.rmSync(link, { force: true });
   NodeFS.symlinkSync(target, link);
@@ -232,13 +234,27 @@ const lastLines = (path: string): string => {
   }
 };
 
+const readOrNull = (path: string): string | null => {
+  try {
+    return NodeFS.readFileSync(path, "utf8");
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return null;
+    throw error;
+  }
+};
+
 /**
  * Installs the runner as a LaunchAgent and returns the exit code. It checks the Superset login
  * first (a LaunchAgent has no Paradev host login of its own) and writes nothing when that fails.
  * Then it copies this package to `versions/<version>`, points `current` at it, writes both agent
  * files, copies `config.example.yml` to the data dir when there is no config (an existing config is
- * never touched), loads the agents (`launchctl bootstrap`, or `kickstart -k` when one is loaded),
- * and waits up to 60 s for a new `runner started` line in the log.
+ * never touched), loads the agents, and waits up to 60 s for a new `runner started` line in the log.
+ *
+ * Loading an agent depends on what launchd holds. Not loaded: `bootstrap`. Loaded, and the plist
+ * on disk is what this run wrote: `kickstart -k`. Loaded, and the plist changed (a new node, a new
+ * version path): `bootout` then `bootstrap`, because `kickstart` restarts launchd's cached
+ * definition and never rereads the file. The log rotation agent comes up first, so a failure there
+ * never leaves a runner running behind an exit code of 1.
  */
 export const install = async (env: InstallEnv): Promise<number> => {
   const cli = supersetCli(env);
@@ -250,97 +266,84 @@ export const install = async (env: InstallEnv): Promise<number> => {
     return 1;
   }
 
-  const version = (
-    JSON.parse(
-      NodeFS.readFileSync(
-        NodePath.join(env.packageRoot, "package.json"),
-        "utf8",
-      ),
-    ) as {
-      version: string;
-    }
-  ).version;
+  const version = packageVersion(env.packageRoot);
   const placed = place(env, version);
 
-  const share = NodePath.join(
-    env.home,
-    ".local",
-    "share",
-    "factory-runner",
-    "current",
-  );
-  const logDir = NodePath.join(env.home, "Library", "Logs", "factory-runner");
-  const log = NodePath.join(logDir, "runner.log");
-  NodeFS.mkdirSync(logDir, { recursive: true });
-  const agents = NodePath.join(env.home, "Library", "LaunchAgents");
-  const runnerPlist = NodePath.join(agents, `${LABEL}.plist`);
-  const rotatePlist = NodePath.join(agents, `${LOGROTATE_LABEL}.plist`);
-  writeWhole(
-    runnerPlist,
-    plistOf({
-      label: LABEL,
-      program: [env.execPath, NodePath.join(share, "src", "bin.ts"), "run"],
-      workingDirectory: env.home,
-      environment: {
-        PATH: env.pathEnv,
-        ...(env.factoryRunnerHome === undefined
-          ? {}
-          : { FACTORY_RUNNER_HOME: env.factoryRunnerHome }),
-      },
-      runAtLoad: true,
-      keepAlive: true,
-      throttleInterval: 10,
-      logPath: log,
-    }),
-  );
-  writeWhole(
-    rotatePlist,
-    plistOf({
+  const paths = installPathsOf(env.home);
+  NodeFS.mkdirSync(paths.logDir, { recursive: true });
+  const agents = [
+    {
       label: LOGROTATE_LABEL,
-      program: [
-        "/bin/bash",
-        NodePath.join(share, "scripts", "rotate-log.sh"),
-        log,
-      ],
-      startInterval: 600,
-      logPath: NodePath.join(logDir, "logrotate.log"),
-    }),
-  );
+      file: paths.rotatePlist,
+      text: plistOf({
+        label: LOGROTATE_LABEL,
+        program: [
+          "/bin/bash",
+          NodePath.join(paths.current, "scripts", "rotate-log.sh"),
+          paths.log,
+        ],
+        startInterval: 600,
+        logPath: paths.rotateLog,
+      }),
+    },
+    {
+      label: LABEL,
+      file: paths.runnerPlist,
+      text: plistOf({
+        label: LABEL,
+        program: [env.execPath, NodePath.join(paths.current, "src", "bin.ts"), "run"],
+        workingDirectory: env.home,
+        environment: {
+          PATH: env.pathEnv,
+          // The resolved dir: a relative `FACTORY_RUNNER_HOME` means nothing to launchd.
+          ...(env.factoryRunnerHome === undefined ? {} : { FACTORY_RUNNER_HOME: env.dataDir }),
+        },
+        runAtLoad: true,
+        keepAlive: true,
+        throttleInterval: 10,
+        logPath: paths.log,
+      }),
+    },
+  ].map((agent) => {
+    const changed = readOrNull(agent.file) !== agent.text;
+    writeWhole(agent.file, agent.text);
+    return { ...agent, changed };
+  });
 
-  const config = NodePath.join(env.dataDir, "config.yml");
-  if (!exists(config)) {
-    NodeFS.mkdirSync(env.dataDir, { recursive: true });
+  if (!exists(env.machineConfigPath)) {
     writeWhole(
-      config,
+      env.machineConfigPath,
       NodeFS.readFileSync(NodePath.join(placed, "config.example.yml"), "utf8"),
       0o600,
     );
-    env.out(`factory-runner: wrote ${config} from config.example.yml; edit it`);
+    env.out(`factory-runner: wrote ${env.machineConfigPath} from config.example.yml; edit it`);
   }
 
-  const offset = sizeOf(log);
-  for (const [label, plist] of [
-    [LABEL, runnerPlist],
-    [LOGROTATE_LABEL, rotatePlist],
-  ] as const) {
-    const domain = `gui/${env.uid}`;
-    const loaded =
-      env.run(LAUNCHCTL, ["print", `${domain}/${label}`]).status === 0;
-    const args = loaded
-      ? ["kickstart", "-k", `${domain}/${label}`]
-      : ["bootstrap", domain, plist];
+  const offset = sizeOf(paths.log);
+  const domain = `gui/${env.uid}`;
+  const launchctl = (args: ReadonlyArray<string>): boolean => {
     const done = env.run(LAUNCHCTL, args);
-    if (done.status !== 0) {
-      env.err(
-        `factory-runner: launchctl ${args.join(" ")} failed: ${done.stderr.trim()}`,
-      );
-      return 1;
-    }
+    if (done.status === 0) return true;
+    env.err(`factory-runner: launchctl ${args.join(" ")} failed: ${done.stderr.trim()}`);
+    return false;
+  };
+  for (const { label, file, changed } of agents) {
+    const loaded = env.run(LAUNCHCTL, ["print", `${domain}/${label}`]).status === 0;
+    const steps =
+      loaded && !changed
+        ? [["kickstart", "-k", `${domain}/${label}`]]
+        : loaded
+          ? [
+              ["bootout", `${domain}/${label}`],
+              ["bootstrap", domain, file],
+            ]
+          : [["bootstrap", domain, file]];
+    for (const step of steps) if (!launchctl(step)) return 1;
   }
 
   const deadline = env.now() + WAIT_MS;
   for (;;) {
-    if (readFrom(log, offset).includes(STARTED_TEXT)) {
+    if (readFrom(paths.log, offset).includes(STARTED_TEXT)) {
       env.out(`factory-runner ${version} installed and running`);
       return 0;
     }
@@ -348,20 +351,25 @@ export const install = async (env: InstallEnv): Promise<number> => {
     await env.sleep(POLL_MS);
   }
   env.err(
-    `factory-runner: no "${STARTED_TEXT}" in ${log} after 60 s; its last ${TAIL_LINES} lines:`,
+    `factory-runner: no "${STARTED_TEXT}" in ${paths.log} after 60 s; its last ${TAIL_LINES} lines:`,
   );
-  env.err(lastLines(log));
+  env.err(lastLines(paths.log));
   return 1;
 };
 
 /**
  * Boots out both agents and removes their files. The config, the data and the installed versions
- * stay. Returns 1 when a bootout failed.
+ * stay. A file whose agent would not boot out stays too, so the loaded job still has its plist.
+ * Returns 1 when a bootout failed.
  */
 export const uninstall = async (env: InstallEnv): Promise<number> => {
   let code = 0;
   const domain = `gui/${env.uid}`;
-  for (const label of [LABEL, LOGROTATE_LABEL]) {
+  const paths = installPathsOf(env.home);
+  for (const [label, plist] of [
+    [LABEL, paths.runnerPlist],
+    [LOGROTATE_LABEL, paths.rotatePlist],
+  ] as const) {
     if (env.run(LAUNCHCTL, ["print", `${domain}/${label}`]).status === 0) {
       const done = env.run(LAUNCHCTL, ["bootout", `${domain}/${label}`]);
       if (done.status !== 0) {
@@ -369,18 +377,14 @@ export const uninstall = async (env: InstallEnv): Promise<number> => {
           `factory-runner: launchctl bootout ${domain}/${label} failed: ${done.stderr.trim()}`,
         );
         code = 1;
-      } else {
-        env.out(`factory-runner: stopped ${label}`);
+        continue;
       }
+      env.out(`factory-runner: stopped ${label}`);
     }
-    const plist = NodePath.join(
-      env.home,
-      "Library",
-      "LaunchAgents",
-      `${label}.plist`,
-    );
-    NodeFS.rmSync(plist, { force: true });
-    env.out(`factory-runner: removed ${plist}`);
+    if (exists(plist)) {
+      NodeFS.rmSync(plist, { force: true });
+      env.out(`factory-runner: removed ${plist}`);
+    }
   }
   return code;
 };
