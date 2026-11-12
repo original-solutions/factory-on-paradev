@@ -27,19 +27,32 @@ export const isAlive = (pid: number): boolean => {
   }
 };
 
-/**
- * Whether `pid` is a runner: alive, and running `bin.ts`, as `factory-runner run` and the
- * LaunchAgent both do. After a crash or a reboot the dead runner's pid can belong to another
- * process, which does not hold the lock. When `ps` cannot say, a live pid counts as a runner.
- */
-export const isRunner = (pid: number): boolean => {
-  if (!isAlive(pid)) return false;
+/** A command line that runs the runner: `bin.ts run`, as the LaunchAgent starts it, or `factory-runner run`. */
+export const isRunnerCommand = (command: string): boolean =>
+  /(?:^|[\s/])(?:bin\.ts|factory-runner) run(?:\s|$)/.test(command);
+
+/** The command line of `pid` as `ps` shows it; null when `ps` cannot say. */
+const commandOf = (pid: number): string | null => {
   const shown = NodeChildProcess.spawnSync("ps", ["-p", String(pid), "-o", "command="], {
     encoding: "utf8",
     timeout: 5_000,
   });
-  if (shown.error !== undefined || shown.status === null) return true;
-  return shown.status === 0 && /\bbin\.ts\b|\bfactory-runner\b/.test(shown.stdout);
+  if (shown.error !== undefined || shown.status === null) return null;
+  return shown.status === 0 ? shown.stdout.trim() : "";
+};
+
+/**
+ * Whether `pid` is a runner: alive, and running the runner. After a crash or a reboot the dead
+ * runner's pid can belong to another process, which does not hold the lock. When `ps` cannot
+ * say, a live pid counts as a runner.
+ */
+export const isRunner = (
+  pid: number,
+  command: (pid: number) => string | null = commandOf,
+): boolean => {
+  if (!isAlive(pid)) return false;
+  const shown = command(pid);
+  return shown === null || isRunnerCommand(shown);
 };
 
 /** The pid in a lock file, or null when the file is gone or holds no pid. */
