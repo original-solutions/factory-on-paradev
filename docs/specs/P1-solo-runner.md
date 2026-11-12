@@ -52,7 +52,7 @@ factory-on-paradev/
   .dw/config.yml          exists: factory block, gate `npm run check`, so t3fac can build this repo until it builds itself
   .github/workflows/      check.yml runs `npm ci && npm run check` on pull requests
   spike/                  exists: the P0 driver, RESULTS.md and fixtures/2.0.8/, which the contract tests read in place
-  launchd/                io.github.rawphp.factory-runner.plist, ...factory-runner.logrotate.plist
+  launchd/                io.github.original-solutions.factory-runner.plist, ...factory-runner.logrotate.plist
   scripts/rotate-log.sh
   src/
     bin.ts                command line: run, install, uninstall, status, runs stop, claims pause|resume
@@ -488,8 +488,8 @@ Timeout 20 s, no retry: the next pass writes again. A failure goes to the log as
 - `factory-runner run` is the loop, in the foreground. It takes `<data>/runner.lock` with its pid and exits when another live runner holds it.
 - `factory-runner install`:
   1. Copies the package to `~/.local/share/factory-runner/versions/<version>/` and points `current` at it. The copy is made beside that folder first and moved in at step 5, once the old runner is gone, so a running runner's code is never removed under it.
-  2. Writes `~/Library/LaunchAgents/io.github.rawphp.factory-runner.plist` with `RunAtLoad`, `KeepAlive`, `ThrottleInterval` 10, and `ProgramArguments` set to the absolute `process.execPath` and `current/src/bin.ts run`.
-  3. Writes `io.github.rawphp.factory-runner.logrotate.plist`, which runs `rotate-log.sh` every 600 s.
+  2. Writes `~/Library/LaunchAgents/io.github.original-solutions.factory-runner.plist` with `RunAtLoad`, `KeepAlive`, `ThrottleInterval` 10, and `ProgramArguments` set to the absolute `process.execPath` and `current/src/bin.ts run`.
+  3. Writes `io.github.original-solutions.factory-runner.logrotate.plist`, which runs `rotate-log.sh` every 600 s.
   4. Copies `config.example.yml` to the config path when none exists.
   5. For each agent, the log rotation agent first: when it is loaded, runs `launchctl bootout` and waits until `launchctl print gui/<uid>/<label>` no longer finds it; then runs `launchctl bootstrap`, so launchd always reads the plist just written. Never `kickstart -k`, which keeps the old definition. Just before the runner's bootstrap, the copy from step 1 moves in and the log's length is noted.
   6. Waits up to 60 s for a `runner started` written after that point in the log, and otherwise exits 1 with the log's last 40 lines.
