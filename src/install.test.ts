@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { DEFAULT_PARADEV_CLI } from "./config.ts";
 import { install, LABEL, LOGROTATE_LABEL, uninstall, type InstallEnv } from "./install.ts";
+import { installPathsOf } from "./paths.ts";
 
 const EXAMPLE = NodeFS.readFileSync(
   NodePath.resolve(import.meta.dirname, "../config.example.yml"),
@@ -50,6 +51,8 @@ interface Fixture {
   readonly outs: Array<string>;
   readonly log: string;
   readonly dataDir: string;
+  /** Milliseconds the fake clock has moved since the fixture was made. */
+  readonly elapsed: () => number;
 }
 
 const makeFixture = (
@@ -58,6 +61,10 @@ const makeFixture = (
     readonly loggedIn?: boolean;
     readonly startsRunner?: boolean;
     readonly packageRoot?: string;
+    /** Appends `runner started` to the log on this sleep call, instead of on a runner start. */
+    readonly startsOnSleep?: number;
+    /** This launchctl verb exits 1. */
+    readonly failVerb?: string;
   } = {},
 ): Fixture => {
   const home = options.home ?? NodeFS.mkdtempSync(NodePath.join(tmp, "home-"));
@@ -66,11 +73,14 @@ const makeFixture = (
   const dataDir = NodePath.join(home, ".config", "factory-runner");
   const calls: Array<ReadonlyArray<string>> = [];
   const loaded = new Set<string>();
-  let clock = 1_000_000;
+  const start = 1_000_000;
+  let clock = start;
+  let sleeps = 0;
   const labelOf = (target: string) => target.slice(target.lastIndexOf("/") + 1);
   const env: InstallEnv = {
     home,
     dataDir,
+    machineConfigPath: NodePath.join(dataDir, "config.yml"),
     factoryRunnerHome: undefined,
     uid: UID,
     execPath: "/opt/node/bin/node",
@@ -86,6 +96,7 @@ const makeFixture = (
           : ok;
       }
       const [verb, target = ""] = args;
+      if (verb === options.failVerb) return { status: 1, stdout: "", stderr: "boom\n" };
       if (verb === "print") {
         return loaded.has(labelOf(target)) ? ok : { status: 113, stdout: "", stderr: "not found" };
       }
@@ -99,7 +110,7 @@ const makeFixture = (
             ? NodePath.basename(args[2] ?? "", ".plist")
             : labelOf(args[2] ?? "");
         loaded.add(name);
-        if (name === LABEL && options.startsRunner !== false) {
+        if (name === LABEL && options.startsRunner !== false && options.startsOnSleep === undefined) {
           NodeFS.mkdirSync(NodePath.dirname(log), { recursive: true });
           NodeFS.appendFileSync(log, "2026-11-12 runner started\n");
         }
@@ -109,6 +120,11 @@ const makeFixture = (
     },
     sleep: async (ms) => {
       clock += ms;
+      sleeps += 1;
+      if (sleeps === options.startsOnSleep) {
+        NodeFS.mkdirSync(NodePath.dirname(log), { recursive: true });
+        NodeFS.appendFileSync(log, "2026-11-12 runner started\n");
+      }
     },
     now: () => clock,
     out: (line) => outs.push(line),
@@ -116,17 +132,54 @@ const makeFixture = (
   };
   const outs: Array<string> = [];
   const errs: Array<string> = [];
-  return { env, home, calls, errs, outs, log, dataDir };
+  return { env, home, calls, errs, outs, log, dataDir, elapsed: () => clock - start };
 };
 
-const plistDir = (home: string) => NodePath.join(home, "Library", "LaunchAgents");
-const runnerPlist = (home: string) => NodePath.join(plistDir(home), `${LABEL}.plist`);
-const logrotatePlist = (home: string) => NodePath.join(plistDir(home), `${LOGROTATE_LABEL}.plist`);
+const runnerPlist = (home: string) => installPathsOf(home).runnerPlist;
+const logrotatePlist = (home: string) => installPathsOf(home).rotatePlist;
 const launchctl = (f: Fixture) =>
   f.calls.filter((call) => call[0] === "/bin/launchctl").map((call) => call.slice(1));
+const verbs = (f: Fixture) => launchctl(f).filter((call) => call[0] !== "print");
 
-const pathStrings = (plist: string): Array<string> =>
-  [...plist.matchAll(/<string>(\/[^<]*)<\/string>/g)].map((match) => match[1] ?? "");
+/** Every value the agent hands launchd as a path, or as a program argument other than `run`. */
+const pathValues = (file: string): Array<string> => {
+  if (NodeFS.existsSync(PLUTIL)) {
+    const converted = NodeChildProcess.spawnSync(PLUTIL, ["-convert", "json", "-o", "-", file], {
+      encoding: "utf8",
+    });
+    const plist = JSON.parse(converted.stdout) as {
+      ProgramArguments: Array<string>;
+      WorkingDirectory?: string;
+      StandardOutPath: string;
+      StandardErrorPath: string;
+      EnvironmentVariables?: { FACTORY_RUNNER_HOME?: string };
+    };
+    return [
+      ...plist.ProgramArguments.filter((arg) => arg !== "run"),
+      ...(plist.WorkingDirectory === undefined ? [] : [plist.WorkingDirectory]),
+      plist.StandardOutPath,
+      plist.StandardErrorPath,
+      ...(plist.EnvironmentVariables?.FACTORY_RUNNER_HOME === undefined
+        ? []
+        : [plist.EnvironmentVariables.FACTORY_RUNNER_HOME]),
+    ];
+  }
+  const text = NodeFS.readFileSync(file, "utf8");
+  const single = (key: string) =>
+    [...text.matchAll(new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`, "g"))].map(
+      (match) => match[1] ?? "",
+    );
+  const program = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text)?.[1] ?? "";
+  return [
+    ...[...program.matchAll(/<string>([^<]*)<\/string>/g)]
+      .map((match) => match[1] ?? "")
+      .filter((arg) => arg !== "run"),
+    ...single("WorkingDirectory"),
+    ...single("StandardOutPath"),
+    ...single("StandardErrorPath"),
+    ...single("FACTORY_RUNNER_HOME"),
+  ];
+};
 
 describe("install", () => {
   it("copies the package, points current at it, writes both agents and the config, and loads them", async () => {
@@ -144,11 +197,14 @@ describe("install", () => {
 
     const runner = NodeFS.readFileSync(runnerPlist(f.home), "utf8");
     const rotate = NodeFS.readFileSync(logrotatePlist(f.home), "utf8");
-    for (const plist of [runner, rotate]) {
-      const paths = pathStrings(plist);
-      expect(paths.length).toBeGreaterThan(0);
-      for (const path of paths) expect(NodePath.isAbsolute(path)).toBe(true);
+    for (const file of [runnerPlist(f.home), logrotatePlist(f.home)]) {
+      const values = pathValues(file);
+      // program (2 or 3 values), working dir (runner only), and the two log paths.
+      expect(values.length).toBeGreaterThanOrEqual(4);
+      for (const value of values) expect(NodePath.isAbsolute(value)).toBe(true);
     }
+    expect(pathValues(runnerPlist(f.home))).toContain(f.home);
+    expect(runner).not.toContain("<key>FACTORY_RUNNER_HOME</key>");
     expect(runner).toContain("/opt/node/bin/node");
     expect(runner).toContain(`${share}/current/src/bin.ts`);
     expect(runner).toContain("<string>run</string>");
@@ -164,13 +220,13 @@ describe("install", () => {
     expect(NodeFS.readFileSync(NodePath.join(f.dataDir, "config.yml"), "utf8")).toBe(
       "example: config\n",
     );
-    expect(launchctl(f).filter((call) => call[0] !== "print")).toEqual([
-      ["bootstrap", `gui/${UID}`, runnerPlist(f.home)],
+    expect(verbs(f)).toEqual([
       ["bootstrap", `gui/${UID}`, logrotatePlist(f.home)],
+      ["bootstrap", `gui/${UID}`, runnerPlist(f.home)],
     ]);
     expect(launchctl(f).filter((call) => call[0] === "print")).toEqual([
-      ["print", `gui/${UID}/${LABEL}`],
       ["print", `gui/${UID}/${LOGROTATE_LABEL}`],
+      ["print", `gui/${UID}/${LABEL}`],
     ]);
     expect(f.outs.join("\n")).toContain("1.2.3 installed and running");
   });
@@ -193,10 +249,56 @@ describe("install", () => {
     f.calls.length = 0;
     expect(await install(f.env)).toBe(0);
     expect(NodeFS.readFileSync(config, "utf8")).toBe("edited: true\n");
-    expect(launchctl(f).filter((call) => call[0] !== "print")).toEqual([
-      ["kickstart", "-k", `gui/${UID}/${LABEL}`],
+    expect(verbs(f)).toEqual([
       ["kickstart", "-k", `gui/${UID}/${LOGROTATE_LABEL}`],
+      ["kickstart", "-k", `gui/${UID}/${LABEL}`],
     ]);
+  });
+
+  it("boots a loaded agent out and in again when its plist changed, since kickstart never rereads it", async () => {
+    const f = makeFixture();
+    expect(await install(f.env)).toBe(0);
+    f.calls.length = 0;
+    expect(await install({ ...f.env, execPath: "/other/node/bin/node" })).toBe(0);
+    expect(verbs(f)).toEqual([
+      ["kickstart", "-k", `gui/${UID}/${LOGROTATE_LABEL}`],
+      ["bootout", `gui/${UID}/${LABEL}`],
+      ["bootstrap", `gui/${UID}`, runnerPlist(f.home)],
+    ]);
+    expect(NodeFS.readFileSync(runnerPlist(f.home), "utf8")).toContain("/other/node/bin/node");
+  });
+
+  it("writes the resolved data dir into the runner agent when FACTORY_RUNNER_HOME is set", async () => {
+    const f = makeFixture();
+    const dataDir = NodeFS.mkdtempSync(NodePath.join(tmp, "data-"));
+    expect(
+      await install({
+        ...f.env,
+        factoryRunnerHome: "relative/data",
+        dataDir,
+        machineConfigPath: NodePath.join(dataDir, "config.yml"),
+      }),
+    ).toBe(0);
+    expect(NodeFS.readFileSync(runnerPlist(f.home), "utf8")).toMatch(
+      new RegExp(`<key>FACTORY_RUNNER_HOME</key>\\s*<string>${dataDir}</string>`),
+    );
+    expect(NodeFS.readFileSync(NodePath.join(dataDir, "config.yml"), "utf8")).toBe(
+      "example: config\n",
+    );
+    expect(NodeFS.existsSync(f.dataDir)).toBe(false);
+  });
+
+  it("returns 0 when `runner started` shows only after four polls", async () => {
+    const f = makeFixture({ startsOnSleep: 5 });
+    expect(await install(f.env)).toBe(0);
+    expect(f.elapsed()).toBe(5_000);
+  });
+
+  it("exits 1 naming the launchctl command when bootstrap fails", async () => {
+    const f = makeFixture({ failVerb: "bootstrap" });
+    expect(await install(f.env)).toBe(1);
+    expect(f.errs.join("\n")).toContain(`launchctl bootstrap gui/${UID}`);
+    expect(f.errs.join("\n")).toContain("boom");
   });
 
   it("stops before writing anything when superset is not logged in", async () => {
@@ -234,6 +336,8 @@ describe("install", () => {
     expect(message).toContain("line 11");
     expect(message).not.toContain("line 10\n");
     expect(message).not.toContain("old runner started");
+    expect(f.elapsed()).toBeGreaterThanOrEqual(60_000);
+    expect(f.elapsed()).toBeLessThan(62_000);
   });
 
   it("uninstalls both agents and their plists, keeping config, data and versions", async () => {
@@ -245,11 +349,36 @@ describe("install", () => {
       ["bootout", `gui/${UID}/${LABEL}`],
       ["bootout", `gui/${UID}/${LOGROTATE_LABEL}`],
     ]);
+    expect(f.outs.filter((line) => line.includes("removed"))).toHaveLength(2);
     expect(NodeFS.existsSync(runnerPlist(f.home))).toBe(false);
     expect(NodeFS.existsSync(logrotatePlist(f.home))).toBe(false);
     expect(NodeFS.existsSync(NodePath.join(f.dataDir, "config.yml"))).toBe(true);
     expect(
       NodeFS.existsSync(NodePath.join(f.home, ".local", "share", "factory-runner", "versions", "1.2.3")),
     ).toBe(true);
+  });
+
+  it("keeps a plist whose agent would not boot out, and says only what it removed", async () => {
+    const f = makeFixture();
+    expect(await install(f.env)).toBe(0);
+    f.outs.length = 0;
+    const env: InstallEnv = {
+      ...f.env,
+      run: (_command, args) =>
+        args[0] === "bootout"
+          ? { status: 1, stdout: "", stderr: "boom\n" }
+          : { status: 0, stdout: "", stderr: "" },
+    };
+    expect(await uninstall(env)).toBe(1);
+    expect(f.errs.join("\n")).toContain("launchctl bootout");
+    expect(NodeFS.existsSync(runnerPlist(f.home))).toBe(true);
+    expect(NodeFS.existsSync(logrotatePlist(f.home))).toBe(true);
+    expect(f.outs.filter((line) => line.includes("removed"))).toEqual([]);
+  });
+
+  it("says nothing was removed when there were no plists", async () => {
+    const f = makeFixture();
+    expect(await uninstall(f.env)).toBe(0);
+    expect(f.outs.filter((line) => line.includes("removed"))).toEqual([]);
   });
 });

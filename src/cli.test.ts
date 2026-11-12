@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - the tests lay out a data dir with real ledger files and read the control files back.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -8,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { readAttentionFile } from "./attention.ts";
 import { runCli, type CliIo } from "./cli.ts";
 import { PAUSE_FILE } from "./claims.ts";
+import { formatTs } from "./ledger/time.ts";
 import { makeCause, type RunEvent } from "./ledger/events.ts";
 import { Ledger } from "./ledger/ledger.ts";
 import type { RunId } from "./ledger/runId.ts";
@@ -33,11 +35,13 @@ const BUILDING: ReadonlyArray<RunEvent> = [
   moved("triage", "building"),
 ];
 
-const seed = (dir: string) => {
+const TRIAGE: ReadonlyArray<RunEvent> = BUILDING.slice(0, 2);
+
+const seed = (dir: string, events: ReadonlyArray<RunEvent> = BUILDING) => {
   let now = T0;
   const ledger = Ledger.create(dir, run10, { clock: () => (now += 1000) });
   try {
-    for (const event of BUILDING) ledger.append(event, makeCause("start", "seed"));
+    for (const event of events) ledger.append(event, makeCause("start", "seed"));
   } finally {
     ledger.close();
   }
@@ -132,6 +136,57 @@ describe("status", () => {
     });
   });
 
+  it("lists an open attention item and sets a dismissed one aside", async () => {
+    const s = setup();
+    const item = (id: string, message: string, dismissed: boolean) => ({
+      id,
+      kind: "stuck",
+      repo: "rawphp/softfac",
+      issue: 10,
+      run: null,
+      message,
+      first_seen: "2026-10-06T00:00:00Z",
+      ...(dismissed ? { dismissed: true } : {}),
+    });
+    NodeFS.writeFileSync(
+      NodePath.join(s.dataDir, "attention.json"),
+      JSON.stringify({
+        items: [
+          item("a", "rawphp/softfac#10 needs a human", false),
+          item("b", "an old thing someone dismissed", true),
+        ],
+      }),
+    );
+    expect(await runCli(["status", "--json"], s.io)).toBe(0);
+    const report = JSON.parse(s.outs.join("\n"));
+    expect(JSON.stringify(report.attention)).toContain("rawphp/softfac#10 needs a human");
+    expect(JSON.stringify(report.attention)).not.toContain("an old thing someone dismissed");
+    expect(JSON.stringify(report.dismissed)).toContain("an old thing someone dismissed");
+    s.outs.length = 0;
+    expect(await runCli(["status"], s.io)).toBe(0);
+    expect(s.outs.join("\n")).toContain("rawphp/softfac#10 needs a human");
+    expect(s.outs.join("\n")).not.toContain("an old thing someone dismissed");
+  });
+
+  it("runs from the command line: data_dir is FACTORY_RUNNER_HOME and version is the package's", () => {
+    const dataDir = tempDir("bin");
+    const done = NodeChildProcess.spawnSync(
+      process.execPath,
+      [NodePath.resolve(import.meta.dirname, "bin.ts"), "status", "--json"],
+      { encoding: "utf8", env: { ...process.env, FACTORY_RUNNER_HOME: dataDir } },
+    );
+    expect(done.status).toBe(0);
+    const report = JSON.parse(done.stdout);
+    expect(report.data_dir).toBe(dataDir);
+    expect(report.version).toBe(
+      (
+        JSON.parse(
+          NodeFS.readFileSync(NodePath.resolve(import.meta.dirname, "../package.json"), "utf8"),
+        ) as { version: string }
+      ).version,
+    );
+  });
+
   it("prints a short summary without --json", async () => {
     const s = setup();
     seed(s.dataDir);
@@ -151,6 +206,14 @@ describe("runs stop", () => {
     expect(s.outs.join("\n")).toContain("stop requested");
   });
 
+  it("refuses a run that is not building, exit 1", async () => {
+    const s = setup();
+    seed(s.dataDir, TRIAGE);
+    expect(await runCli(["runs", "stop", ID], s.io)).toBe(1);
+    expect(s.errs.join("\n")).toContain("its state is triage");
+    expect(NodeFS.existsSync(stopRequestPath(s.dataDir, run10))).toBe(false);
+  });
+
   it("exits 1 for an unknown run and 2 for a bad id", async () => {
     const s = setup();
     expect(await runCli(["runs", "stop", "rawphp__softfac__99__1"], s.io)).toBe(1);
@@ -164,7 +227,7 @@ describe("claims", () => {
     const s = setup();
     const file = NodePath.join(s.dataDir, PAUSE_FILE);
     expect(await runCli(["claims", "pause"], s.io)).toBe(0);
-    expect(NodeFS.existsSync(file)).toBe(true);
+    expect(NodeFS.readFileSync(file, "utf8")).toBe(`${formatTs(NOW)}\n`);
     expect(await runCli(["claims", "resume"], s.io)).toBe(0);
     expect(NodeFS.existsSync(file)).toBe(false);
   });
