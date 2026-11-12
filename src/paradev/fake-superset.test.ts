@@ -47,3 +47,31 @@ it.effect("an argv no unused step expects fails the test", () =>
     assert.include(String(Cause.squash(cause)), "unexpected argv");
   }),
 );
+
+it.effect("a step's edit rewrites the fixture's answer", () =>
+  Effect.gen(function* () {
+    const fake = fakeSuperset([
+      {
+        argv: ["workspaces", "get", "w1", "--local"],
+        fixture: "ws-get-local",
+        edit: (answer) => ({ ...(answer as object), worktreePath: "/tmp/elsewhere" }),
+      },
+    ]);
+    const result = yield* ask(["workspaces", "get", "w1", "--local", "--json"]).pipe(
+      Effect.provide(fake.layer),
+    );
+    const parsed = JSON.parse(result.tail) as { worktreePath: string; branch: string };
+    assert.strictEqual(parsed.worktreePath, "/tmp/elsewhere");
+    assert.strictEqual(parsed.branch, "fac/1-1");
+  }),
+);
+
+it.effect("a step's fail answers exit 1 with the CLI's Error line", () =>
+  Effect.gen(function* () {
+    const fake = fakeSuperset([{ argv: ["agents", "read"], fail: "No transcript for that terminal" }]);
+    const result = yield* ask(["agents", "read", "--json"]).pipe(Effect.provide(fake.layer));
+    assert.strictEqual(result.exitCode, 1);
+    assert.strictEqual(result.stderrTail, "Error: No transcript for that terminal\n");
+    assert.strictEqual(result.tail, "");
+  }),
+);

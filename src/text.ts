@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - Hashes text, synchronously.
+import * as NodeCrypto from "node:crypto";
+
 /** Text from a session, a config or a repo, made safe to store and to show. */
 
 const isControl = (cp: number) => cp <= 0x1f || (cp >= 0x7f && cp <= 0x9f);
@@ -46,3 +49,7 @@ export const shortSha = (sha: string): string =>
 /** Whether `text` is a full commit id: 40 hex digits (64 in a SHA-256 repo). */
 export const isCommitId = (text: string): boolean =>
   /^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/.test(text);
+
+/** The sha256 of `text`, as lowercase hex. */
+export const sha256 = (text: string): string =>
+  NodeCrypto.createHash("sha256").update(text).digest("hex");

@@ -20,7 +20,17 @@ export type ArgvMatch = ReadonlyArray<string> | ((argv: ReadonlyArray<string>) =
 export interface Step {
   readonly argv: ArgvMatch;
   /** A fixture's name without `.json`, e.g. `ws-get-local-archived`. */
-  readonly fixture: string;
+  readonly fixture?: string;
+  /**
+   * In place of a fixture, a failure the spike did not record: exit 1 with `Error: <fail>` on
+   * stderr, as the CLI writes it.
+   */
+  readonly fail?: string;
+  /**
+   * Rewrites the fixture's parsed stdout before it is answered: to point a recorded path at a
+   * test's own repo, say, or to empty a list. Only for a fixture recorded with stdout.
+   */
+  readonly edit?: (answer: unknown) => unknown;
 }
 
 export interface Answer {
@@ -66,11 +76,28 @@ export const fakeSuperset = (script: ReadonlyArray<Step>) => {
         return Effect.die(new Error(`fake superset: unexpected argv ${JSON.stringify(argv)}`));
       }
       const [step] = left.splice(at, 1);
+      if (step!.fail !== undefined) {
+        return Effect.succeed({
+          exitCode: 1,
+          timedOut: false,
+          tail: "",
+          stderrTail: `Error: ${step!.fail}\n`,
+          truncated: false,
+          tailTruncated: false,
+        } satisfies RunResult);
+      }
+      if (step!.fixture === undefined) {
+        return Effect.die(new Error("fake superset: a step needs a fixture or a fail"));
+      }
       const answer = readFixture(step!.fixture);
+      const stdout =
+        step!.edit === undefined
+          ? answer.stdout
+          : `${JSON.stringify(step!.edit(JSON.parse(answer.stdout) as unknown))}\n`;
       return Effect.succeed({
         exitCode: answer.exit,
         timedOut: false,
-        tail: answer.stdout,
+        tail: stdout,
         stderrTail: answer.stderr,
         truncated: false,
         tailTruncated: false,

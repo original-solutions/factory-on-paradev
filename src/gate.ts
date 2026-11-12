@@ -4,13 +4,24 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
-import * as Random from "effect/Random";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-import { configFlags, HARDENED_GIT_CONFIG, HARDENED_GIT_ENV } from "./gitHardening.ts";
+import {
+  configFlags,
+  FETCH_ARGS,
+  FETCH_CREDENTIAL_FLAGS,
+  FETCH_HTTP_FLAGS,
+  FETCH_RETRY_DELAYS_MS,
+  fetchCredentialEnv,
+  fileTransportFor,
+  HARDENED_GIT_CONFIG,
+  HARDENED_GIT_ENV,
+  normalizeRemoteBase,
+  retryFetch,
+} from "./gitHardening.ts";
 import type { AppendIo } from "./ledger/appendFile.ts";
 import { errnoCode, ledgerCall, type LedgerError } from "./ledger/errors.ts";
 import { makeCause } from "./ledger/events.ts";
@@ -27,7 +38,6 @@ import { commandLine, isCommitId, sanitize, shortSha } from "./text.ts";
  * gate effect runs; `clearGateLocks` removes one a dead server left.
  */
 
-const DEFAULT_REMOTE_BASE = "https://github.com";
 const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_GIT_TIMEOUT_MS = 30_000;
 const DEFAULT_CHECKOUT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -191,18 +201,6 @@ export const regateResultsComment = (
   baseSha: string,
 ): string => resultsComment("passed again", results, attempt, headSha, baseSha);
 
-/** How many times the fetch of a checkout is tried before its failure is returned. */
-const FETCH_ATTEMPTS = 3;
-/** The wait before the second and the third fetch, in milliseconds; each gets up to a second more. */
-const FETCH_RETRY_DELAYS_MS = [5_000, 15_000] as const;
-/**
- * What git's stderr says when the network dropped the fetch: HTTP/2 stream error, TLS handshake
- * timeout, unresolved name, failed or timed-out connection, or a cut-off pack or answer. Anything else
- * (missing ref, refused login) returns at once. `RPC failed` counts only with a curl code right
- * after it; `RPC failed; HTTP 403 curl 22` means the server answered and refused.
- */
-const TRANSIENT_FETCH =
-  /Error in the HTTP2 framing layer|TLS handshake timeout|Could not resolve host|Failed to connect|Connection timed out|SSL_ERROR_SYSCALL|early EOF|unexpected EOF|RPC failed; curl \d+/;
 
 export interface GateOptions {
   /** Where repositories are fetched from: `<remoteBase>/<owner>/<name>.git`. Default `https://github.com`; tests pass `file:///…`. */
@@ -512,25 +510,16 @@ const unexpected = (what: string) => new WorkspaceUnexpectedError({ what });
  * transport; only the fetch gets credentials. A session as the same OS user can still read ours.
  */
 export const makeWorkspace = (runner: Runner, options: GateOptions = {}) => {
-  const remoteBase = (options.remoteBase ?? DEFAULT_REMOTE_BASE).replace(/\/+$/, "");
+  const remoteBase = normalizeRemoteBase(options.remoteBase);
   const gitTimeoutMs = options.gitTimeoutMs ?? DEFAULT_GIT_TIMEOUT_MS;
   const gitTailBytes = options.gitTailBytes ?? GIT_TAIL_BYTES;
   const checkoutTimeoutMs = options.checkoutTimeoutMs ?? DEFAULT_CHECKOUT_TIMEOUT_MS;
   const fetchRetryDelaysMs = options.fetchRetryDelaysMs ?? FETCH_RETRY_DELAYS_MS;
-  const fileTransport = remoteBase.startsWith("file://") ? "always" : "never";
-  const hardening = configFlags([...HARDENED_GIT_CONFIG, `protocol.file.allow=${fileTransport}`]);
+  const hardening = configFlags([...HARDENED_GIT_CONFIG, `protocol.file.allow=${fileTransportFor(remoteBase)}`]);
 
   const gitEnv = (fetch: boolean): Record<string, string> => {
-    const env: Record<string, string> = { ...HARDENED_GIT_ENV };
-    if (fetch) {
-      for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "XDG_CONFIG_HOME"]) {
-        const value = globalThis.process.env[name];
-        if (value !== undefined) env[name] = value;
-      }
-      const ghConfigDir = options.ghConfigDir ?? globalThis.process.env.GH_CONFIG_DIR;
-      if (ghConfigDir !== undefined) env.GH_CONFIG_DIR = ghConfigDir;
-    }
-    return { ...env, ...options.env };
+    const credentials = fetch ? fetchCredentialEnv(options.ghConfigDir) : {};
+    return { ...HARDENED_GIT_ENV, ...credentials, ...options.env };
   };
 
   /** One git call in `dir`: its output when it exits 0, else the failure. */
@@ -610,21 +599,12 @@ export const makeWorkspace = (runner: Runner, options: GateOptions = {}) => {
     yield* git(dir, { args: ["init", "--quiet", "--template="], timeoutMs: checkoutTimeoutMs });
     // The commits come into the new object store and nothing else changes: no ref, no
     // FETCH_HEAD, no tags, no submodules. The URL is the gate's, not git config's.
-    // HTTP/1.1, because the HTTP/2 framing layer is what a flaky link breaks first.
+    // A dropped fetch is tried again, as the Paradev adapter's base fetch is.
     const fetch = git(dir, {
-      pre: [
-        "-c",
-        "credential.helper=",
-        "-c",
-        "credential.helper=!gh auth git-credential",
-        "-c",
-        "http.version=HTTP/1.1",
-      ],
+      pre: [...FETCH_CREDENTIAL_FLAGS, ...FETCH_HTTP_FLAGS],
       args: [
         "fetch",
-        "--no-tags",
-        "--no-recurse-submodules",
-        "--no-write-fetch-head",
+        ...FETCH_ARGS,
         `${remoteBase}/${repo}.git`,
         sha,
         ...(base === sha ? [] : [base]),
@@ -632,26 +612,11 @@ export const makeWorkspace = (runner: Runner, options: GateOptions = {}) => {
       timeoutMs: checkoutTimeoutMs,
       fetch: true,
     });
-    for (let tried = 1; ; tried += 1) {
-      const fetched = yield* Effect.result(fetch);
-      if (Result.isSuccess(fetched)) break;
-      const error = fetched.failure;
-      const reason =
-        error._tag === "WorkspaceFailedError" ? TRANSIENT_FETCH.exec(error.stderr)?.[0] : undefined;
-      if (
-        error._tag !== "WorkspaceFailedError" ||
-        reason === undefined ||
-        tried >= FETCH_ATTEMPTS
-      ) {
-        return yield* error;
-      }
-      const wait = fetchRetryDelaysMs[tried - 1] ?? 0;
-      const delayMs = wait + (yield* Random.nextIntBetween(0, Math.min(1000, wait)));
-      yield* Effect.logInfo(
-        `\`git ${error.args}\` attempt ${tried} of ${FETCH_ATTEMPTS} failed (${reason}); trying again in ${(delayMs / 1000).toFixed(1)} s`,
-      );
-      yield* Effect.sleep(delayMs);
-    }
+    yield* retryFetch(fetch, {
+      delaysMs: fetchRetryDelaysMs,
+      stderrOf: (error) => (error._tag === "WorkspaceFailedError" ? error.stderr : undefined),
+      name: (error) => (error._tag === "WorkspaceFailedError" ? `\`git ${error.args}\`` : "the fetch"),
+    });
     yield* git(dir, {
       args: ["checkout", "--quiet", "--detach", "--no-recurse-submodules", sha],
       timeoutMs: checkoutTimeoutMs,

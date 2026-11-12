@@ -205,8 +205,8 @@ const defaultPr = (): PullRequest => ({
   createdAt: "2026-10-04T10:20:00Z",
 });
 
-/** The folder T3 names a new worktree on branch `t3/2e8db933`. */
-const LAUNCH_WORKTREE = "/t3/worktrees/softfac/t3-2e8db933";
+/** The folder Paradev makes for a new workspace on launch branch `fac/7-1`. */
+const LAUNCH_WORKTREE = "/Users/me/.paradev/worktrees/softfac/fac/7-1";
 
 const statusOf = (
   run: RunStatus | null,
@@ -774,13 +774,13 @@ describe("advance: done", () => {
   );
 
   it.effect(
-    "with a pull request on the branch T3 made the session's worktree on is ready for the gate",
+    "with a pull request on the launch branch of the session's worktree is ready for the gate",
     () =>
       Effect.gen(function* () {
-        // T3 renamed the thread's branch; the session pushed the worktree's own `t3/<hash>`.
+        // The thread names another branch; the session pushed the worktree's own `fac/<issue>-<n>`.
         const rig = rigFor();
         setStatus(rig, "completed", DONE_MESSAGE, { worktreePath: LAUNCH_WORKTREE });
-        rig.world.pr = { ...defaultPr(), headRef: "t3/2e8db933" };
+        rig.world.pr = { ...defaultPr(), headRef: "fac/7-1" };
         const outcome = yield* advanceIn(rig);
         assert.deepStrictEqual(outcome, { kind: "ready-for-gate", pr: 12, prUrl: URL12 });
         assert.deepStrictEqual(linesOf(rig), [...STARTED, PR_OPENED]);
@@ -792,8 +792,8 @@ describe("advance: done", () => {
     () =>
       Effect.gen(function* () {
         // A session that checks out someone else's branch in its worktree cannot bind its PR, nor
-        // one on another worktree's `t3/<hash>`.
-        for (const headRef of ["someone/else", "t3/0badf00d", "t3-2e8db933x"]) {
+        // one on another worktree's launch branch.
+        for (const headRef of ["someone/else", "fac/7-2", "fac/7-1x"]) {
           const rig = rigFor();
           setStatus(rig, "completed", DONE_MESSAGE, { worktreePath: LAUNCH_WORKTREE });
           rig.world.pr = { ...defaultPr(), headRef };
@@ -814,8 +814,7 @@ describe("advance: done", () => {
     Effect.gen(function* () {
       const rig = rigFor();
       setStatus(rig, "completed", DONE_MESSAGE, { branch: null, worktreePath: LAUNCH_WORKTREE });
-      // T3 flattens `t3/<hex>` to `t3-<hex>` when a plain `t3` branch exists; the folder is the same.
-      rig.world.pr = { ...defaultPr(), headRef: "t3-2e8db933" };
+      rig.world.pr = { ...defaultPr(), headRef: "fac/7-1" };
       assert.deepStrictEqual(yield* advanceIn(rig), {
         kind: "ready-for-gate",
         pr: 12,
@@ -3299,11 +3298,11 @@ describe("advance: the pull request a session leaves when it stops or asks", () 
     }),
   );
 
-  it.effect("is recorded from the branch T3 made the worktree on", () =>
+  it.effect("is recorded from the launch branch of the worktree", () =>
     Effect.gen(function* () {
-      // T3 renamed the thread's branch; the session pushed the worktree's own `t3/<hash>`.
+      // The thread names another branch; the session pushed the worktree's own launch branch.
       const rig = rigFor();
-      rig.world.onHead = { "t3/2e8db933": [draftOn("t3/2e8db933")] };
+      rig.world.onHead = { "fac/7-1": [draftOn("fac/7-1")] };
       setStatus(rig, "completed", "FACTORY-STOP: stuck", { worktreePath: LAUNCH_WORKTREE });
       const outcome = yield* advanceIn(rig);
       assert.strictEqual(outcome.kind, "stuck");
@@ -3311,7 +3310,7 @@ describe("advance: the pull request a session leaves when it stops or asks", () 
       assert.deepStrictEqual(rig.reads, [
         "issue 10",
         "openPullRequestsOnHead t3code/abc",
-        "openPullRequestsOnHead t3/2e8db933",
+        "openPullRequestsOnHead fac/7-1",
       ]);
     }),
   );
@@ -3417,9 +3416,9 @@ describe("advance: the pull request a session leaves when it stops or asks", () 
     }),
   );
 
-  it.effect("is recorded at the time limit from the branch T3 made the worktree on", () =>
+  it.effect("is recorded at the time limit from the launch branch of the worktree", () =>
     Effect.gen(function* () {
-      // The launch line recorded the worktree; the session pushed its own `t3/<hash>`.
+      // The launch line recorded the worktree; the session pushed its own launch branch.
       const rig = rigFor(
         STARTED.map((event) =>
           event.event === "session_launched"
@@ -3432,12 +3431,12 @@ describe("advance: the pull request a session leaves when it stops or asks", () 
         { ms: startedAtT0 },
       );
       rig.world.thread = { worktreePath: LAUNCH_WORKTREE, branch: "t3code/abc", archived: false };
-      rig.world.onHead = { "t3/2e8db933": [draftOn("t3/2e8db933")] };
+      rig.world.onHead = { "fac/7-1": [draftOn("fac/7-1")] };
       yield* stopAtTheLimit(rig);
       assert.strictEqual(leftLines(rig).length, 1);
       assert.deepStrictEqual(rig.reads, [
         "openPullRequestsOnHead t3code/abc",
-        "openPullRequestsOnHead t3/2e8db933",
+        "openPullRequestsOnHead fac/7-1",
       ]);
     }),
   );
@@ -3768,11 +3767,11 @@ describe("advance: done on a branch the session made itself", () => {
             launched("t3code/third", "/t3/wt4"),
           ],
         ],
-        // T3's launch branch of the other worktree, which the ledger names only by its folder.
+        // The launch branch of the other worktree, which the ledger names only by its folder.
         [
           "its worktree's launch branch",
-          "t3/0a1b2c3d",
-          [launched("t3code/xyz", "/t3/worktrees/softfac/t3-0a1b2c3d")],
+          "fac/8-1",
+          [launched("t3code/xyz", "/Users/me/.paradev/worktrees/softfac/fac/8-1")],
         ],
       ];
       for (const [what, headRef, events] of cases) {
