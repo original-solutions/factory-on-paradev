@@ -491,7 +491,7 @@ Timeout 20 s, no retry: the next pass writes again. A failure goes to the log as
   2. Writes `~/Library/LaunchAgents/io.github.rawphp.factory-runner.plist` with `RunAtLoad`, `KeepAlive`, `ThrottleInterval` 10, and `ProgramArguments` set to the absolute `process.execPath` and `current/src/bin.ts run`.
   3. Writes `io.github.rawphp.factory-runner.logrotate.plist`, which runs `rotate-log.sh` every 600 s.
   4. Copies `config.example.yml` to the config path when none exists.
-  5. Runs `launchctl bootstrap`, or `launchctl kickstart -k` when the agent is loaded.
+  5. For each agent: when it is loaded, runs `launchctl bootout` and waits until `launchctl print gui/<uid>/<label>` no longer finds it; then runs `launchctl bootstrap`, so launchd always reads the plist just written. Never `kickstart -k`, which keeps the old definition.
   6. Waits up to 60 s for `runner started` in the log, and otherwise exits 1 with the log's last 40 lines.
 
   Older version folders stay, so going back is `install` from the older version.

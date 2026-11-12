@@ -11,7 +11,7 @@ import * as Result from "effect/Result";
 
 import { DEFAULT_PARADEV_CLI, parseMachineConfig } from "./config.ts";
 import { errnoCode } from "./ledger/errors.ts";
-import { readTextOrNull, writeFileWhole } from "./syncFiles.ts";
+import { writeFileWhole } from "./syncFiles.ts";
 import { installPathsOf, LABEL, LOGROTATE_LABEL, packageVersion } from "./paths.ts";
 
 export { LABEL, LOGROTATE_LABEL };
@@ -234,11 +234,12 @@ const lastLines = (path: string): string => {
  * files, copies `config.example.yml` to the data dir when there is no config (an existing config is
  * never touched), loads the agents, and waits up to 60 s for a new `runner started` line in the log.
  *
- * Loading an agent depends on what launchd holds. Not loaded: `bootstrap`. Loaded, and the plist
- * on disk is what this run wrote: `kickstart -k`. Loaded, and the plist changed (a new node, a new
- * version path): `bootout` then `bootstrap`, because `kickstart` restarts launchd's cached
- * definition and never rereads the file. The log rotation agent comes up first, so a failure there
- * never leaves a runner running behind an exit code of 1.
+ * An agent that is not loaded is bootstrapped. A loaded one is always booted out and bootstrapped
+ * again, so launchd reads the plist just written: `kickstart -k` would restart the definition it
+ * loaded earlier, with the old node, PATH or data dir. Bootout returns before launchd lets go of the
+ * label, and a bootstrap that early fails, so install polls `launchctl print` until the label is
+ * gone, for up to 60 s. The log rotation agent comes up first, so a failure there never leaves a
+ * runner running behind an exit code of 1.
  */
 export const install = async (env: InstallEnv): Promise<number> => {
   const cli = supersetCli(env);
@@ -288,12 +289,11 @@ export const install = async (env: InstallEnv): Promise<number> => {
         logPath: paths.log,
       }),
     },
-  ].map((agent) => {
-    const changed = readTextOrNull(agent.file) !== agent.text;
+  ];
+  for (const agent of agents) {
     NodeFS.mkdirSync(NodePath.dirname(agent.file), { recursive: true });
     writeFileWhole(agent.file, agent.text, 0o644);
-    return { ...agent, changed };
-  });
+  }
 
   if (!exists(env.machineConfigPath)) {
     NodeFS.mkdirSync(NodePath.dirname(env.machineConfigPath), { recursive: true });
@@ -313,18 +313,23 @@ export const install = async (env: InstallEnv): Promise<number> => {
     env.err(`factory-runner: launchctl ${args.join(" ")} failed: ${done.stderr.trim()}`);
     return false;
   };
-  for (const { label, file, changed } of agents) {
-    const loaded = env.run(LAUNCHCTL, ["print", `${domain}/${label}`]).status === 0;
-    const steps =
-      loaded && !changed
-        ? [["kickstart", "-k", `${domain}/${label}`]]
-        : loaded
-          ? [
-              ["bootout", `${domain}/${label}`],
-              ["bootstrap", domain, file],
-            ]
-          : [["bootstrap", domain, file]];
-    for (const step of steps) if (!launchctl(step)) return 1;
+  const isLoaded = (label: string): boolean =>
+    env.run(LAUNCHCTL, ["print", `${domain}/${label}`]).status === 0;
+  for (const { label, file } of agents) {
+    if (isLoaded(label)) {
+      if (!launchctl(["bootout", `${domain}/${label}`])) return 1;
+      const gone = env.now() + WAIT_MS;
+      while (isLoaded(label)) {
+        if (env.now() >= gone) {
+          env.err(
+            `factory-runner: ${domain}/${label} is still loaded 60 s after launchctl bootout; not bootstrapping it`,
+          );
+          return 1;
+        }
+        await env.sleep(POLL_MS);
+      }
+    }
+    if (!launchctl(["bootstrap", domain, file])) return 1;
   }
 
   const deadline = env.now() + WAIT_MS;
