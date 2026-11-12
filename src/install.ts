@@ -11,6 +11,7 @@ import * as Result from "effect/Result";
 
 import { DEFAULT_PARADEV_CLI, parseMachineConfig } from "./config.ts";
 import { errnoCode } from "./ledger/errors.ts";
+import { readTextOrNull, writeFileWhole } from "./syncFiles.ts";
 import { installPathsOf, LABEL, LOGROTATE_LABEL, packageVersion } from "./paths.ts";
 
 export { LABEL, LOGROTATE_LABEL };
@@ -136,14 +137,6 @@ const plistOf = (entries: {
   ].join("\n");
 };
 
-/** Writes the file whole by renaming a temp file over it. */
-const writeWhole = (path: string, text: string, mode?: number) => {
-  NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
-  const temp = `${path}.${process.pid}.tmp`;
-  NodeFS.writeFileSync(temp, text, mode === undefined ? {} : { mode });
-  NodeFS.renameSync(temp, path);
-};
-
 const exists = (path: string): boolean => {
   try {
     NodeFS.lstatSync(path);
@@ -234,15 +227,6 @@ const lastLines = (path: string): string => {
   }
 };
 
-const readOrNull = (path: string): string | null => {
-  try {
-    return NodeFS.readFileSync(path, "utf8");
-  } catch (error) {
-    if (errnoCode(error) === "ENOENT") return null;
-    throw error;
-  }
-};
-
 /**
  * Installs the runner as a LaunchAgent and returns the exit code. It checks the Superset login
  * first (a LaunchAgent has no Paradev host login of its own) and writes nothing when that fails.
@@ -305,13 +289,15 @@ export const install = async (env: InstallEnv): Promise<number> => {
       }),
     },
   ].map((agent) => {
-    const changed = readOrNull(agent.file) !== agent.text;
-    writeWhole(agent.file, agent.text);
+    const changed = readTextOrNull(agent.file) !== agent.text;
+    NodeFS.mkdirSync(NodePath.dirname(agent.file), { recursive: true });
+    writeFileWhole(agent.file, agent.text, 0o644);
     return { ...agent, changed };
   });
 
   if (!exists(env.machineConfigPath)) {
-    writeWhole(
+    NodeFS.mkdirSync(NodePath.dirname(env.machineConfigPath), { recursive: true });
+    writeFileWhole(
       env.machineConfigPath,
       NodeFS.readFileSync(NodePath.join(placed, "config.example.yml"), "utf8"),
       0o600,

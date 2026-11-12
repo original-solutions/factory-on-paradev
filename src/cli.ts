@@ -14,9 +14,9 @@ import { readAttentionFile } from "./attention.ts";
 import { parseMachineConfig } from "./config.ts";
 import { pauseClaimsNow, resumeClaimsNow, stopRun } from "./control.ts";
 import { install, uninstall, type InstallEnv } from "./install.ts";
-import { errnoCode } from "./ledger/errors.ts";
 import { packageVersion } from "./paths.ts";
 import { isRunner, lockHolder } from "./runnerLock.ts";
+import { readTextOrNull } from "./syncFiles.ts";
 import {
   buildStatus,
   type FactoryStatus,
@@ -40,22 +40,13 @@ export interface CliIo {
   readonly installEnv: () => InstallEnv;
 }
 
-const readOrNull = (path: string): string | null => {
-  try {
-    return NodeFS.readFileSync(path, "utf8");
-  } catch (error) {
-    if (errnoCode(error) === "ENOENT") return null;
-    throw error;
-  }
-};
-
 /** Running when a live runner holds the lock and the config loads; else idle, with the reason. */
 const factoryStatus = (io: CliIo): FactoryStatus => {
   const pid = lockHolder(io.dataDir);
   if (pid === null || !(io.isRunner ?? isRunner)(pid)) {
     return { state: "idle", reason: "the runner is not running" };
   }
-  const text = readOrNull(io.machineConfigPath);
+  const text = readTextOrNull(io.machineConfigPath);
   if (text === null) return { state: "idle", reason: "no factory config" };
   const parsed = parseMachineConfig(text, io.machineConfigPath);
   if (Result.isFailure(parsed)) {
