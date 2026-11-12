@@ -65,6 +65,9 @@ const setup = (options: { isRunner?: (pid: number) => boolean } = {}) => {
     installEnv: () => {
       throw new Error("install is not under test here");
     },
+    gh: () => {
+      throw new Error("gh is not under test here");
+    },
   };
   return { dataDir, packageRoot, machineConfigPath, outs, errs, io };
 };
