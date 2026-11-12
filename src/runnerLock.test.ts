@@ -6,7 +6,7 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { useTempDirs } from "./ledger/testSupport.ts";
-import { isAlive, isRunner, LOCK_FILE, takeRunnerLock } from "./runnerLock.ts";
+import { isAlive, isRunner, isRunnerCommand, LOCK_FILE, takeRunnerLock } from "./runnerLock.ts";
 
 const tempDir = useTempDirs();
 
@@ -58,6 +58,31 @@ describe("the runner lock", () => {
     NodeFS.writeFileSync(NodePath.join(dir, LOCK_FILE), "5151\n");
     if (lock.kind === "taken") lock.release();
     expect(NodeFS.readFileSync(NodePath.join(dir, LOCK_FILE), "utf8")).toBe("5151\n");
+  });
+
+  it("knows a runner by its invocation, not by a path that names factory-runner", () => {
+    for (const command of [
+      "/usr/local/bin/node /Users/me/.local/share/factory-runner/current/src/bin.ts run",
+      "node /usr/local/bin/factory-runner run",
+      "node src/bin.ts run",
+    ]) {
+      expect(isRunnerCommand(command), command).toBe(true);
+    }
+    for (const command of [
+      "node /Users/me/factory-runner/acme/widgets/node_modules/.bin/vitest run",
+      "git -C /Users/me/factory-runner/acme/widgets fetch",
+      "node /Users/me/other/bin.ts serve",
+      "node /Users/me/factory-runner/src/bin.ts status",
+    ]) {
+      expect(isRunnerCommand(command), command).toBe(false);
+    }
+  });
+
+  it("counts a live pid as a runner when ps cannot say, and a dead one as none", () => {
+    expect(isRunner(process.pid, () => null)).toBe(true);
+    expect(isRunner(deadPid(), () => null)).toBe(false);
+    expect(isRunner(process.pid, () => "node /x/src/bin.ts run")).toBe(true);
+    expect(isRunner(process.pid, () => "node /x/vitest.mjs run")).toBe(false);
   });
 
   it("counts this process as alive, and as no runner, since it does not run bin.ts", () => {

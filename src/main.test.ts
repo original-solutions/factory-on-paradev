@@ -882,9 +882,24 @@ describe("on the Paradev CLI", () => {
         yield* idleAfter(loop, factoryDir, 1);
         const before = yield* items();
         assert.strictEqual(before.length, 1);
+        const skipped = () =>
+          eventsOf(factoryDir, "claim_skipped").filter(
+            (entry) => (entry.data as { reason?: string }).reason === "no-paradev-project",
+          ).length;
+        assert.strictEqual(skipped(), 1);
+        assert.deepStrictEqual(loop.status, {
+          state: "running",
+          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: [] },
+        });
         paradev.listDown = "Host service for this machine isn't running";
         yield* onePassMore(loop, factoryDir);
         assert.deepStrictEqual(yield* items(), before);
+        // The repo is kept on the pass, not skipped again as no project.
+        assert.strictEqual(skipped(), 1);
+        assert.deepStrictEqual(loop.status, {
+          state: "running",
+          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"] },
+        });
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
