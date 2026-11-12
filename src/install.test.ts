@@ -115,11 +115,8 @@ const makeFixture = (
         lingering.set(label, options.bootoutLingers ?? 0);
         return ok;
       }
-      if (verb === "bootstrap" || verb === "kickstart") {
-        const name =
-          verb === "bootstrap"
-            ? NodePath.basename(args[2] ?? "", ".plist")
-            : labelOf(args[2] ?? "");
+      if (verb === "bootstrap") {
+        const name = NodePath.basename(args[2] ?? "", ".plist");
         loaded.add(name);
         if (name === LABEL && options.startsRunner !== false && options.startsOnSleep === undefined) {
           NodeFS.mkdirSync(NodePath.dirname(log), { recursive: true });
@@ -320,6 +317,18 @@ describe("install", () => {
     expect(f.errs.join("\n")).toContain("still loaded");
     expect(verbs(f)).toEqual([["bootout", `gui/${UID}/${LOGROTATE_LABEL}`]]);
     expect(f.elapsed() - before).toBe(60_000);
+  });
+
+  it("exits 1 at once, bootstrapping nothing, when the bootout of a loaded agent fails", async () => {
+    // Nothing is loaded on the first run, so only the second run reaches a bootout.
+    const f = makeFixture({ failVerb: "bootout" });
+    expect(await install(f.env)).toBe(0);
+    f.calls.length = 0;
+    const before = f.elapsed();
+    expect(await install(f.env)).toBe(1);
+    expect(f.errs.join("\n")).toContain(`launchctl bootout gui/${UID}/${LOGROTATE_LABEL}`);
+    expect(verbs(f)).toEqual([["bootout", `gui/${UID}/${LOGROTATE_LABEL}`]]);
+    expect(f.elapsed()).toBe(before);
   });
 
   it("writes the resolved data dir into the runner agent when FACTORY_RUNNER_HOME is set", async () => {
