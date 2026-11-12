@@ -263,6 +263,8 @@ interface FakeParadev {
   schema: (answer: unknown) => unknown;
   /** Answers the `pages` commands; absent, they are unexpected. */
   pages?: (argv: ReadonlyArray<string>) => RunResult;
+  /** A call this is true for is recorded and never answers, as against a hung Paradev. */
+  hangs?: (argv: ReadonlyArray<string>) => boolean;
   readonly calls: Array<ReadonlyArray<string>>;
 }
 
@@ -318,13 +320,16 @@ const withParadev = (
   other: FactoryProcess["Service"] = noGhProcess,
 ): FactoryProcess["Service"] =>
   FactoryProcess.of({
-    run: (input) =>
-      input.command === CLI
-        ? Effect.sync(() => {
-            const args = input.args ?? [];
-            return paradevAnswer(paradev, args.at(-1) === "--json" ? args.slice(0, -1) : args);
-          })
-        : other.run(input),
+    run: (input) => {
+      if (input.command !== CLI) return other.run(input);
+      const args = input.args ?? [];
+      const argv = args.at(-1) === "--json" ? args.slice(0, -1) : args;
+      if (paradev.hangs?.(argv) === true) {
+        paradev.calls.push(argv);
+        return Effect.never;
+      }
+      return Effect.sync(() => paradevAnswer(paradev, argv));
+    },
   });
 
 // ---- the machine config ---------------------------------------------------------------------
@@ -937,6 +942,27 @@ describe("on the Paradev CLI", () => {
         );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a belt write that hangs holds up no pass, starts no second write, and does not hold the shutdown", () =>
+    Effect.gen(function* () {
+      const paradev = newParadev();
+      paradev.pages = () => reply(0, readFixture("pages-publish-probe-ws").stdout);
+      paradev.hangs = (argv) => argv[0] === "pages" && argv[1] === "storage";
+      const sets = () => paradev.calls.filter((argv) => argv[0] === "pages" && argv[1] === "storage").length;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n`;
+          const { loop, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", belt), noGhProcess, {}, paradev);
+          yield* waitUntil("the belt write", () => sets() === 1);
+          yield* idleAfter(loop, factoryDir, 1);
+          yield* onePassMore(loop, factoryDir);
+          yield* onePassMore(loop, factoryDir);
+          assert.strictEqual(sets(), 1);
+        }),
+      );
+      // The scope closed with the write still hanging: the shutdown did not wait for it.
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("a pass that dies still hands the belt over, and three in a row put pass-errors on it", () =>

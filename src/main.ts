@@ -966,6 +966,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
   // The last belt written, and the run reads it was made from: kept across reloads.
   const beltMemo = newBeltMemo();
   const beltRuns: RunReadCache = new Map();
+  let beltWriting = false;
 
   const onePass = Effect.gen(function* () {
     const current = state.current;
@@ -978,10 +979,25 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     const context = yield* Effect.context<never>();
     const log = Effect.runSyncWith(context);
     let lastError: string | null = null;
-    const belt = current.afterPass.pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-    );
+    // The belt goes to Paradev beside the loop, one write at a time, so a hung Paradev holds up
+    // no pass and no shutdown. A pass that ends while a write is still going hands nothing over:
+    // the next one does.
+    const belt = Effect.suspend(() => {
+      if (beltWriting) return Effect.void;
+      beltWriting = true;
+      return current.afterPass.pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.ensuring(
+          Effect.sync(() => {
+            beltWriting = false;
+          }),
+        ),
+        Effect.interruptible,
+        Effect.forkIn(scope),
+        Effect.asVoid,
+      );
+    });
     return yield* runPass(current.world, current.machine, (line) => {
       if (line.startsWith("error: ")) lastError = line;
       log(Effect.logInfo(line));
@@ -989,7 +1005,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       Effect.onExit((exit) =>
         attention.passEnded(outcomeOf(exit, () => lastError)).pipe(
           // A pass that died hands the belt over too, so the page shows the failures; a pass
-          // stopped by a shutdown or reload does not hold it up.
+          // stopped by a shutdown or reload does not.
           Effect.andThen(Exit.hasInterrupts(exit) ? Effect.void : belt),
         ),
       ),

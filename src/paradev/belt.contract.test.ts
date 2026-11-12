@@ -442,22 +442,19 @@ describe("the belt write and its size cap", () => {
     ),
   );
 
-  it.effect("a published page that cannot be saved gets no belt, and no new page is tried for an hour", () =>
+  it.effect("a belt.json that cannot be written stops a first publish before it is made", () =>
     withWriter(
-      [publishStep, publishStep],
+      [],
       (write, _dataDir, fake, warnings) =>
         Effect.gen(function* () {
           yield* write(at(recordedBelt(), NOW), NOW);
           assert.strictEqual(warnings.length, 1);
-          assert.include(warnings[0], `belt page ${PAGE_ID} published but not saved`);
-          assert.strictEqual(fake.calls.filter(isSet).length, 0);
-          yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS - 1), NOW + PUBLISH_RETRY_MS - 1);
-          assert.strictEqual(fake.calls.filter(isPublish).length, 1);
+          assert.include(warnings[0], "belt page not published: cannot write");
           yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS), NOW + PUBLISH_RETRY_MS);
-          assert.strictEqual(fake.calls.filter(isPublish).length, 2);
-          assert.strictEqual(fake.calls.filter(isSet).length, 0);
+          assert.strictEqual(warnings.length, 2);
+          assert.deepStrictEqual(fake.calls, []);
         }),
-      // belt.json is a directory, so the page id cannot be saved there.
+      // belt.json is a directory, so neither the mark nor the page id could be saved there.
       {
         seed: (dataDir) => {
           NodeFS.mkdirSync(NodePath.join(dataDir, "belt.json"));
@@ -495,7 +492,7 @@ describe("the belt write and its size cap", () => {
     ),
   );
 
-  it.effect("a first publish that times out may have made a page, so no new one is tried for an hour", () =>
+  it.effect("a first publish that times out may have made a page, so none is made again until belt.json is removed", () =>
     withWriter(
       [publishStep, setStep],
       (write, dataDir, fake, warnings) =>
@@ -503,16 +500,51 @@ describe("the belt write and its size cap", () => {
           yield* write(at(recordedBelt(), NOW), NOW);
           assert.strictEqual(warnings.length, 1);
           assert.include(warnings[0], "TIMEOUT");
-          // Passes within the hour publish nothing.
+          assert.deepStrictEqual(Object.keys(JSON.parse(NodeFS.readFileSync(NodePath.join(dataDir, "belt.json"), "utf8"))), [
+            "publishing",
+          ]);
+          // Passes within the hour say nothing; the first after it says what to do, once.
           yield* write(at(recordedBelt(), NOW + 60_000), NOW + 60_000);
-          yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS - 1), NOW + PUBLISH_RETRY_MS - 1);
-          assert.strictEqual(fake.calls.filter(isPublish).length, 1);
           yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS), NOW + PUBLISH_RETRY_MS);
+          yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS + 60_000), NOW + PUBLISH_RETRY_MS + 60_000);
+          assert.strictEqual(fake.calls.filter(isPublish).length, 1);
+          assert.strictEqual(warnings.length, 2);
+          assert.include(warnings[1], 'may have made a page "Factory belt (mac)"');
+          // A person removes belt.json: the next pass publishes.
+          NodeFS.rmSync(NodePath.join(dataDir, "belt.json"));
+          yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS * 3), NOW + PUBLISH_RETRY_MS * 3);
           assert.strictEqual(fake.calls.filter(isPublish).length, 2);
           assert.strictEqual(saved(dataDir).pageId, PAGE_ID);
         }),
       { firstPublishTimesOut: true },
     ),
+  );
+
+  it.effect("a first publish whose answer names no page makes no second page, after a restart too", () =>
+    Effect.gen(function* () {
+      let left = "";
+      yield* withWriter(
+        [{ argv: isPublish, fixture: "pages-publish-probe-ws", edit: () => ({}) }],
+        (write, dataDir, fake, warnings) =>
+          Effect.gen(function* () {
+            yield* write(at(recordedBelt(), NOW), NOW);
+            assert.include(warnings[0], "PARADEV_SHAPE");
+            assert.strictEqual(fake.calls.filter(isSet).length, 0);
+            left = NodeFS.readFileSync(NodePath.join(dataDir, "belt.json"), "utf8");
+          }),
+      );
+      // A new runner, with a fresh memo, over the belt.json that publish left.
+      yield* withWriter(
+        [],
+        (write, _dataDir, fake, warnings) =>
+          Effect.gen(function* () {
+            yield* write(at(recordedBelt(), NOW + 60_000), NOW + 60_000);
+            assert.deepStrictEqual(fake.calls, []);
+            assert.include(warnings[0], "may have made a page");
+          }),
+        { seed: (dataDir) => NodeFS.writeFileSync(NodePath.join(dataDir, "belt.json"), left) },
+      );
+    }),
   );
 
   it.effect("a republish that fails is a warning, the belt still goes to the saved page, and it is tried again an hour later", () =>

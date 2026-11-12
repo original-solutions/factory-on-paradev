@@ -207,6 +207,14 @@ const SavedPage = Schema.Struct({
   asked: Schema.optional(Schema.String),
 });
 const decodeSaved = Schema.decodeUnknownOption(Schema.fromJsonString(SavedPage));
+/**
+ * `<data>/belt.json` from the start of a first publish until its page is saved: a publish that
+ * may have made a page the runner cannot name leaves it there, so no second page is made.
+ */
+const Publishing = Schema.Struct({ publishing: Schema.String });
+const decodePublishing = Schema.decodeUnknownOption(Schema.fromJsonString(Publishing));
+/** Failures after which Paradev may still have made the page: no answer, or one the runner cannot read. */
+const MAY_HAVE_PUBLISHED: ReadonlySet<string> = new Set(["TIMEOUT", "UNKNOWN", "PARADEV_SHAPE"]);
 /** The publish answer: the page, and the visibility Paradev gave it. */
 const Published = Schema.Struct({ id: Schema.String, visibility: Schema.optional(Schema.String) });
 
@@ -215,7 +223,8 @@ const Published = Schema.Struct({ id: Schema.String, visibility: Schema.optional
  * runner's HTML at the configured visibility, else `belt.html` published again (to the saved
  * page) or for the first time. A publish that fails, or whose page cannot be saved, is a warning,
  * and the first pass {@link PUBLISH_RETRY_MS} later publishes again. Meanwhile the saved page is
- * still written to when it has the configured visibility.
+ * still written to when it has the configured visibility. A first publish that may have made a
+ * page it could not save is not tried again until a person removes `belt.json`.
  */
 const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget, nowMs: number) {
   const fs = yield* FileSystem.FileSystem;
@@ -223,10 +232,8 @@ const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget, nowMs: nu
   const html = yield* fs.readFileString(BELT_HTML);
   const htmlSha256 = sha256(html);
   const savedFile = path.join(target.dataDir, "belt.json");
-  const saved = yield* fs.readFileString(savedFile).pipe(
-    Effect.map((text) => Option.getOrNull(decodeSaved(text))),
-    Effect.orElseSucceed(() => null),
-  );
+  const text = yield* fs.readFileString(savedFile).pipe(Effect.orElseSucceed(() => null));
+  const saved = text === null ? null : Option.getOrNull(decodeSaved(text));
   const { visibility } = target;
   if (saved?.htmlSha256 === htmlSha256 && saved.visibility === visibility) return saved.pageId;
   // Paradev kept the page at another audience when asked for this one: asking again with the
@@ -236,11 +243,32 @@ const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget, nowMs: nu
   const kept = saved?.visibility === visibility ? saved.pageId : null;
   const failedAt = target.memo.publishFailedAtMs;
   if (failedAt !== null && nowMs - failedAt < PUBLISH_RETRY_MS) return kept;
+  const title = `Factory belt (${target.host})`;
+  const publishing = saved === null && text !== null ? Option.getOrNull(decodePublishing(text)) : null;
+  if (publishing !== null) {
+    // Said once an hour, not every pass.
+    target.memo.publishFailedAtMs = nowMs;
+    yield* Effect.logWarning(
+      `the belt publish at ${publishing.publishing} may have made a page "${title}" that ${savedFile} does not name: ` +
+        `delete such a page in Paradev (superset pages list), then ${savedFile}, to publish the belt again`,
+    );
+    return null;
+  }
   const file = path.join(target.dataDir, "belt-page", "index.html");
   yield* writeFileAtomically(file, html);
+  if (saved === null) {
+    const marked = yield* Effect.result(
+      writeFileAtomically(savedFile, `${JSON.stringify({ publishing: new Date(nowMs).toISOString() })}\n`),
+    );
+    if (Result.isFailure(marked)) {
+      target.memo.publishFailedAtMs = nowMs;
+      yield* Effect.logWarning(`belt page not published: cannot write ${savedFile}: ${marked.failure.message}`);
+      return null;
+    }
+  }
   const argv =
     saved === null
-      ? ["pages", "publish", file, "--title", `Factory belt (${target.host})`, "--visibility", visibility, "--no-watch"]
+      ? ["pages", "publish", file, "--title", title, "--visibility", visibility, "--no-watch"]
       : ["pages", "publish", file, "--page", saved.pageId, "--label", `runner ${target.version}`, "--visibility", visibility, "--no-watch"];
   const published = yield* Effect.result(
     target.cli
@@ -250,6 +278,10 @@ const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget, nowMs: nu
   if (Result.isFailure(published)) {
     target.memo.publishFailedAtMs = nowMs;
     yield* Effect.logWarning(`belt page not published: ${published.failure.message}`);
+    // Paradev refused it, so it made no page: a later pass may make the first one.
+    if (saved === null && !MAY_HAVE_PUBLISHED.has(published.failure.kind)) {
+      yield* fs.remove(savedFile).pipe(Effect.ignore);
+    }
     return kept;
   }
   const pageId = published.success.id;
@@ -263,7 +295,7 @@ const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget, nowMs: nu
     ),
   );
   if (Result.isFailure(savedPage)) {
-    // Unsaved, the next publish would make yet another page: wait as after a failed publish.
+    // A first publish's mark stays, so no second page is made for this one.
     target.memo.publishFailedAtMs = nowMs;
     yield* Effect.logWarning(`belt page ${pageId} published but not saved: ${savedPage.failure.message}`);
     return null;
