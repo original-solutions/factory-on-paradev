@@ -1,4 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off - the home dir for Claude's session store, as paths.ts reads it.
 /**
  * `FactorySessions` over Paradev's `superset` CLI, for workspaces on this Mac: one workspace per
  * thread, one factory agent per workspace, and the adapter's own records in `state.ts`. This file
@@ -13,7 +12,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import * as NodeOS from "node:os";
 
 import {
   configFlags,
@@ -217,7 +215,7 @@ export interface ParadevSessionsConfig {
   readonly sendPollMs?: number;
   /** How long `send` waits for a reaction: after the text, then after Enter. Default 20 s, 10 s. */
   readonly sendWaitsMs?: readonly [number, number];
-  /** Claude's own session store, where resume finds the session id. Default `~/.claude/projects`. */
+  /** Claude's own session store, where resume finds the session id. Default `FactoryPaths.claudeProjectsDir`. */
   readonly claudeProjectsDir?: string;
 }
 
@@ -242,7 +240,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const cli = yield* SupersetCli;
   const runner = yield* FactoryProcess;
   const processes = yield* AgentProcess;
-  const dataDir = (yield* FactoryPaths).baseDir;
+  const paths = yield* FactoryPaths;
+  const dataDir = paths.baseDir;
   const services = yield* Effect.context<FileSystem.FileSystem | Path.Path | SupersetCli>();
   const fs = yield* FileSystem.FileSystem;
   const remoteBase = normalizeRemoteBase(config.remoteBase);
@@ -250,7 +249,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const agentPollDelaysMs = config.agentPollDelaysMs ?? AGENT_POLL_DELAYS_MS;
   const sendPollMs = config.sendPollMs ?? SEND_POLL_MS;
   const sendWaitsMs = config.sendWaitsMs ?? SEND_WAITS_MS;
-  const claudeProjectsDir = config.claudeProjectsDir ?? `${NodeOS.homedir()}/.claude/projects`;
+  const claudeProjectsDir = config.claudeProjectsDir ?? paths.claudeProjectsDir;
   /** The process a record's preset runs: the configured command for the configured preset. */
   const commandOf = (record: ThreadRecord) =>
     record.agent === config.agent ? (config.agentCommand ?? config.agent) : record.agent;
@@ -838,11 +837,12 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   /**
    * The id of the newest session Claude keeps for `worktreePath`: the newest `*.jsonl` under its
-   * projects folder, named for the path with `/` and `.` as `-`. Null when there is none.
+   * projects folder, named as Claude names it: the path with every character other than a letter or
+   * digit as `-`. Null when there is none.
    */
   const newestSession = (worktreePath: string) =>
     Effect.gen(function* () {
-      const folder = `${claudeProjectsDir}/${worktreePath.replace(/[/.]/g, "-")}`;
+      const folder = `${claudeProjectsDir}/${worktreePath.replace(/[^A-Za-z0-9]/g, "-")}`;
       const names = yield* fs.readDirectory(folder).pipe(
         Effect.catchIf((error) => error.reason._tag === "NotFound", () => Effect.succeed([] as ReadonlyArray<string>)),
       );
@@ -897,7 +897,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * `working`, and its terminal is a shell that would run the text, so the process decides as
    * well as the state. The snapshot is read first: an agent of the preset in a terminal the
    * record lacks is the one a pending resume started, and is adopted under that resume's id;
-   * with no resume pending it makes the process lookup ambiguous, so nothing is typed.
+   * with no resume pending it makes the process lookup ambiguous, so nothing is typed. Nor is it
+   * when the agent is `blocked`: its permission prompt would take the text and Enter as an answer.
    */
   const deliver = (record: ThreadRecord, commandId: string, text: string): Effect.Effect<
     void,
@@ -942,6 +943,14 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const { explained, run } = yield* explainRun(record, terminal);
       const alive = run !== "interrupted" && (yield* processes.find(commandOf(record), worktreePath)) !== null;
       if (!alive) return yield* resume(record, true, worktreePath, commandId, text);
+      // A blocked agent shows a permission prompt: the text and Enter would answer it.
+      if (explained.state === "blocked") {
+        return yield* new MessageRejectedError({
+          threadId,
+          commandId,
+          cause: "the agent is waiting on a permission prompt; nothing was typed",
+        });
+      }
 
       const terminalArgv = ["terminals", "send", "--local", "--workspace", record.workspaceId, "--terminal", terminal];
       yield* call(cli, [...terminalArgv, "--text", text], 30_000);

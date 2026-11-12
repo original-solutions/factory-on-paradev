@@ -29,6 +29,7 @@ it.effect("keeps the data and the machine config in ~/.config/factory-runner by 
     assert.strictEqual(paths.factoryDir, dir);
     assert.strictEqual(paths.machineConfigPath, NodePath.join(dir, "config.yml"));
     assert.strictEqual(paths.worktreesDir, NodePath.join(NodeOS.homedir(), ".paradev", "worktrees"));
+    assert.strictEqual(paths.claudeProjectsDir, NodePath.join(NodeOS.homedir(), ".claude", "projects"));
   }),
 );
 

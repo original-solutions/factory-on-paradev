@@ -163,6 +163,7 @@ const rig = (
       worktreesDir: "/default/worktrees",
       factoryDir: data,
       machineConfigPath: NodePath.join(data, "config.yml"),
+      claudeProjectsDir: "/default/claude-projects",
     }),
     Layer.succeed(
       AgentProcess,
@@ -1771,6 +1772,45 @@ describe("send", () => {
     }),
   );
 
+  it.live("an agent at a permission prompt is MessageRejectedError, with nothing typed and no Enter", () =>
+    Effect.gen(function* () {
+      // Text and Enter would answer the prompt: Enter picks its focused option.
+      const blocked = (answer: unknown) => ({ ...(answer as object), state: "blocked", lastEventType: "PermissionRequest" });
+      const t = rig([l1Snapshot(), { ...quiet(), edit: blocked }], { agentRunning: true, config: FAST_POLL });
+      yield* seed(t.data, record());
+      const error = yield* Effect.flip(t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT)));
+      assert.instanceOf(error, MessageRejectedError);
+      assert.deepInclude(error, { threadId: `local:${L1_WS}`, commandId: SEND_ID });
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some(argvIs("terminals", "send")));
+      assert.deepStrictEqual(yield* savedL1(t.data), record());
+    }),
+  );
+
+  it.live("a typed send clears a stale pendingResume, so a later agent of the preset is not adopted under it", () =>
+    Effect.gen(function* () {
+      const recordedOnly: Step = {
+        ...l1Snapshot(),
+        edit: snapshotOf(L1_WS, [{ id: L1_TERM, title: "", agent: { id: "claude", state: "idle" } }]),
+      };
+      const t = rig(
+        [recordedOnly, quiet(), { argv: textSend, fixture: "terminals-send-local" }, quiet(), reacted()],
+        { agentRunning: true, config: FAST_POLL },
+      );
+      yield* seed(t.data, record({ pendingResume: "softfac:original-solutions__factory-paradev-spike__1__1:resume-1" }));
+      yield* t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.filter(argvIs("terminals", "send")).length, 1);
+      const saved = yield* savedL1(t.data);
+      assert.deepStrictEqual(saved!.terminals, [L1_TERM]);
+      assert.deepStrictEqual(saved!.turns.map((turn) => [turn.commandId, turn.kind]), [
+        [LAUNCH_ID, "launch"],
+        [SEND_ID, "send"],
+      ]);
+      assert.isNull(saved!.pendingResume);
+    }),
+  );
+
   it.live("a thread with no record, archived, or a workspace gone, is ThreadNotFoundError", () =>
     Effect.gen(function* () {
       const t = rig(
@@ -1859,6 +1899,26 @@ describe("send to a dead agent resumes it", () => {
       assert.deepStrictEqual(after!.turns.at(-1)!.commandId, SEND_ID);
       assert.strictEqual(after!.turns.at(-1)!.kind, "resume");
       assert.isNull(after!.pendingResume);
+    }),
+  );
+
+  it.live("finds the session of a worktree path with `_` in it, which Claude's folder name turns into `-`", () =>
+    Effect.gen(function* () {
+      // Claude names the folder with every character other than a letter or digit as `-`.
+      const underscored = "/Users/me/.paradev/worktrees/factory_paradev-spike/fac/2-1";
+      const t = rig(
+        [
+          snap("snapshot-local-killed"),
+          killed,
+          { argv: closeArgv, fixture: "terminals-close-local-killed" },
+          { argv: resumeArgv, fixture: "agents-create-local-resume" },
+        ],
+        { agentRunning: false, config: { claudeProjectsDir: claudeProjects() } },
+      );
+      yield* seed(t.data, deadRecord({ worktreePath: underscored }));
+      yield* t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, RESUME_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual((yield* saved(t.data))!.terminals, [L5_DEAD, L5_RESUMED]);
     }),
   );
 

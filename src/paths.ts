@@ -10,7 +10,7 @@ import * as Path from "effect/Path";
  * `FACTORY_RUNNER_HOME` when set, else `~/.config/factory-runner`. The factory's data and its
  * machine config, `<data>/config.yml`, live there together (the softfac ledger layout, so its
  * retro can read it). `worktreesDir` is where Paradev puts a local worktree by default,
- * `~/.paradev/worktrees`.
+ * `~/.paradev/worktrees`. `claudeProjectsDir` is Claude's session store, `~/.claude/projects`.
  */
 export class FactoryPaths extends Context.Service<
   FactoryPaths,
@@ -19,6 +19,7 @@ export class FactoryPaths extends Context.Service<
     readonly worktreesDir: string;
     readonly factoryDir: string;
     readonly machineConfigPath: string;
+    readonly claudeProjectsDir: string;
   }
 >()("factory-runner/paths/FactoryPaths") {}
 
@@ -46,6 +47,7 @@ export const layer = Layer.effect(
       worktreesDir: path.join(home, ".paradev", "worktrees"),
       factoryDir: dataDir,
       machineConfigPath: path.join(dataDir, "config.yml"),
+      claudeProjectsDir: path.join(home, ".claude", "projects"),
     };
   }),
 );
