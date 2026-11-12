@@ -2,7 +2,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off - the command line writes to the terminal and exits with a code.
 /**
  * `factory-runner`: the command line. `run` is the factory loop in the foreground. The other
- * commands (`install`, `uninstall`, `status`, `runs stop`, `claims`) are in `cli.ts`.
+ * commands (`install`, `uninstall`, `status`, `runs stop`, `claims`, `retro`) are in `cli.ts`.
  */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeOS from "node:os";
@@ -97,6 +97,20 @@ if (command === "run") {
     out: (line) => console.log(line),
     err: (line) => console.error(line),
     installEnv: realInstallEnv,
+    gh: (args) => {
+      const done = NodeChildProcess.spawnSync("gh", [...args], {
+        encoding: "utf8",
+        timeout: 60_000,
+      });
+      return {
+        status: done.status,
+        stdout: done.stdout ?? "",
+        stderr:
+          done.error !== undefined
+            ? `${done.error.message}\n${done.stderr ?? ""}`
+            : (done.stderr ?? ""),
+      };
+    },
   }).then((code) => {
     process.exitCode = code;
   });

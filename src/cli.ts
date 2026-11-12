@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - status reads the lock and the package file; the operator commands write control files in the data dir.
 /**
- * The operator commands of `factory-runner`: everything but `run`. None of `status`, `runs stop`
- * and `claims` talks to the running process; they read the data dir, or leave a file the next
+ * The operator commands of `factory-runner`: everything but `run`. None of `status`, `runs stop`,
+ * `claims` and `retro` talks to the running process; they read the data dir, or leave a file the next
  * pass reads.
  */
 import * as NodeFS from "node:fs";
@@ -16,6 +16,7 @@ import { pauseClaimsNow, resumeClaimsNow, stopRun } from "./control.ts";
 import { install, uninstall, type InstallEnv } from "./install.ts";
 import { packageVersion } from "./paths.ts";
 import { isRunner, lockHolder } from "./runnerLock.ts";
+import { retro, RETRO_USAGE, type CommandResult } from "./retro.ts";
 import { readTextOrNull } from "./syncFiles.ts";
 import {
   buildStatus,
@@ -23,8 +24,9 @@ import {
   type StatusReport,
 } from "./status.ts";
 
-export const USAGE =
-  "usage: factory-runner run | install | uninstall | status [--json] | runs stop <run id> | claims pause|resume";
+export const USAGE = `usage: factory-runner run | install | uninstall | status [--json] | runs stop <run id> | claims pause|resume | ${RETRO_USAGE}`;
+
+export type { CommandResult };
 
 /** What the commands read and write, so a test passes a fixture data dir and captures the output. */
 export interface CliIo {
@@ -38,6 +40,8 @@ export interface CliIo {
   /** Whether a pid is a runner; defaults to the lock's own check. */
   readonly isRunner?: (pid: number) => boolean;
   readonly installEnv: () => InstallEnv;
+  /** Runs `gh` with these arguments; `retro` reads merged PRs' reviews with it. */
+  readonly gh: (args: ReadonlyArray<string>) => CommandResult;
 }
 
 /** Running when a live runner holds the lock and the config loads; else idle, with the reason. */
@@ -114,6 +118,7 @@ const command = async (
   if (first === "uninstall" && argv.length === 1)
     return uninstall(io.installEnv());
   if (first === "status") return status(argv.slice(1), io);
+  if (first === "retro") return retro(argv.slice(1), io, USAGE);
   if (
     first === "runs" &&
     second === "stop" &&
