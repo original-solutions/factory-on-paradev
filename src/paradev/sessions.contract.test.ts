@@ -1681,6 +1681,7 @@ describe("send", () => {
         [SEND_ID, "send"],
       ]);
       assert.isNull(saved!.pendingResume);
+      assert.isNull(saved!.pendingSend);
     }),
   );
 
@@ -1734,7 +1735,106 @@ describe("send", () => {
       assert.instanceOf(error, MessageRejectedError);
       assert.deepInclude(error, { threadId: `local:${L1_WS}`, commandId: SEND_ID });
       assert.deepStrictEqual(t.unused(), []);
-      assert.deepStrictEqual(yield* savedL1(t.data), record());
+      // The idle agent dropped the text: a repeat may type it again.
+      assert.deepStrictEqual(yield* savedL1(t.data), record({ pendingSend: null }));
+    }),
+  );
+
+  it.live("still no reaction after Enter from a busy agent is a SessionsError that keeps the send pending", () =>
+    Effect.gen(function* () {
+      // In a long tool call the agent queues the text and sends no hook until the call ends.
+      const working = (answer: unknown) => ({ ...(answer as object), state: "working", lastEventType: "PreToolUse" });
+      const t = rig(
+        [
+          l1Snapshot(),
+          quiet(),
+          { argv: textSend, fixture: "terminals-send-local" },
+          quiet(),
+          quiet(),
+          { argv: enterSend, fixture: "terminals-send-local" },
+          { ...quiet(), edit: working },
+        ],
+        { agentRunning: true, config: FAST_POLL },
+      );
+      yield* seed(t.data, record());
+      const error = yield* Effect.flip(t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT)));
+      assert.notInstanceOf(error, MessageRejectedError);
+      assert.deepInclude(error, { _tag: "FactorySessionsError", operation: "send" });
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual(
+        yield* savedL1(t.data),
+        record({ pendingSend: { commandId: SEND_ID, before: AFTER_GATE_AT } }),
+      );
+    }),
+  );
+
+  it.live("a repeat after a crash right after typing types nothing and counts the turn on a newer hook", () =>
+    Effect.gen(function* () {
+      const t = rig([l1Snapshot(), reacted()], { agentRunning: true, config: FAST_POLL });
+      yield* seed(t.data, record({ pendingSend: { commandId: SEND_ID, before: AFTER_GATE_AT } }));
+      yield* t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some(argvIs("terminals", "send")));
+      assert.strictEqual(t.calls.filter(argvIs("agents", "explain")).length, 1);
+      const saved = yield* savedL1(t.data);
+      assert.deepStrictEqual(saved!.turns.map((turn) => [turn.commandId, turn.kind]), [
+        [LAUNCH_ID, "launch"],
+        [SEND_ID, "send"],
+      ]);
+      assert.isNull(saved!.pendingSend);
+    }),
+  );
+
+  it.live("a repeat that typed before an agent's first hook counts any hook as the reaction", () =>
+    Effect.gen(function* () {
+      const t = rig([l1Snapshot(), quiet()], { agentRunning: true, config: FAST_POLL });
+      yield* seed(t.data, record({ pendingSend: { commandId: SEND_ID, before: null } }));
+      yield* t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some(argvIs("terminals", "send")));
+      assert.strictEqual((yield* savedL1(t.data))!.turns.at(-1)!.commandId, SEND_ID);
+    }),
+  );
+
+  it.live("a repeat with no hook since the text was typed is a SessionsError, types nothing and keeps the send pending", () =>
+    Effect.gen(function* () {
+      const pending = record({ pendingSend: { commandId: SEND_ID, before: AFTER_GATE_AT } });
+      const t = rig([l1Snapshot(), quiet()], { agentRunning: true, config: FAST_POLL });
+      yield* seed(t.data, pending);
+      const error = yield* Effect.flip(t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT)));
+      assert.notInstanceOf(error, MessageRejectedError);
+      assert.deepInclude(error, { _tag: "FactorySessionsError", operation: "send" });
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some(argvIs("terminals", "send")));
+      assert.strictEqual(t.calls.filter(argvIs("agents", "explain")).length, 1);
+      assert.deepStrictEqual(yield* savedL1(t.data), pending);
+    }),
+  );
+
+  it.live("a send under another command id clears the pending one and types as a fresh send", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [l1Snapshot(), quiet(), { argv: textSend, fixture: "terminals-send-local" }, quiet(), reacted()],
+        { agentRunning: true, config: FAST_POLL },
+      );
+      yield* seed(t.data, record({ pendingSend: { commandId: `${SEND_ID}-old`, before: AFTER_GATE_AT - 1 } }));
+      yield* t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.filter(argvIs("terminals", "send")).length, 1);
+      const saved = yield* savedL1(t.data);
+      assert.deepStrictEqual(saved!.turns.map((turn) => turn.commandId), [LAUNCH_ID, SEND_ID]);
+      assert.isNull(saved!.pendingSend);
+    }),
+  );
+
+  it.live("a send under another command id clears the pending one even when it types nothing", () =>
+    Effect.gen(function* () {
+      const blocked = (answer: unknown) => ({ ...(answer as object), state: "blocked", lastEventType: "PermissionRequest" });
+      const t = rig([l1Snapshot(), { ...quiet(), edit: blocked }], { agentRunning: true, config: FAST_POLL });
+      yield* seed(t.data, record({ pendingSend: { commandId: `${SEND_ID}-old`, before: AFTER_GATE_AT - 1 } }));
+      assert.instanceOf(yield* Effect.flip(t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT))), MessageRejectedError);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual(yield* savedL1(t.data), record({ pendingSend: null }));
     }),
   );
 
@@ -1767,7 +1867,11 @@ describe("send", () => {
       const error = yield* Effect.flip(t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT)));
       assert.deepInclude(error, { _tag: "FactorySessionsError", operation: "send" });
       assert.strictEqual(t.calls.filter(argvIs("terminals", "send")).length, 1);
-      assert.deepStrictEqual(yield* savedL1(t.data), record());
+      // Written before the text: a repeat of this command id types nothing.
+      assert.deepStrictEqual(
+        yield* savedL1(t.data),
+        record({ pendingSend: { commandId: SEND_ID, before: AFTER_GATE_AT } }),
+      );
     }),
   );
 
@@ -1898,6 +2002,28 @@ describe("send to a dead agent resumes it", () => {
       assert.deepStrictEqual(after!.turns.at(-1)!.commandId, SEND_ID);
       assert.strictEqual(after!.turns.at(-1)!.kind, "resume");
       assert.isNull(after!.pendingResume);
+    }),
+  );
+
+  it.live("a repeat of a pending send to an agent that died since still resumes it, and the resume clears the send", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          snap("snapshot-local-killed"),
+          killed,
+          { argv: closeArgv, fixture: "terminals-close-local-killed" },
+          { argv: resumeArgv, fixture: "agents-create-local-resume" },
+        ],
+        { agentRunning: false, config: { claudeProjectsDir: claudeProjects() } },
+      );
+      yield* seed(t.data, deadRecord({ pendingSend: { commandId: SEND_ID, before: 1 } }));
+      yield* t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, RESUME_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some(argvIs("terminals", "send")));
+      const after = yield* saved(t.data);
+      assert.deepStrictEqual(after!.terminals, [L5_DEAD, L5_RESUMED]);
+      assert.deepStrictEqual(after!.turns.at(-1), { ...after!.turns.at(-1)!, commandId: SEND_ID, kind: "resume" });
+      assert.isNull(after!.pendingSend);
     }),
   );
 
