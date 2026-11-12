@@ -269,6 +269,28 @@ describe("the belt write and its size cap", () => {
     ),
   );
 
+  it.effect("a page Paradev reports at another visibility than the config's gets no belt, and belt.json says what Paradev said", () =>
+    withWriter(
+      [
+        {
+          argv: isPublish,
+          fixture: "pages-publish-probe-ws",
+          // Paradev published the version and kept the page's audience.
+          edit: (answer) => ({ ...(answer as object), visibility: "org" }),
+        },
+      ],
+      (write, dataDir, fake, warnings) =>
+        Effect.gen(function* () {
+          yield* write(at(recordedBelt(), NOW), NOW);
+          assert.strictEqual(fake.calls.filter(isSet).length, 0);
+          assert.strictEqual(warnings.length, 1);
+          assert.include(warnings[0], "org");
+          assert.strictEqual(saved(dataDir).visibility, "org");
+        }),
+      { seed: seedPage(HTML, "org") },
+    ),
+  );
+
   it.effect("a belt.json from before visibility was saved publishes again with the configured one", () =>
     withWriter(
       [publishStep, setStep],

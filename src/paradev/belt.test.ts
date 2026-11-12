@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import type { AttentionItem } from "../attention.ts";
+import { LAST_ERROR, type AttentionItem } from "../attention.ts";
 import { beltBytes, type BeltV1 } from "../belt.ts";
 import type { RunSummary } from "../ledger/listRuns.ts";
 import { BELT_MAX_BYTES, beltPayload, type BeltRun } from "./belt.ts";
@@ -162,7 +162,7 @@ describe("beltPayload", () => {
         item(
           "config-not-loaded:a/b",
           "attention",
-          "a/b: project config not loaded for 3 passes in a row, issues are not being picked up; last error: fatal: could not read Username",
+          `a/b: project config not loaded for 3 passes in a row, issues are not being picked up${LAST_ERROR}fatal: could not read Username`,
         ),
         item("long", "attention", "w".repeat(400)),
       ],
