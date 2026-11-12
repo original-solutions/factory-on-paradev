@@ -269,6 +269,11 @@ describe("the belt write and its size cap", () => {
           assert.strictEqual(warnings.length, 1);
           assert.strictEqual(fake.calls.filter(isSet).length, 0);
           assert.strictEqual(saved(dataDir).visibility, "org");
+          // Within the hour after that failure no publish is tried, and still no belt goes there.
+          yield* write(at(recordedBelt(), NOW + 60_000), NOW + 60_000);
+          yield* write(at(recordedBelt(), NOW + HEARTBEAT_MS), NOW + HEARTBEAT_MS);
+          assert.strictEqual(fake.calls.filter(isPublish).length, 1);
+          assert.strictEqual(fake.calls.filter(isSet).length, 0);
         }),
       // Published for the org; the config now says just_me.
       { seed: seedPage(HTML, "org") },

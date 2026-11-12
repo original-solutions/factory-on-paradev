@@ -1013,6 +1013,31 @@ describe("on the Paradev CLI", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("with the belt off, no pass publishes or writes a belt", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        // Answered, so a call made despite the flag is recorded rather than dying unseen in the belt's fiber.
+        paradev.pages = (argv) =>
+          argv[1] === "publish"
+            ? reply(0, readFixture("pages-publish-probe-ws").stdout)
+            : reply(0, readFixture("pages-storage-set-belt").stdout);
+        const off = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    enabled: false\n`;
+        const { loop, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", off), noGhProcess, {}, paradev);
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* onePassMore(loop, factoryDir);
+        // Long enough for a forked write to have been made.
+        yield* realDelay(200);
+        assert.deepStrictEqual(
+          paradev.calls.filter((argv) => argv[0] === "pages"),
+          [],
+        );
+        assert.isFalse(NodeFS.existsSync(NodePath.join(factoryDir, "belt.json")));
+        assert.isFalse(NodeFS.existsSync(NodePath.join(factoryDir, "belt-page")));
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("runner started is not logged for a factory with no config to run on", () =>
     Effect.scoped(
       Effect.gen(function* () {
