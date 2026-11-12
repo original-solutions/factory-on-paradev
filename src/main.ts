@@ -978,15 +978,22 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     const context = yield* Effect.context<never>();
     const log = Effect.runSyncWith(context);
     let lastError: string | null = null;
-    const report = yield* runPass(current.world, current.machine, (line) => {
-      if (line.startsWith("error: ")) lastError = line;
-      log(Effect.logInfo(line));
-    }).pipe(Effect.onExit((exit) => attention.passEnded(outcomeOf(exit, () => lastError))));
-    yield* current.afterPass.pipe(
+    const belt = current.afterPass.pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
     );
-    return report;
+    return yield* runPass(current.world, current.machine, (line) => {
+      if (line.startsWith("error: ")) lastError = line;
+      log(Effect.logInfo(line));
+    }).pipe(
+      Effect.onExit((exit) =>
+        attention.passEnded(outcomeOf(exit, () => lastError)).pipe(
+          // A pass that died hands the belt over too, so the page shows the failures; a pass
+          // stopped by a shutdown or reload does not hold it up.
+          Effect.andThen(Exit.hasInterrupts(exit) ? Effect.void : belt),
+        ),
+      ),
+    );
   });
 
   const start = Effect.fn("Factory.start")(function* (machine: MachineConfig) {

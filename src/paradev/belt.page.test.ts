@@ -119,16 +119,35 @@ describe("belt.html", () => {
     expect(page.text()).toContain("feat: read after the change");
   });
 
-  it("escapes what it shows", async () => {
+  it("escapes every text it shows, and links no URL but a GitHub one", async () => {
     const belt = fixtureBelt();
+    const markup = (where: string) => `<img src=x data-in="${where}" onerror=alert(1)>`;
     const stub = newStub({
       ...belt,
-      runs: [{ ...belt.runs[0]!, title: "<img src=x onerror=alert(1)>" }],
+      runner: { ...belt.runner, host: markup("host"), version: markup("version"), paradevCli: markup("cli") },
+      runs: [
+        {
+          ...belt.runs[0]!,
+          repo: markup("repo"),
+          title: markup("title"),
+          reason: markup("reason"),
+          state: "stuck",
+          step: markup("step"),
+          finished: false,
+          prUrl: "javascript:alert(1)",
+        },
+        { ...belt.runs[0]!, finished: false, prUrl: `https://github.com/a/b/pull/1"><img src=x data-in="pr">` },
+      ],
+      attention: [{ id: "x", kind: "attention", text: markup("attention"), since: belt.updatedAt }],
     });
     const page = await render(stub);
     await settle(page.window);
-    expect(page.text()).toContain("<img src=x onerror=alert(1)>");
+    for (const where of ["host", "version", "cli", "repo", "title", "reason", "step", "attention"]) {
+      expect(page.text()).toContain(markup(where));
+    }
     expect(page.window.document.querySelector("img")).toBeNull();
+    expect(page.window.document.querySelector('a[href^="javascript:"]')).toBeNull();
+    expect(page.text()).toContain("javascript:alert(1)");
   });
 
   it("says so when no belt has been written yet", async () => {

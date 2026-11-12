@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { LAST_ERROR, type AttentionItem } from "../attention.ts";
+import type { AttentionItem } from "../attention.ts";
 import { beltBytes, type BeltV1 } from "../belt.ts";
 import type { RunSummary } from "../ledger/listRuns.ts";
 import { BELT_MAX_BYTES, beltPayload, type BeltRun } from "./belt.ts";
@@ -138,22 +138,20 @@ describe("beltPayload", () => {
       {
         id: "paradev-offline",
         kind: "attention",
-        text: "Paradev is offline",
+        text: "The runner needs a person; the runner log says why.",
         since: new Date(NOW - 60_000).toISOString(),
       },
     ]);
   });
 
-  it("puts no log line or error text from an attention item on the belt", () => {
-    const item = (id: string, kind: AttentionItem["kind"], message: string): AttentionItem => ({
-      id,
-      kind,
-      repo: null,
-      issue: null,
-      run: null,
-      message,
-      firstSeenMs: NOW,
-    });
+  it("puts no part of an attention item's message on the belt, only a line for its kind", () => {
+    const item = (
+      id: string,
+      kind: AttentionItem["kind"],
+      message: string,
+      repo: string | null = null,
+      issue: number | null = null,
+    ): AttentionItem => ({ id, kind, repo, issue, run: null, message, firstSeenMs: NOW });
     const belt = payload(
       [],
       [
@@ -162,22 +160,36 @@ describe("beltPayload", () => {
         item(
           "config-not-loaded:a/b",
           "attention",
-          `a/b: project config not loaded for 3 passes in a row, issues are not being picked up${LAST_ERROR}fatal: could not read Username`,
+          "a/b: project config not loaded for 3 passes in a row; last error: fatal: could not read Username",
+          "a/b",
         ),
-        item("long", "attention", "w".repeat(400)),
+        item(
+          "paradev-project-repo:a/b",
+          "attention",
+          "a/b: its clone /Users/alice/src/b is the Paradev project of c/d; point its path at a clone of a/b",
+          "a/b",
+        ),
+        item("paradev-offline", "attention", "the Paradev CLI check failed: superset at /Users/alice/bin/superset: EACCES"),
+        item("run:a__b__7__1:stuck", "stuck", "a/b#7 stuck, the reason is in the ledger of run a__b__7__1", "a/b", 7),
+        item("run:a__b__8__1:needs-info", "needs-info", "a/b#8 asked: is /Users/alice/.ssh/id_rsa the key?", "a/b", 8),
+      ],
+    );
+    assert.deepStrictEqual(
+      belt.attention.map((entry) => entry.text),
+      [
+        "The last passes failed; the runner log says why.",
+        "The machine config did not load; the runner log says why.",
+        "a/b needs a person; the runner log says why.",
+        "a/b needs a person; the runner log says why.",
+        "The runner needs a person; the runner log says why.",
+        "a/b#7 is stuck.",
+        "a/b#8 needs information from a person.",
       ],
     );
     const text = JSON.stringify(belt.attention);
-    for (const leak of ["error: gh", "secret-repo", "config.yml", "fatal:", "Username"]) {
+    for (const leak of ["error: gh", "secret-repo", "config.yml", "fatal:", "Username", "/Users/", "EACCES", "id_rsa"]) {
       assert.notInclude(text, leak);
     }
-    assert.include(belt.attention[0]!.text, "runner log");
-    assert.include(belt.attention[1]!.text, "runner log");
-    assert.strictEqual(
-      belt.attention[2]!.text,
-      "a/b: project config not loaded for 3 passes in a row, issues are not being picked up",
-    );
-    assert.isAtMost(belt.attention[3]!.text.length, 300);
   });
 
   it("keeps every run when the payload fits", () => {

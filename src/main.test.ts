@@ -897,6 +897,79 @@ describe("on the Paradev CLI", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("a reload that narrows the belt's visibility moves the page before any belt goes to it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        const pages: Array<ReadonlyArray<string>> = [];
+        paradev.pages = (argv) => {
+          pages.push(argv);
+          // Paradev keeps the page at org, whatever a later publish asks for.
+          return argv[1] === "publish"
+            ? reply(0, JSON.stringify({ ...JSON.parse(readFixture("pages-publish-probe-ws").stdout), visibility: "org" }))
+            : reply(0, readFixture("pages-storage-set-belt").stdout);
+        };
+        const beltAt = (visibility: string) =>
+          configFor([["a/b", "/b"]], "/gh", "", `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    visibility: ${visibility}\n`);
+        const { loop, factoryDir, write, logLayer } = yield* started(beltAt("org"), noGhProcess, {}, paradev);
+        yield* waitUntil("the first belt write", () => pages.some((argv) => argv[1] === "storage"));
+        yield* idleAfter(loop, factoryDir, 1);
+        const before = pages.length;
+        yield* write(beltAt("just_me"));
+        yield* loop.reload.pipe(Effect.provide(logLayer));
+        yield* waitUntil("the publish after the reload", () => pages.length > before);
+        yield* idleAfter(loop, factoryDir, 2);
+        const after = pages.slice(before);
+        const publish = after[0]!;
+        assert.deepStrictEqual(publish.slice(0, 2), ["pages", "publish"]);
+        assert.deepStrictEqual(publish.slice(publish.indexOf("--page"), publish.indexOf("--page") + 2), [
+          "--page",
+          "30c684ae-67ab-41c9-b673-cdacc8d5254e",
+        ]);
+        assert.deepStrictEqual(publish.slice(publish.indexOf("--visibility"), publish.indexOf("--visibility") + 2), [
+          "--visibility",
+          "just_me",
+        ]);
+        // Paradev answered org: the page gets no belt meant for just_me.
+        assert.deepStrictEqual(
+          after.filter((argv) => argv[1] === "storage"),
+          [],
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a pass that dies still hands the belt over, and three in a row put pass-errors on it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        // The CLI check throws inside the process call, so every pass dies.
+        paradev.schema = () => {
+          throw new Error("the scripted schema broke");
+        };
+        const writes: Array<{ attention: Array<{ id: string; text: string }> }> = [];
+        paradev.pages = (argv) => {
+          if (argv[1] === "publish") return reply(0, readFixture("pages-publish-probe-ws").stdout);
+          writes.push(JSON.parse(argv[8]!) as (typeof writes)[number]);
+          return reply(0, readFixture("pages-storage-set-belt").stdout);
+        };
+        const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n`;
+        const { loop, logs } = yield* started(configFor([["a/b", "/b"]], "/gh", "", belt), noGhProcess, {}, paradev);
+        for (let n = 1; n <= 3; n++) {
+          yield* waitUntil(`belt write ${n}`, () => writes.length >= n);
+          if (n < 3) yield* loop.wake;
+        }
+        // The passes died: none got as far as its last line.
+        assert.ok(logs.includes("factory pass failed"), logs.join("\n"));
+        assert.notOk(logs.some((line) => line.startsWith("pass done:")), logs.join("\n"));
+        assert.deepInclude(writes.at(-1)!.attention.map((item) => [item.id, item.text]), [
+          "pass-errors",
+          "The last passes failed; the runner log says why.",
+        ]);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("a belt write that fails is a warning in the log and no pass error", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -291,6 +291,8 @@ describe("the belt write and its size cap", () => {
           assert.strictEqual(fake.calls.filter(isSet).length, 0);
           assert.strictEqual(warnings.length, 1);
           assert.include(warnings[0], "org");
+          // Following the warning takes the page and its last belt away, not only belt.json.
+          assert.include(warnings[0], `superset pages delete ${PAGE_ID}`);
           assert.strictEqual(saved(dataDir).visibility, "org");
           // Paradev has answered for this HTML at this visibility: later passes do not ask again.
           yield* write(at(recordedBelt(), NOW + 60_000), NOW + 60_000);
@@ -420,7 +422,7 @@ describe("the belt write and its size cap", () => {
     ),
   );
 
-  it.effect("a publish that fails is a warning, writes nothing and is tried on the next pass", () =>
+  it.effect("a publish that fails is a warning, writes nothing, and is tried again an hour later", () =>
     withWriter(
       [{ argv: isPublish, fixture: "pages-publish-probe" }, publishStep, setStep],
       (write, dataDir, fake, warnings) =>
@@ -430,9 +432,65 @@ describe("the belt write and its size cap", () => {
           assert.include(warnings[0], "Not logged in");
           assert.isFalse(NodeFS.existsSync(NodePath.join(dataDir, "belt.json")));
           assert.strictEqual(fake.calls.filter(isSet).length, 0);
-          yield* write(at(recordedBelt(), NOW + 60_000), NOW + 60_000);
+          // It may have made a page all the same: passes within the hour publish nothing.
+          yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS - 1), NOW + PUBLISH_RETRY_MS - 1);
+          assert.strictEqual(fake.calls.filter(isPublish).length, 1);
+          yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS), NOW + PUBLISH_RETRY_MS);
           assert.strictEqual(saved(dataDir).pageId, PAGE_ID);
           assert.strictEqual(fake.calls.filter(isSet).length, 1);
+        }),
+    ),
+  );
+
+  it.effect("a published page that cannot be saved gets no belt, and no new page is tried for an hour", () =>
+    withWriter(
+      [publishStep, publishStep],
+      (write, _dataDir, fake, warnings) =>
+        Effect.gen(function* () {
+          yield* write(at(recordedBelt(), NOW), NOW);
+          assert.strictEqual(warnings.length, 1);
+          assert.include(warnings[0], `belt page ${PAGE_ID} published but not saved`);
+          assert.strictEqual(fake.calls.filter(isSet).length, 0);
+          yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS - 1), NOW + PUBLISH_RETRY_MS - 1);
+          assert.strictEqual(fake.calls.filter(isPublish).length, 1);
+          yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS), NOW + PUBLISH_RETRY_MS);
+          assert.strictEqual(fake.calls.filter(isPublish).length, 2);
+          assert.strictEqual(fake.calls.filter(isSet).length, 0);
+        }),
+      // belt.json is a directory, so the page id cannot be saved there.
+      {
+        seed: (dataDir) => {
+          NodeFS.mkdirSync(NodePath.join(dataDir, "belt.json"));
+          NodeFS.writeFileSync(NodePath.join(dataDir, "belt.json", "keep"), "");
+        },
+      },
+    ),
+  );
+
+  it.effect("a publish answer that does not say the page's visibility gets no belt", () =>
+    withWriter(
+      [
+        {
+          argv: isPublish,
+          fixture: "pages-publish-probe-ws",
+          edit: (answer) => {
+            const { visibility: _, ...rest } = answer as { visibility?: string };
+            return rest;
+          },
+        },
+      ],
+      (write, dataDir, fake, warnings) =>
+        Effect.gen(function* () {
+          yield* write(at(recordedBelt(), NOW), NOW);
+          assert.strictEqual(fake.calls.filter(isSet).length, 0);
+          assert.strictEqual(warnings.length, 1);
+          assert.include(warnings[0], "visibility unknown, not just_me");
+          assert.isUndefined(saved(dataDir).visibility);
+          assert.strictEqual(saved(dataDir).asked, "just_me");
+          // Later passes neither ask again nor write.
+          yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS * 2), NOW + PUBLISH_RETRY_MS * 2);
+          assert.strictEqual(fake.calls.filter(isPublish).length, 1);
+          assert.strictEqual(fake.calls.filter(isSet).length, 0);
         }),
     ),
   );
@@ -457,17 +515,25 @@ describe("the belt write and its size cap", () => {
     ),
   );
 
-  it.effect("a republish that fails is a warning and the belt still goes to the saved page", () =>
+  it.effect("a republish that fails is a warning, the belt still goes to the saved page, and it is tried again an hour later", () =>
     withWriter(
-      [{ argv: isPublish, fail: "Could not connect to API" }, setStep],
+      [{ argv: isPublish, fail: "Could not connect to API" }, setStep, setStep, publishStep, setStep],
       (write, dataDir, fake, warnings) =>
         Effect.gen(function* () {
           yield* write(at(recordedBelt(), NOW), NOW);
           assert.strictEqual(warnings.length, 1);
           assert.strictEqual(fake.calls.filter(isSet).length, 1);
           assert.strictEqual(fake.calls.find(isSet)![2], PAGE_ID);
-          // The old hash stays, so the next pass publishes again.
+          // The old hash stays, so a later pass publishes again.
           assert.strictEqual(saved(dataDir).htmlSha256, sha256("an older page"));
+          // Within the hour a pass does not wait on Paradev for a publish, and still writes.
+          yield* write(at(recordedBelt(), NOW + HEARTBEAT_MS), NOW + HEARTBEAT_MS);
+          assert.strictEqual(fake.calls.filter(isPublish).length, 1);
+          assert.strictEqual(fake.calls.filter(isSet).length, 2);
+          yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS), NOW + PUBLISH_RETRY_MS);
+          assert.strictEqual(fake.calls.filter(isPublish).length, 2);
+          assert.strictEqual(saved(dataDir).htmlSha256, sha256(HTML));
+          assert.strictEqual(fake.calls.filter(isSet).length, 3);
         }),
       { seed: seedPage("an older page") },
     ),

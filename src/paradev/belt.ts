@@ -13,7 +13,7 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-import { LAST_ERROR, type AttentionItem } from "../attention.ts";
+import type { AttentionItem } from "../attention.ts";
 import { beltBytes, type BeltV1 } from "../belt.ts";
 import type { BeltVisibility } from "../config.ts";
 import { writeFileAtomically } from "../files.ts";
@@ -35,8 +35,9 @@ const WRITE_TIMEOUT_MS = 20_000;
 /** A publish uploads the page; P0's took 6 s. */
 const PUBLISH_TIMEOUT_MS = 120_000;
 /**
- * After a first publish that timed out, how long until a new page is tried: Paradev may have
- * made one, and each try under a new id would leave another page behind.
+ * After a publish that failed, how long until the runner publishes again. A first publish that
+ * failed may still have made a page, and each try would leave another one behind; a publish to
+ * a hung Paradev would hold every pass for {@link PUBLISH_TIMEOUT_MS}.
  */
 export const PUBLISH_RETRY_MS = 60 * 60_000;
 /** How far back the belt lists finished runs. */
@@ -153,35 +154,37 @@ export const beltPayload = (input: BeltInput): BeltV1 => {
 };
 
 /**
- * What the belt says of an item. Failed passes and a config that did not load quote log lines
- * and error text, so they get a fixed line; any other item drops what follows
- * {@link LAST_ERROR}, a command's output.
+ * What the belt says of an item: a fixed line for its kind, naming the repo and issue it is
+ * about. An item's message never goes on the belt: it can quote local paths, log lines and
+ * command errors, and the runner log has it.
  */
 const attentionText = (item: AttentionItem): string => {
+  const about = item.repo === null ? null : item.issue === null ? item.repo : `${item.repo}#${item.issue}`;
   switch (item.kind) {
     case "pass-errors":
       return "The last passes failed; the runner log says why.";
     case "config":
       return "The machine config did not load; the runner log says why.";
-    default: {
-      const at = item.message.indexOf(LAST_ERROR);
-      return cut(at === -1 ? item.message : item.message.slice(0, at), REASON_MAX)!;
-    }
+    case "stuck":
+      return `${about ?? "A run"} is stuck.`;
+    case "needs-info":
+      return `${about ?? "A run"} needs information from a person.`;
+    case "attention":
+      return `${about ?? "The runner"} needs a person; the runner log says why.`;
   }
 };
 
 /**
  * What the writer remembers between passes, across reloads but not restarts: the last belt
- * written (its page, and the belt without `updatedAt`) and when, and when a first publish last
- * timed out.
+ * written (its page, and the belt without `updatedAt`) and when, and when a publish last failed.
  */
 export interface BeltMemo {
   written: string | null;
   atMs: number;
-  publishTimedOutAtMs: number | null;
+  publishFailedAtMs: number | null;
 }
 
-export const newBeltMemo = (): BeltMemo => ({ written: null, atMs: 0, publishTimedOutAtMs: null });
+export const newBeltMemo = (): BeltMemo => ({ written: null, atMs: 0, publishFailedAtMs: null });
 
 export interface BeltTarget {
   readonly cli: SupersetCli["Service"];
@@ -204,15 +207,15 @@ const SavedPage = Schema.Struct({
   asked: Schema.optional(Schema.String),
 });
 const decodeSaved = Schema.decodeUnknownOption(Schema.fromJsonString(SavedPage));
-/** The publish answer: the page, and the visibility Paradev gave it (absent from none on record). */
+/** The publish answer: the page, and the visibility Paradev gave it. */
 const Published = Schema.Struct({ id: Schema.String, visibility: Schema.optional(Schema.String) });
 
 /**
  * The page to write to: the one `<data>/belt.json` names when it was published from this
  * runner's HTML at the configured visibility, else `belt.html` published again (to the saved
- * page) or for the first time. A publish that fails is a warning, and the next pass publishes
- * again, or, after a first publish that timed out, the first pass {@link PUBLISH_RETRY_MS} later.
- * Meanwhile the saved page is still written to when it has the configured visibility.
+ * page) or for the first time. A publish that fails, or whose page cannot be saved, is a warning,
+ * and the first pass {@link PUBLISH_RETRY_MS} later publishes again. Meanwhile the saved page is
+ * still written to when it has the configured visibility.
  */
 const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget, nowMs: number) {
   const fs = yield* FileSystem.FileSystem;
@@ -229,8 +232,10 @@ const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget, nowMs: nu
   // Paradev kept the page at another audience when asked for this one: asking again with the
   // same HTML gets the same answer, so the page waits for a new HTML, config or belt.json.
   if (saved?.htmlSha256 === htmlSha256 && saved.asked === visibility) return null;
-  const timedOutAt = target.memo.publishTimedOutAtMs;
-  if (saved === null && timedOutAt !== null && nowMs - timedOutAt < PUBLISH_RETRY_MS) return null;
+  // The saved page keeps its HTML a while, never an audience the config no longer allows.
+  const kept = saved?.visibility === visibility ? saved.pageId : null;
+  const failedAt = target.memo.publishFailedAtMs;
+  if (failedAt !== null && nowMs - failedAt < PUBLISH_RETRY_MS) return kept;
   const file = path.join(target.dataDir, "belt-page", "index.html");
   yield* writeFileAtomically(file, html);
   const argv =
@@ -243,24 +248,31 @@ const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget, nowMs: nu
       .pipe(Effect.flatMap((answer) => decodeAnswer(Published, answer, argv))),
   );
   if (Result.isFailure(published)) {
-    const { kind, message } = published.failure;
-    if (saved === null && kind === "TIMEOUT") target.memo.publishTimedOutAtMs = nowMs;
-    yield* Effect.logWarning(`belt page not published: ${message}`);
-    // The saved page keeps its HTML a while, never an audience the config no longer allows.
-    return saved?.visibility === visibility ? saved.pageId : null;
+    target.memo.publishFailedAtMs = nowMs;
+    yield* Effect.logWarning(`belt page not published: ${published.failure.message}`);
+    return kept;
   }
-  target.memo.publishTimedOutAtMs = null;
   const pageId = published.success.id;
   // What Paradev says the page is at, not what was asked: a version published to an existing
-  // page may keep its audience.
-  const got = published.success.visibility ?? visibility;
-  yield* writeFileAtomically(
-    savedFile,
-    `${JSON.stringify({ pageId, htmlSha256, visibility: got, asked: visibility })}\n`,
+  // page may keep its audience. An answer that does not say is no audience at all.
+  const got = published.success.visibility;
+  const savedPage = yield* Effect.result(
+    writeFileAtomically(
+      savedFile,
+      `${JSON.stringify({ pageId, htmlSha256, visibility: got, asked: visibility })}\n`,
+    ),
   );
+  if (Result.isFailure(savedPage)) {
+    // Unsaved, the next publish would make yet another page: wait as after a failed publish.
+    target.memo.publishFailedAtMs = nowMs;
+    yield* Effect.logWarning(`belt page ${pageId} published but not saved: ${savedPage.failure.message}`);
+    return null;
+  }
+  target.memo.publishFailedAtMs = null;
   if (got !== visibility) {
     yield* Effect.logWarning(
-      `belt page ${pageId} is at visibility ${got}, not ${visibility}: no belt goes to it; delete ${savedFile} to publish a new page`,
+      `belt page ${pageId} is at visibility ${got ?? "unknown"}, not ${visibility}: no belt goes to it. ` +
+        `Delete the page in Paradev (superset pages delete ${pageId}), then ${savedFile}, to publish a new one`,
     );
     return null;
   }

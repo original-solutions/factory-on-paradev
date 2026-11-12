@@ -7,7 +7,7 @@
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 
-import { LAST_ERROR, type Attention, type NewItem } from "./attention.ts";
+import type { Attention, NewItem } from "./attention.ts";
 import type { HandPause } from "./claims.ts";
 import {
   ambiguousMessage,
@@ -1170,8 +1170,8 @@ const loadRepos = Effect.fn("Pass.loadRepos")(function* (
       run: null,
       message: plain(
         stale
-          ? `${watched.repo}: project config or tracker login could not be re-read for ${CONFIG_SKIPS_BEFORE_ATTENTION} passes in a row, running on the last good copy${LAST_ERROR}${message}`
-          : `${watched.repo}: project config not loaded for ${CONFIG_SKIPS_BEFORE_ATTENTION} passes in a row, issues are not being picked up${LAST_ERROR}${message}`,
+          ? `${watched.repo}: project config or tracker login could not be re-read for ${CONFIG_SKIPS_BEFORE_ATTENTION} passes in a row, running on the last good copy; last error: ${message}`
+          : `${watched.repo}: project config not loaded for ${CONFIG_SKIPS_BEFORE_ATTENTION} passes in a row, issues are not being picked up; last error: ${message}`,
       ),
     });
   });
