@@ -299,6 +299,9 @@ describe("install", () => {
     expect(await install(f.env)).toBe(1);
     expect(f.errs.join("\n")).toContain(`launchctl bootstrap gui/${UID}`);
     expect(f.errs.join("\n")).toContain("boom");
+    // It stops at the first failure: the runner is never loaded behind an exit code of 1.
+    expect(verbs(f)).toEqual([["bootstrap", `gui/${UID}`, logrotatePlist(f.home)]]);
+    expect(f.elapsed()).toBe(0);
   });
 
   it("stops before writing anything when superset is not logged in", async () => {
