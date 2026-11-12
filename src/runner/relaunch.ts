@@ -82,7 +82,7 @@ export const relaunchSession = Effect.fn("RunnerRelaunch.relaunchSession")(funct
     yield* goStuck(ctx, issue, out, at, "launch-failed", stop);
     return { kind: "stuck", reason: recordedReason(stop) } as const;
   });
-  const target = launchable(yield* ctx.sessions.findProject(ctx.repoPath));
+  const target = launchable(yield* ctx.sessions.findProject(ctx.repoPath), ctx.repo);
   if (Result.isFailure(target)) {
     const missing = target.failure;
     return yield* refuse(from.earlierCall ? sessionMayExistNote(missing, commandId) : missing);
@@ -93,7 +93,7 @@ export const relaunchSession = Effect.fn("RunnerRelaunch.relaunchSession")(funct
     prUrl: from.prUrl,
     after: relaunch.fixes.kind === "feedback" ? "feedback" : "failed-regate",
   };
-  const message = `${launchMessage(ctx.repo, issue, ctx.trackerUser, ctx.ghConfigDir, resumed)}\n\n${END_WITH_DONE}\n\n${relaunch.message}`;
+  const message = `${launchMessage(ctx.repo, issue, ctx.trackerUser, resumed)}\n\n${END_WITH_DONE}\n\n${relaunch.message}`;
   const launched = yield* Effect.result(
     ctx.sessions.launch({
       commandId,

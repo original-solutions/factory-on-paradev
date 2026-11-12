@@ -6426,6 +6426,25 @@ describe("regate: a first relaunch with no T3 project", () => {
     }),
   );
 
+  it.effect("a project that is another repo's clone goes stuck the same way, naming both", () =>
+    Effect.gen(function* () {
+      const rig = yield* prOpenRun();
+      baseAndHeadMoved(rig);
+      passThenFail(rig);
+      rig.t3.project = { ...rig.t3.project!, repo: "rawphp/other" };
+      const step = yield* regateStep(rig);
+      assert.strictEqual(step.kind, "stuck");
+      const reason = step.kind === "stuck" ? step.reason : "";
+      assert.ok(
+        reason.includes("the project at this repo's path is the clone of rawphp/other, not rawphp/softfac"),
+        reason,
+      );
+      assert.ok(!reason.includes(SESSION_MAY_EXIST), reason);
+      assert.deepStrictEqual(rig.t3.launches, []);
+      assert.strictEqual(rig.gh.world.state, "stuck");
+    }),
+  );
+
   it.effect("a project with no default model goes stuck the same way, naming the fix", () =>
     Effect.gen(function* () {
       const rig = yield* prOpenRun();

@@ -46,6 +46,7 @@ import {
   LAUNCH_FAILED,
   NO_DEFAULT_MODEL,
   NO_PROJECT,
+  otherRepoProject,
   TEXT_CHANGED,
   launchMessage,
   sessionMayExistNote,
@@ -482,7 +483,7 @@ describe("start: a fresh ready issue", () => {
           projectId: "proj-1",
           title: "rawphp/softfac#7 Build step",
           baseRef: "main",
-          message: launchMessage(REPO, 7, USER, "/gh/rawphp"),
+          message: launchMessage(REPO, 7, USER),
           model: MODEL,
         },
       ]);
@@ -1155,6 +1156,35 @@ describe("start: the launch", () => {
         ...startedEvents().slice(0, 3),
         ...stuckTail(NO_DEFAULT_MODEL, "launch-failed"),
       ]);
+    }),
+  );
+
+  // A path that is another repo's clone: a session there would work on that repo's code. A project
+  // of this repo in another case, or one whose adapter does not know its repo, launches.
+  it.effect("a project that is another repo's clone, or of none, goes stuck before any launch", () =>
+    Effect.gen(function* () {
+      for (const other of ["rawphp/other", null] as const) {
+        const dataDir = tempDir();
+        const { tracker, calls } = fakeTracker({});
+        const t3 = fakeSessions(dataDir, { project: { id: "proj-1", model: MODEL, repo: other } });
+        const outcome = yield* startIn(dataDir, tracker, t3.sessions);
+        const reason = otherRepoProject(REPO, other);
+        assert.deepStrictEqual(outcome, { kind: "stuck", run: run7, reason });
+        assert.deepStrictEqual(calls.slice(3), stuckCalls(LAUNCH_FAILED, null));
+        assert.deepStrictEqual(t3.calls, ["findProject /work/softfac"]);
+      }
+      assert.strictEqual(
+        otherRepoProject(REPO, null),
+        "the project at this repo's path is the clone of no GitHub repo, not rawphp/softfac",
+      );
+      for (const repo of ["RawPHP/SoftFac", undefined]) {
+        const dataDir = tempDir();
+        const { tracker } = fakeTracker({});
+        const project = { id: "proj-1", model: MODEL, ...(repo !== undefined && { repo }) };
+        const t3 = fakeSessions(dataDir, { project });
+        const outcome = yield* startIn(dataDir, tracker, t3.sessions);
+        assert.notStrictEqual(outcome.kind, "stuck", String(repo));
+      }
     }),
   );
 
@@ -1979,7 +2009,7 @@ const assertPlainStart = (dataDir: string, t3: ReturnType<typeof fakeSessions>) 
   const request = t3.launchRequests.at(-1)!;
   assert.strictEqual(request.baseRef, "main");
   assert.strictEqual(request.pullRequestUrl, undefined);
-  assert.strictEqual(request.message, launchMessage(REPO, 7, USER, "/gh/rawphp"));
+  assert.strictEqual(request.message, launchMessage(REPO, 7, USER));
   const line = launchLineOf(dataDir);
   assert.strictEqual((line.data as { resumed_from: unknown }).resumed_from, null);
   assert.strictEqual(line.cause?.reason, "session-launched");
@@ -2094,7 +2124,7 @@ describe("start: the resume after a time limit", () => {
       assert.strictEqual(request.baseRef, "t3code/abc");
       assert.strictEqual(
         request.message,
-        launchMessage(REPO, 7, USER, "/gh/rawphp", {
+        launchMessage(REPO, 7, USER, {
           run: run7,
           branch: "t3code/abc",
           after: "time-limit",
@@ -2529,7 +2559,7 @@ const assertResumedOntoPr = (dataDir: string, t3: ReturnType<typeof fakeSessions
   assert.strictEqual(request.pullRequestUrl, URL12);
   assert.strictEqual(
     request.message,
-    launchMessage(REPO, 7, USER, "/gh/rawphp", {
+    launchMessage(REPO, 7, USER, {
       after: "existing-pr",
       branch: "t3code/abc",
       prUrl: URL12,
@@ -2652,7 +2682,7 @@ describe("start: the resume onto an open pull request of an earlier attempt", ()
         assert.strictEqual(request.baseRef, "t3code/abc");
         assert.strictEqual(
           request.message,
-          launchMessage(REPO, 7, USER, "/gh/rawphp", {
+          launchMessage(REPO, 7, USER, {
             after: "existing-pr",
             branch: "t3code/abc",
             prUrl: URL12,
@@ -2806,7 +2836,7 @@ describe("start: the resume onto an open pull request of an earlier attempt", ()
         yield* startIn(dataDir, tracker, t3.sessions);
         const request = t3.launchRequests[0]!;
         assert.strictEqual(request.baseRef, "main", JSON.stringify(other));
-        assert.strictEqual(request.message, launchMessage(REPO, 7, USER, "/gh/rawphp"));
+        assert.strictEqual(request.message, launchMessage(REPO, 7, USER));
       }
     }),
   );
@@ -2904,7 +2934,7 @@ describe("start: an issue that names its base", () => {
       assert.strictEqual(request.baseRef, "feature/x");
       assert.strictEqual(
         request.message,
-        launchMessage(REPO, 7, USER, "/gh/rawphp", undefined, "feature/x"),
+        launchMessage(REPO, 7, USER, undefined, "feature/x"),
       );
       assert.ok(
         request.message.includes(
@@ -2923,7 +2953,7 @@ describe("start: an issue that names its base", () => {
       const t3 = fakeSessions(dataDir, {});
       yield* startIn(dataDir, tracker, t3.sessions);
       assert.deepStrictEqual(lookups(calls), []);
-      assert.strictEqual(t3.launchRequests[0]!.message, launchMessage(REPO, 7, USER, "/gh/rawphp"));
+      assert.strictEqual(t3.launchRequests[0]!.message, launchMessage(REPO, 7, USER));
       assert.strictEqual(baseOf(dataDir), "main");
     }),
   );

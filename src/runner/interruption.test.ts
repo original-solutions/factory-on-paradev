@@ -72,7 +72,7 @@ const T3_ERROR = "T3 Code is not reachable: the request timed out";
 
 /** The one message a resume sends, written out independently of the code under test. */
 const RESUME_MESSAGE =
-  "The session was interrupted: your last turn was cut off, probably because T3 Code was unreachable or restarting, so the factory is not treating it as your decision. Continue from where you were. End your reply with a result line as before: FACTORY-DONE: <PR URL>, FACTORY-STOP: needs-info (after your numbered questions) or FACTORY-STOP: stuck.";
+  "The session was interrupted: your last turn was cut off, probably because Paradev was unreachable or restarting, so the factory is not treating it as your decision. Continue from where you were. End your reply with a result line as before: FACTORY-DONE: <PR URL>, FACTORY-STOP: needs-info (after your numbered questions) or FACTORY-STOP: stuck.";
 
 /** The paragraph a relaunch adds to the first message of the next attempt. */
 /** The interruption paragraph of a relaunch from `branch`, in the factory's fixed words. */
@@ -1429,7 +1429,7 @@ const relaunchedRig = () =>
 const RESUMED_FROM_ABC: ResumeFrom = { run: run10, branch: "t3code/abc", after: "interrupted" };
 
 /** The first message of a launch that continues no earlier run. */
-const plainLaunchMessage = () => launchMessage(REPO, 10, "rawphp", "/gh/rawphp");
+const plainLaunchMessage = () => launchMessage(REPO, 10, "rawphp");
 
 const assertPlainStart = (rig: Rig) => {
   const request = rig.launches.at(-1)!;
@@ -1472,7 +1472,7 @@ describe("interrupted: a thread that is gone", () => {
       assert.ok(request.message.includes(INTERRUPTED_WORDS), request.message);
       assert.strictEqual(
         request.message,
-        launchMessage(REPO, 10, "rawphp", "/gh/rawphp", RESUMED_FROM_ABC),
+        launchMessage(REPO, 10, "rawphp", RESUMED_FROM_ABC),
       );
       const launched = readRun(rig.dataDir, run10b).entries.find(
         (entry) => entry.event === "session_launched",
@@ -1487,7 +1487,7 @@ describe("interrupted: a thread that is gone", () => {
   );
 
   it("has the interrupted paragraph in the factory's fixed words", () => {
-    const message = launchMessage(REPO, 10, "rawphp", "/gh/rawphp", RESUMED_FROM_ABC);
+    const message = launchMessage(REPO, 10, "rawphp", RESUMED_FROM_ABC);
     assert.ok(
       message.includes(`\n\n${INTERRUPTED_WORDS}\n\nYou act on GitHub as rawphp.`),
       message,
@@ -1597,7 +1597,7 @@ describe("interrupted: a thread that is gone", () => {
       assert.strictEqual(request.baseRef, "feature/x");
       assert.strictEqual(
         request.message,
-        launchMessage(REPO, 10, "rawphp", "/gh/rawphp", undefined, "feature/x"),
+        launchMessage(REPO, 10, "rawphp", undefined, "feature/x"),
       );
       const launched = readRun(rig.dataDir, run10b).entries.find(
         (entry) => entry.event === "session_launched",
@@ -2209,7 +2209,7 @@ describe("the time limit", () => {
         assert.strictEqual(request.baseRef, "t3code/abc");
         assert.strictEqual(
           request.message,
-          launchMessage(REPO, 10, "rawphp", "/gh/rawphp", {
+          launchMessage(REPO, 10, "rawphp", {
             run: run10,
             branch: "t3code/abc",
             after: "time-limit",

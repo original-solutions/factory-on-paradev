@@ -1563,9 +1563,24 @@ describe("findProject", () => {
       ]);
       const project = yield* t.run((s) => s.findProject(`${root}/`));
       assert.strictEqual(project?.id, SPIKE_PROJECT);
+      assert.strictEqual(project?.repo, "original-solutions/factory-paradev-spike");
       // No paradev.model or paradev.effort: the agent's defaults, so no --model and no --effort.
       assert.deepStrictEqual(project?.model, { instanceId: "claude", model: "" });
       assert.isNull(yield* t.run((s) => s.findProject(root)));
+    }),
+  );
+
+  it.live("findProjects answers each root, in order, from one projects list", () =>
+    Effect.gen(function* () {
+      const root = tempDir("project");
+      const t = rig([
+        { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(root) },
+      ]);
+      const found = yield* t.run((s) => s.findProjects([tempDir("none"), root, root]));
+      assert.deepStrictEqual(
+        found.map((project) => project?.id ?? null),
+        [null, SPIKE_PROJECT, SPIKE_PROJECT],
+      );
     }),
   );
 

@@ -1,0 +1,66 @@
+# The runner's machine config for this Mac: how the factory runs on local Paradev.
+# Copy this file to ~/.config/factory-runner/config.yml (or config.yml in $FACTORY_RUNNER_HOME)
+# and edit it; `factory-runner install`, which arrives with #25, will copy it there when there is
+# none. The runner reads it at start. As it stands it watches no repo, so it claims nothing. No
+# path here is expanded, so there is no `~`: write each one out in full.
+
+# The gh login directory the runner's own GitHub calls act as (claims, labels, comments, the
+# gate). Log in to it once with GH_CONFIG_DIR=<this directory> gh auth login. The agent sessions
+# do not use it: Paradev starts them with this Mac's active gh login. Replace YOU with your user.
+gh_config_dir: /Users/YOU/.config/factory-runner/gh
+
+# Seconds between passes over GitHub. At least 10.
+poll_seconds: 60
+
+# Runs that may hold an issue at once, and gates that may run at once. A run holds a slot from
+# its claim until its session reports its pull request or the run ends; the gate and the wait
+# for required checks take no run slot. While t3fac still runs, keep both factories'
+# max_concurrent_runs summed at or below t3fac's 3: they share one Claude account.
+max_concurrent_runs: 1
+max_concurrent_gates: 1
+
+# Seconds between reads of a pr-open run's feedback (default 600); 0 reads on every pass.
+feedback_seconds: 600
+
+# The free GiB the disk holding the worktrees and this data must keep. Below it a pass claims no
+# issue and starts no gate. 0 turns the check off. Defaults to 10.
+min_free_gib: 10
+
+# The 1-minute load per core above which a pass claims no issue and a second gate waits.
+# 0 turns the check off. Defaults to 1.
+max_load_per_core: 1
+
+# A macOS notification when something needs a person.
+notify: true
+
+# Must stay empty: Paradev cannot move a running session to another model through the CLI.
+# model_fallbacks: {}
+
+# A repo whose clone has no `factory` block is built on this block when it is set, with its
+# provision and gate inferred from the package.json or composer.json on its default branch.
+# default_project:
+#   instructors: [your-login]
+#   limits: { gate_retries: 2 }
+
+# The repos this runner builds. `path` is a clone used only by the runner, added once to
+# Paradev on this Mac:  superset projects create --local --name <name> --import <path>
+# Every repo listed is watched and claimed on from the first pass. t3fac ignored a `repos:` list,
+# so check one copied from a t3fac config: take each repo out of t3fac before it is listed here,
+# one factory per repo. An entry looks like:
+#   - repo: original-solutions/factory-paradev-spike
+#     path: /Users/YOU/factory-runner/original-solutions/factory-paradev-spike
+repos: []
+
+paradev:
+  # The superset CLI bundled with the Paradev app, which must stay open.
+  cli: /Applications/Superset.app/Contents/Resources/resources/bin/superset
+  # A preset id from `superset agents list --local`.
+  agent: claude
+  # Optional; passed as --model. Omitted: the agent's default.
+  model: opus
+  # Optional; passed as --effort.
+  effort: high
+  belt:
+    enabled: true
+    # just_me | org. org only when every member of the Paradev org can read every watched repo.
+    visibility: just_me

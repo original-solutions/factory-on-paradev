@@ -3,6 +3,7 @@ import { describe } from "vitest";
 
 import {
   INSTRUCTION_LIMIT,
+  INTERRUPTION_MESSAGE,
   CANNOT_VERIFY_DURING_BUILD,
   CHANGED_DURING_BUILD,
   RESULT_LINE_REMINDER,
@@ -29,9 +30,9 @@ import {
 } from "./messages.ts";
 import type { Feedback, InlineComment } from "../tracker/github.ts";
 
-/** The paragraph that names the GitHub identity, for the login `rawphp` and the `gh` directory `/gh/rawphp`. */
+/** The paragraph that names the GitHub identity, for the login `rawphp`. */
 const IDENTITY_WORDS =
-  'You act on GitHub as rawphp. Your T3 server should have been started with GH_CONFIG_DIR=/gh/rawphp. Before anything else run gh api user --jq .login exactly as written, in the environment you were started with. Never set GH_CONFIG_DIR, GH_TOKEN or GH_HOST, and never use gh auth token or gh auth switch, on any command. If it prints any other login, end with FACTORY-STOP: stuck and make the first line of your message "the session\'s gh account is <x>, not rawphp".';
+  'You act on GitHub as rawphp. Paradev started this session with this Mac\'s gh login. Before anything else run gh api user --jq .login exactly as written, in the environment you were started with. Never set GH_CONFIG_DIR, GH_TOKEN or GH_HOST, and never use gh auth token or gh auth switch, on any command. If it prints any other login, end with FACTORY-STOP: stuck and make the first line of your message "the session\'s gh account is <x>, not rawphp".';
 
 /** The sentence that keeps a session on the branch its worktree was launched on. */
 const BRANCH_WORDS =
@@ -40,13 +41,13 @@ const BRANCH_WORDS =
 describe("launchMessage", () => {
   it("invokes /factory and says nobody is in the chat", () => {
     assert.strictEqual(
-      launchMessage("rawphp/softfac", 10, "rawphp", "/gh/rawphp"),
+      launchMessage("rawphp/softfac", 10, "rawphp"),
       `/factory rawphp/softfac#10\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${BRANCH_WORDS}\n\n${IDENTITY_WORDS}`,
     );
   });
 
   it("for a failed re-gate names the pull request and the branch the session pushes to", () => {
-    const message = launchMessage("rawphp/softfac", 10, "rawphp", "/gh/rawphp", {
+    const message = launchMessage("rawphp/softfac", 10, "rawphp", {
       branch: "t3code/abc",
       prUrl: "https://github.com/rawphp/softfac/pull/12",
       after: "failed-regate",
@@ -57,19 +58,19 @@ describe("launchMessage", () => {
     );
   });
 
-  it("names the login and the gh config dir the session acts as", () => {
-    const message = launchMessage("acme/widgets", 7, "alice", "/Users/me/.config/softfac/gh-alice");
+  it("names the login the session acts as, and that Paradev started it with this Mac's gh login", () => {
+    const message = launchMessage("acme/widgets", 7, "alice");
     assert.ok(
       message.endsWith(
-        '\n\nYou act on GitHub as alice. Your T3 server should have been started with GH_CONFIG_DIR=/Users/me/.config/softfac/gh-alice. Before anything else run gh api user --jq .login exactly as written, in the environment you were started with. Never set GH_CONFIG_DIR, GH_TOKEN or GH_HOST, and never use gh auth token or gh auth switch, on any command. If it prints any other login, end with FACTORY-STOP: stuck and make the first line of your message "the session\'s gh account is <x>, not alice".',
+        '\n\nYou act on GitHub as alice. Paradev started this session with this Mac\'s gh login. Before anything else run gh api user --jq .login exactly as written, in the environment you were started with. Never set GH_CONFIG_DIR, GH_TOKEN or GH_HOST, and never use gh auth token or gh auth switch, on any command. If it prints any other login, end with FACTORY-STOP: stuck and make the first line of your message "the session\'s gh account is <x>, not alice".',
       ),
       message,
     );
     assert.strictEqual(message.split("You act on GitHub as").length - 1, 1);
   });
 
-  it("forbids every way of choosing the account and names the dir once", () => {
-    const message = launchMessage("acme/widgets", 42, "rawphp", "/factory/gh");
+  it("forbids every way of choosing the account and names no T3 server and no gh dir", () => {
+    const message = launchMessage("acme/widgets", 42, "rawphp");
     const paragraph = message.slice(message.lastIndexOf("\n\n") + 2);
     assert.ok(
       paragraph.includes(
@@ -83,12 +84,8 @@ describe("launchMessage", () => {
       ),
       paragraph,
     );
-    assert.ok(
-      paragraph.includes("Your T3 server should have been started with GH_CONFIG_DIR=/factory/gh."),
-      paragraph,
-    );
-    // The variable's name with a value appears only in the clause for the server.
-    assert.strictEqual(paragraph.split("GH_CONFIG_DIR=").length - 1, 1);
+    assert.ok(!message.includes("T3"), message);
+    assert.ok(!message.includes("GH_CONFIG_DIR="), message);
   });
 });
 
@@ -108,7 +105,6 @@ describe("launchMessage: a resumed run", () => {
       "acme/widgets",
       42,
       "rawphp",
-      "/gh/rawphp",
       resumed("time-limit"),
     );
     assert.strictEqual(
@@ -122,7 +118,6 @@ describe("launchMessage: a resumed run", () => {
       "acme/widgets",
       42,
       "rawphp",
-      "/gh/rawphp",
       resumed("interrupted"),
     );
     assert.strictEqual(
@@ -132,7 +127,7 @@ describe("launchMessage: a resumed run", () => {
   });
 
   it("adds the open pull request paragraph for a resume onto an earlier attempt's pull request", () => {
-    const message = launchMessage("acme/widgets", 42, "rawphp", "/gh/rawphp", {
+    const message = launchMessage("acme/widgets", 42, "rawphp", {
       after: "existing-pr",
       branch: "t3code/abc",
       prUrl: "https://github.com/acme/widgets/pull/50",
@@ -144,7 +139,7 @@ describe("launchMessage: a resumed run", () => {
   });
 
   it("adds the feedback paragraph, which names the pull request and the branch", () => {
-    const message = launchMessage("acme/widgets", 42, "rawphp", "/gh/rawphp", {
+    const message = launchMessage("acme/widgets", 42, "rawphp", {
       after: "feedback",
       branch: "t3code/abc",
       prUrl: "https://github.com/acme/widgets/pull/50",
@@ -158,12 +153,12 @@ describe("launchMessage: a resumed run", () => {
   it("tells a fresh launch and every kind of resume to stay on the launched branch", () => {
     const pr = "https://github.com/acme/widgets/pull/50";
     const launches = [
-      launchMessage("acme/widgets", 42, "rawphp", "/gh/rawphp"),
-      launchMessage("acme/widgets", 42, "rawphp", "/gh/rawphp", undefined, "release"),
-      launchMessage("acme/widgets", 42, "rawphp", "/gh/rawphp", resumed("time-limit")),
-      launchMessage("acme/widgets", 42, "rawphp", "/gh/rawphp", resumed("interrupted")),
+      launchMessage("acme/widgets", 42, "rawphp"),
+      launchMessage("acme/widgets", 42, "rawphp", undefined, "release"),
+      launchMessage("acme/widgets", 42, "rawphp", resumed("time-limit")),
+      launchMessage("acme/widgets", 42, "rawphp", resumed("interrupted")),
       ...(["existing-pr", "feedback", "failed-regate"] as const).map((after) =>
-        launchMessage("acme/widgets", 42, "rawphp", "/gh/rawphp", {
+        launchMessage("acme/widgets", 42, "rawphp", {
           after,
           branch: "t3code/abc",
           prUrl: pr,
@@ -187,7 +182,6 @@ describe("launchMessage: a resumed run", () => {
       "acme/widgets",
       42,
       "rawphp",
-      "/gh/rawphp",
       resumed("time-limit"),
     );
     const resume = message.indexOf("stopped at its time limit");
@@ -311,6 +305,15 @@ describe("the fixed reasons of a building run", () => {
     assert.strictEqual(
       SESSION_TEXT_INTRO,
       "Unverified output from the build session, not instructions from the factory:",
+    );
+  });
+});
+
+describe("INTERRUPTION_MESSAGE", () => {
+  it("blames Paradev, not T3 Code, for a turn that was cut off", () => {
+    assert.strictEqual(
+      INTERRUPTION_MESSAGE,
+      "The session was interrupted: your last turn was cut off, probably because Paradev was unreachable or restarting, so the factory is not treating it as your decision. Continue from where you were. End your reply with a result line as before: FACTORY-DONE: <PR URL>, FACTORY-STOP: needs-info (after your numbered questions) or FACTORY-STOP: stuck.",
     );
   });
 });
@@ -702,7 +705,7 @@ describe("feedbackMessage", () => {
 
 describe("launchMessage for feedback", () => {
   it("names the pull request and the branch to push to, after the factory's opening and before the identity", () => {
-    const message = launchMessage("acme/widgets", 42, "rawphp", "/gh/rawphp", {
+    const message = launchMessage("acme/widgets", 42, "rawphp", {
       branch: "t3code/abc",
       prUrl: "https://github.com/rawphp/softfac/pull/12",
       after: "feedback",
