@@ -453,7 +453,9 @@ describe("launch", () => {
       plant: (clone, _scratch, marks) => {
         git(clone, "config", "filter.evil.smudge", `sh -c 'touch ${marks}/smudge; cat'`);
         git(clone, "config", "filter.evil.clean", `sh -c 'touch ${marks}/clean; cat'`);
-        const filler = Array.from({ length: 1500 }, (_, i) => `[filter "pad${i}"]\n\tsmudge =\n`).join("");
+        // Long names, not many: each name is four pins in every git call's environment, and
+        // thousands of pins make each call take seconds. 120 names of ~220 bytes list ~26 KiB.
+        const filler = Array.from({ length: 120 }, (_, i) => `[filter "pad${i}-${"x".repeat(200)}"]\n\tsmudge =\n`).join("");
         NodeFS.appendFileSync(NodePath.join(clone, ".git", "config"), filler);
         NodeFS.writeFileSync(NodePath.join(clone, ".git", "info", "attributes"), "* filter=evil\n");
       },
