@@ -27,7 +27,6 @@ import {
   factoryOptIn,
   formatConfigError,
   loadMachineConfig,
-  paradevModel,
   parseProjectConfig,
   PROJECT_CONFIG_PATH,
   type ConfigError,
@@ -56,7 +55,7 @@ import { makeCause, type CauseStep, type ErrorKind, type MachineEvent } from "./
 import { Ledger } from "./ledger/ledger.ts";
 import { listUnfinishedRuns, runsByThread } from "./ledger/listRuns.ts";
 import { readRun } from "./ledger/read.ts";
-import { runIdToString, type RunId } from "./ledger/runId.ts";
+import { asciiLower, runIdToString, type RunId } from "./ledger/runId.ts";
 import { MachineLog, t3TroubleSince } from "./ledger/machineLog.ts";
 import { runLoop, type Loop } from "./loop.ts";
 import {
@@ -857,7 +856,10 @@ const downOf = (error: CliError): ParadevDown => ({
 });
 
 /** The item a repo whose clone is no Paradev project on this Mac keeps open, by repo. */
-const noProjectItemId = (repo: string) => `no-paradev-project:${repo.toLowerCase()}`;
+const noProjectItemId = (repo: string) => `no-paradev-project:${asciiLower(repo)}`;
+
+/** The most of a manifest the default-branch reads take; a longer one is a read that did not finish. */
+const MANIFEST_BYTES = 4 * 1024 * 1024;
 
 /**
  * `git -C root <args>` in a runner clone, for the reads of its default branch: its output, null
@@ -866,11 +868,17 @@ const noProjectItemId = (repo: string) => `no-paradev-project:${repo.toLowerCase
  */
 const gitOutput = (process: FactoryProcess["Service"], root: string, args: ReadonlyArray<string>) =>
   process
-    .run({ command: "git", args: ["-C", root, ...args], separateStderr: true, timeoutMs: 10_000 })
+    .run({
+      command: "git",
+      args: ["-C", root, ...args],
+      separateStderr: true,
+      timeoutMs: 10_000,
+      tailBytes: MANIFEST_BYTES,
+    })
     .pipe(
       Effect.option,
       Effect.map((shown) =>
-        Option.isNone(shown) || shown.value.timedOut
+        Option.isNone(shown) || shown.value.timedOut || shown.value.tailTruncated
           ? ("unresolved" as const)
           : shown.value.exitCode === 0
             ? shown.value.tail
@@ -881,7 +889,9 @@ const gitOutput = (process: FactoryProcess["Service"], root: string, args: Reado
 /**
  * The branch origin's HEAD names and the manifests committed at its root, for a repo the
  * machine's `default_project` may build: what `resolveDefault` infers the gate from. A clone with
- * no `origin/HEAD` has none to read, and its reading says so.
+ * no `origin/HEAD` has none to read, and its reading says so. The runner never pulls the clone;
+ * each launch fetches its base into the clone's `refs/remotes/origin/<base>`, so these read the
+ * default branch as of the last launch on it.
  */
 const defaultedFiles = Effect.fn("Factory.defaultedFiles")(function* (
   process: FactoryProcess["Service"],
@@ -975,12 +985,11 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       }),
       paradev,
     );
-    const model = paradevModel(machine.paradev);
     const sessions = yield* makeParadevSessions({
       ...options.sessions,
       agent: machine.paradev.agent,
       ...(machine.paradev.model === undefined ? {} : { model: machine.paradev.model }),
-      ...(model.options === undefined ? {} : { effort: machine.paradev.effort! }),
+      ...(machine.paradev.effort === undefined ? {} : { effort: machine.paradev.effort }),
       ghConfigDir: machine.ghConfigDir,
     }).pipe(Effect.provide(paradev));
     // The CLI check runs at start and on every reload, and again each pass until it passes.
@@ -998,8 +1007,9 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     });
     // The repos `repos:` lists, each with its clone a Paradev project on this Mac. A repo whose
     // clone is none is skipped with one item that says how to add it; a lookup that fails keeps
-    // the repo, since the Paradev hold already covers a Paradev that does not answer.
-    let listedBefore: ReadonlyArray<string> = [];
+    // the repo and its item as they are, since the Paradev hold already covers a Paradev that
+    // does not answer. A repo that has left `repos:` has departed while it still has an open
+    // item: read from the items, so it holds across restarts.
     const listWatched = Effect.gen(function* () {
       const repos: Array<WatchedProject> = [];
       const unresolved: Array<string> = [];
@@ -1020,7 +1030,9 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
           });
           continue;
         }
-        yield* attention.clear((item) => item.id === noProjectItemId(entry.repo));
+        if (Result.isSuccess(found)) {
+          yield* attention.clear((item) => item.id === noProjectItemId(entry.repo));
+        }
         if (machine.defaultProject === undefined) {
           repos.push({ ...entry, title: entry.repo });
           continue;
@@ -1029,9 +1041,14 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         if (defaulted === "unresolved") unresolved.push(entry.path);
         else repos.push({ ...entry, title: entry.repo, defaulted });
       }
-      const now = new Set(machine.repos.map((entry) => entry.repo.toLowerCase()));
-      const departed = listedBefore.filter((repo) => !now.has(repo));
-      listedBefore = [...now];
+      const listed = new Set(machine.repos.map((entry) => asciiLower(entry.repo)));
+      const departed = [
+        ...new Set(
+          (yield* attention.list())
+            .flatMap((item) => (item.repo === null ? [] : [asciiLower(item.repo)]))
+            .filter((repo) => !listed.has(repo)),
+        ),
+      ];
       state.watched = repos.map((entry) => entry.repo);
       if (state.status.state === "running") {
         state.status = {

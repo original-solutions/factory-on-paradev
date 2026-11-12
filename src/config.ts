@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import { parse } from "yaml";
 
 import type { Defaulted, DefaultProject } from "./defaultProject.ts";
+import type { Model } from "./sessions.ts";
 import { asciiLower } from "./ledger/runId.ts";
 
 export const ConfigErrorSchema = Schema.Struct({
@@ -219,12 +220,14 @@ export interface ParadevConfig {
  * default), and `paradev.effort` as the one option when it is set. The options keep the ledger's
  * array shape, so `session_launched.model_options` reads as it did.
  */
-export const paradevModel = (paradev: ParadevConfig) => ({
+export const paradevModel = (
+  paradev: Pick<ParadevConfig, "agent" | "model" | "effort">,
+): Model => ({
   instanceId: paradev.agent,
   model: paradev.model ?? "",
   ...(paradev.effort === undefined
     ? {}
-    : { options: [{ id: "effort", value: paradev.effort }] as const }),
+    : { options: [{ id: "effort", value: paradev.effort }] }),
 });
 
 type Mapping = Record<string, unknown>;

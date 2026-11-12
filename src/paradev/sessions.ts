@@ -27,6 +27,7 @@ import {
   normalizeRemoteBase,
   retryFetch,
 } from "../gitHardening.ts";
+import { paradevModel } from "../config.ts";
 import { FactoryPaths } from "../paths.ts";
 import { FactoryProcess, type RunResult, type RunSpawnError } from "../process.ts";
 import {
@@ -1012,11 +1013,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const findProject = Effect.fn("ParadevSessions.findProject")(function* (workspaceRoot: string) {
     const project = yield* local(Effect.flatMap(listProjects, (projects) => projectAt(projects, workspaceRoot)));
     if (project === null) return null;
-    const options = config.effort === undefined ? undefined : [{ id: "effort", value: config.effort }];
-    return {
-      id: project.id,
-      model: { instanceId: config.agent, model: config.model ?? "", ...(options === undefined ? {} : { options }) },
-    };
+    return { id: project.id, model: paradevModel(config) };
   }, (effect) => effect.pipe(Effect.mapError(failWith("find-project"))));
 
   return {
