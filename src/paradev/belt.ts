@@ -32,6 +32,13 @@ export const BELT_MAX_BYTES = 60 * 1024;
 export const HEARTBEAT_MS = 10 * 60_000;
 /** One storage write's timeout. No retry: the next pass writes again. */
 const WRITE_TIMEOUT_MS = 20_000;
+/** A publish uploads the page; P0's took 6 s. */
+const PUBLISH_TIMEOUT_MS = 120_000;
+/**
+ * After a first publish that timed out, how long until a new page is tried: Paradev may have
+ * made one, and each try under a new id would leave another page behind.
+ */
+export const PUBLISH_RETRY_MS = 60 * 60_000;
 /** How far back the belt lists finished runs. */
 const FINISHED_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
@@ -139,19 +146,42 @@ export const beltPayload = (input: BeltInput): BeltV1 => {
     attention: input.attention.map((item) => ({
       id: item.id,
       kind: item.kind,
-      text: item.message,
+      text: attentionText(item),
       since: new Date(item.firstSeenMs).toISOString(),
     })),
   });
 };
 
-/** The last belt written, without its `updatedAt`, and when. Kept across reloads, not restarts. */
+/**
+ * What the belt says of an item. Failed passes and a config that did not load quote log lines
+ * and error text, so they get a fixed line; any other item drops a trailing `last error:`, which
+ * quotes a command's output.
+ */
+const attentionText = (item: AttentionItem): string => {
+  switch (item.kind) {
+    case "pass-errors":
+      return "The last passes failed; the runner log says why.";
+    case "config":
+      return "The machine config did not load; the runner log says why.";
+    default: {
+      const at = item.message.indexOf("; last error: ");
+      return cut(at === -1 ? item.message : item.message.slice(0, at), REASON_MAX)!;
+    }
+  }
+};
+
+/**
+ * What the writer remembers between passes, across reloads but not restarts: the last belt
+ * written (its page, and the belt without `updatedAt`) and when, and when a first publish last
+ * timed out.
+ */
 export interface BeltMemo {
   written: string | null;
   atMs: number;
+  publishTimedOutAtMs: number | null;
 }
 
-export const newBeltMemo = (): BeltMemo => ({ written: null, atMs: 0 });
+export const newBeltMemo = (): BeltMemo => ({ written: null, atMs: 0, publishTimedOutAtMs: null });
 
 export interface BeltTarget {
   readonly cli: SupersetCli["Service"];
@@ -163,16 +193,23 @@ export interface BeltTarget {
   readonly memo: BeltMemo;
 }
 
-const SavedPage = Schema.Struct({ pageId: Schema.String, htmlSha256: Schema.String });
+/** `<data>/belt.json`. A file from before `visibility` was saved reads as published at none. */
+const SavedPage = Schema.Struct({
+  pageId: Schema.String,
+  htmlSha256: Schema.String,
+  visibility: Schema.optional(Schema.String),
+});
 const decodeSaved = Schema.decodeUnknownOption(Schema.fromJsonString(SavedPage));
 const Published = Schema.Struct({ id: Schema.String });
 
 /**
- * The page to write to: the one `<data>/belt.json` names when its HTML is this runner's, else
- * `belt.html` published again (to the saved page) or for the first time. A publish that fails is a
- * warning; the saved page, if any, is still written to, and the next pass publishes again.
+ * The page to write to: the one `<data>/belt.json` names when it was published from this
+ * runner's HTML at the configured visibility, else `belt.html` published again (to the saved
+ * page) or for the first time. A publish that fails is a warning, and the next pass publishes
+ * again, or, after a first publish that timed out, the first pass {@link PUBLISH_RETRY_MS} later.
+ * Meanwhile the saved page is still written to when it has the configured visibility.
  */
-const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget) {
+const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget, nowMs: number) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const html = yield* fs.readFileString(BELT_HTML);
@@ -182,40 +219,44 @@ const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget) {
     Effect.map((text) => Option.getOrNull(decodeSaved(text))),
     Effect.orElseSucceed(() => null),
   );
-  if (saved?.htmlSha256 === htmlSha256) return saved.pageId;
+  const { visibility } = target;
+  if (saved?.htmlSha256 === htmlSha256 && saved.visibility === visibility) return saved.pageId;
+  const timedOutAt = target.memo.publishTimedOutAtMs;
+  if (saved === null && timedOutAt !== null && nowMs - timedOutAt < PUBLISH_RETRY_MS) return null;
   const file = path.join(target.dataDir, "belt-page", "index.html");
   yield* writeFileAtomically(file, html);
   const argv =
     saved === null
-      ? ["pages", "publish", file, "--title", `Factory belt (${target.host})`, "--visibility", target.visibility, "--no-watch"]
-      : ["pages", "publish", file, "--page", saved.pageId, "--label", `runner ${target.version}`, "--no-watch"];
+      ? ["pages", "publish", file, "--title", `Factory belt (${target.host})`, "--visibility", visibility, "--no-watch"]
+      : ["pages", "publish", file, "--page", saved.pageId, "--label", `runner ${target.version}`, "--visibility", visibility, "--no-watch"];
   const published = yield* Effect.result(
-    target.cli.run(argv).pipe(Effect.flatMap((answer) => decodeAnswer(Published, answer, argv))),
+    target.cli
+      .run(argv, { timeoutMs: PUBLISH_TIMEOUT_MS })
+      .pipe(Effect.flatMap((answer) => decodeAnswer(Published, answer, argv))),
   );
   if (Result.isFailure(published)) {
-    yield* Effect.logWarning(`belt page not published: ${published.failure.message}`);
-    return saved?.pageId ?? null;
+    const { kind, message } = published.failure;
+    if (saved === null && kind === "TIMEOUT") target.memo.publishTimedOutAtMs = nowMs;
+    yield* Effect.logWarning(`belt page not published: ${message}`);
+    // The saved page keeps its HTML a while, never an audience the config no longer allows.
+    return saved?.visibility === visibility ? saved.pageId : null;
   }
+  target.memo.publishTimedOutAtMs = null;
   const pageId = published.success.id;
-  yield* writeFileAtomically(savedFile, `${JSON.stringify({ pageId, htmlSha256 })}\n`);
+  yield* writeFileAtomically(savedFile, `${JSON.stringify({ pageId, htmlSha256, visibility })}\n`);
   return pageId;
 });
 
 /**
- * Puts `payload` in the page's shared storage, publishing the page first when it has to. An
- * unchanged belt, `updatedAt` and `runner.lastPassAt` aside, is not written again until
- * {@link HEARTBEAT_MS} after the last write. Never fails: what goes wrong is a warning in the log.
+ * Puts `payload` in the page's shared storage, publishing the page first when it has to. The
+ * belt the page last got, `updatedAt` aside, is not written again until {@link HEARTBEAT_MS}
+ * after that write. Never fails: what goes wrong is a warning in the log.
  */
 export const writeBelt = (target: BeltTarget, payload: BeltV1, nowMs: number) =>
   Effect.gen(function* () {
-    const pageId = yield* pageOf(target);
+    const pageId = yield* pageOf(target, nowMs);
     if (pageId === null) return;
-    // Each pass moves both times, so a belt that only they changed is unchanged.
-    const written = JSON.stringify({
-      ...payload,
-      updatedAt: null,
-      runner: { ...payload.runner, lastPassAt: null },
-    });
+    const written = `${pageId} ${JSON.stringify({ ...payload, updatedAt: null })}`;
     if (written === target.memo.written && nowMs - target.memo.atMs < HEARTBEAT_MS) return;
     const argv = ["pages", "storage", pageId, "--key", "belt", "--scope", "shared", "--set", JSON.stringify(payload)];
     const result = yield* Effect.result(target.cli.run(argv, { timeoutMs: WRITE_TIMEOUT_MS }));
