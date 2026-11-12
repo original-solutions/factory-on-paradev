@@ -211,12 +211,14 @@ it.live("a call past its timeout kills the CLI and its grandchild, and fails TIM
   withTempDir((dir) =>
     Effect.gen(function* () {
       const pids = NodePath.join(dir, "pids");
-      // The grandchild sleeps an unusual time so a stray is easy to find by its marker.
+      // The grandchild sleeps an unusual time so a stray is easy to find by its marker. The pids
+      // land by rename, so a read never sees a half-written file, and the timeout leaves a
+      // loaded machine time to start the shell and write them before the kill.
       const binary = writeBinary(
         dir,
-        `sleep 3011 &\necho "$$ $!" > "${pids}"\nwait\n`,
+        `sleep 3011 &\necho "$$ $!" > "${pids}.tmp"\nmv "${pids}.tmp" "${pids}"\nwait\n`,
       );
-      const error = yield* Effect.flip(call(Process.layer, ["snapshot"], { cli: binary }, 500));
+      const error = yield* Effect.flip(call(Process.layer, ["snapshot"], { cli: binary }, 5000));
       assert.strictEqual(error.kind, "TIMEOUT");
       const [cliPid, grandchildPid] = NodeFS.readFileSync(pids, "utf8")
         .trim()
