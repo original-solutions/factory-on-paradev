@@ -191,8 +191,10 @@ describe("the belt write and its size cap", () => {
       Effect.gen(function* () {
         const belt = recordedBelt();
         yield* write(at(belt, NOW), NOW);
-        // Only `updatedAt` differs: no write.
+        // Only `updatedAt` and the pass time differ: no write.
         yield* write(at(belt, NOW + 60_000), NOW + 60_000);
+        const later = { ...belt, runner: { ...belt.runner, lastPassAt: new Date(NOW + 120_000).toISOString() } };
+        yield* write(at(later, NOW + 120_000), NOW + 120_000);
         yield* write(at(belt, NOW + HEARTBEAT_MS - 1), NOW + HEARTBEAT_MS - 1);
         assert.strictEqual(fake.calls.filter(isSet).length, 1);
         // The heartbeat: the same payload, 10 minutes after the last write.

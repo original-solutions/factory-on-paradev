@@ -54,7 +54,7 @@ import type { State } from "./domain/lifecycle.ts";
 import { ledgerCall as ledger } from "./ledger/errors.ts";
 import { makeCause, type CauseStep, type ErrorKind, type MachineEvent } from "./ledger/events.ts";
 import { Ledger } from "./ledger/ledger.ts";
-import { listUnfinishedRuns, runsByThread } from "./ledger/listRuns.ts";
+import { listUnfinishedRuns, runsByThread, type RunReadCache } from "./ledger/listRuns.ts";
 import { readRun } from "./ledger/read.ts";
 import { asciiLower, runIdToString, type RunId } from "./ledger/runId.ts";
 import { MachineLog, t3TroubleSince } from "./ledger/machineLog.ts";
@@ -116,6 +116,7 @@ import { takeStopRequest } from "./runner/stop.ts";
 import * as Paths from "./paths.ts";
 import type { FactorySessions, Model } from "./sessions.ts";
 import { type CliError, layer as cliLayer, SupersetCli } from "./paradev/cli.ts";
+import { afterPass as writeBeltAfterPass, newBeltMemo } from "./paradev/belt.ts";
 import { addProjectCommand } from "./paradev/projects.ts";
 import { check as checkCli, describeFailure } from "./paradev/schema.ts";
 import {
@@ -847,6 +848,8 @@ const NO_PASS: Report = { runs: 0, claimed: 0, errors: 0, attention: 0 };
 interface Current {
   readonly machine: MachineConfig;
   readonly world: PassWorld;
+  /** Hands the pass's status to the belt writer; does nothing with the belt off. Never fails. */
+  readonly afterPass: Effect.Effect<void, never, FileSystem.FileSystem | Path.Path>;
 }
 
 /** What the Paradev hold reads from a failed CLI call. */
@@ -960,6 +963,9 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     started: false,
   };
   const shared = newShared();
+  // The last belt written, and the run reads it was made from: kept across reloads.
+  const beltMemo = newBeltMemo();
+  const beltRuns: RunReadCache = new Map();
 
   const onePass = Effect.gen(function* () {
     const current = state.current;
@@ -972,10 +978,15 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     const context = yield* Effect.context<never>();
     const log = Effect.runSyncWith(context);
     let lastError: string | null = null;
-    return yield* runPass(current.world, current.machine, (line) => {
+    const report = yield* runPass(current.world, current.machine, (line) => {
       if (line.startsWith("error: ")) lastError = line;
       log(Effect.logInfo(line));
     }).pipe(Effect.onExit((exit) => attention.passEnded(outcomeOf(exit, () => lastError))));
+    yield* current.afterPass.pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
+    return report;
   });
 
   const start = Effect.fn("Factory.start")(function* (machine: MachineConfig) {
@@ -1002,10 +1013,14 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     }).pipe(Effect.provide(paradev));
     // The CLI check runs at start and on every reload, and again each pass until it passes.
     let cliChecked = false;
-    const paradevDown = Effect.fn("Factory.paradevDown")(function* () {
+    // What the belt says of Paradev: the version the check read, and the last pass's answer.
+    let cliVersion = "unknown";
+    let paradevOnline = false;
+    const readParadevDown = Effect.fn("Factory.paradevDown")(function* () {
       if (!cliChecked) {
         const checked = yield* Effect.result(checkCli.pipe(Effect.provideService(SupersetCli, cli)));
         if (Result.isFailure(checked)) return downOf(checked.failure);
+        cliVersion = checked.success.version;
         const failure = describeFailure(checked.success);
         if (failure !== null) return { reason: "cli-check", message: failure } satisfies ParadevDown;
         cliChecked = true;
@@ -1013,6 +1028,38 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       const status = yield* Effect.result(cli.run(["status"]));
       return Result.isFailure(status) ? downOf(status.failure) : null;
     });
+    const paradevDown = () =>
+      readParadevDown().pipe(
+        Effect.tap((down) =>
+          Effect.sync(() => {
+            paradevOnline = down === null;
+          }),
+        ),
+      );
+    const beltTarget = {
+      cli,
+      dataDir: factoryDir,
+      host: hostName(),
+      version,
+      visibility: machine.paradev.belt.visibility,
+      memo: beltMemo,
+    };
+    const afterPass = machine.paradev.belt.enabled
+      ? Effect.gen(function* () {
+          const nowMs = Date.now();
+          yield* writeBeltAfterPass(
+            beltTarget,
+            {
+              nowMs,
+              paradevCli: cliVersion,
+              claimsPaused: loadHandPause(factoryDir) !== null,
+              paradevOnline,
+              attention: yield* attention.list(),
+            },
+            beltRuns,
+          );
+        })
+      : Effect.void;
     // The loop is made after the world, so a gate that ends wakes whatever loop there is then.
     const base = liveWorld(
       machine,
@@ -1139,7 +1186,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         ),
     };
     options.onWorld?.(world);
-    state.current = { machine, world };
+    state.current = { machine, world, afterPass };
     state.status = {
       state: "running",
       settings: {
