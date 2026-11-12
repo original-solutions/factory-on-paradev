@@ -6,6 +6,7 @@
  */
 import * as NodeFS from "node:fs";
 
+import type { CommandResult } from "./install.ts";
 import { readRuns } from "./ledger/listRuns.ts";
 import { dataField, dataText, type Entry } from "./ledger/read.ts";
 import { runIdFileName } from "./ledger/runId.ts";
@@ -13,13 +14,6 @@ import { parseTs } from "./ledger/time.ts";
 
 export const RETRO_USAGE =
   "retro --data-dir <dir> [--since <date>] [--until <date>] [--json]";
-
-/** What a command run to the end gave back. */
-export interface CommandResult {
-  readonly status: number | null;
-  readonly stdout: string;
-  readonly stderr: string;
-}
 
 export interface RetroIo {
   /** Runs `gh` with these arguments. */
@@ -50,7 +44,7 @@ export interface RetroReport {
   };
   readonly merged_without_change_requests: {
     readonly merged: number;
-    readonly runs: number;
+    readonly without_change_requests: number;
     readonly share: number | null;
   };
 }
@@ -96,6 +90,10 @@ const parseArgs = (argv: ReadonlyArray<string>): Args | string => {
   return { dataDir, since, until, json };
 };
 
+/** Reasons in code-unit order, with no reason last. */
+const byReason = (a: string | null, b: string | null) =>
+  a === b ? 0 : a === null ? 1 : b === null ? -1 : a < b ? -1 : 1;
+
 const share = (part: number, whole: number): number | null => (whole === 0 ? null : part / whole);
 
 /** The first line whose state changed to one of `to`. */
@@ -105,14 +103,14 @@ const firstMoveTo = (entries: ReadonlyArray<Entry>, ...to: ReadonlyArray<string>
   );
 
 /** The middle value; the mean of the two middle ones for an even count. */
-const median = (sorted: ReadonlyArray<number>): number | null => {
+export const median = (sorted: ReadonlyArray<number>): number | null => {
   if (sorted.length === 0) return null;
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 };
 
 /** The nearest-rank 90th percentile: the smallest value at least 90% of the values are at or below. */
-const p90 = (sorted: ReadonlyArray<number>): number | null =>
+export const p90 = (sorted: ReadonlyArray<number>): number | null =>
   sorted.length === 0 ? null : sorted[Math.ceil(sorted.length * 0.9) - 1]!;
 
 /** Whether a merged PR had no review asking for changes, per `gh pr view <url> --json reviews`. */
@@ -132,7 +130,7 @@ const noChangeRequests = (url: string, io: RetroIo): boolean => {
 };
 
 /** The report for the runs of `args.dataDir` that started in the window. Throws on a `gh` failure. */
-export const buildRetro = (args: Args, io: RetroIo): RetroReport => {
+const buildRetro = (args: Args, io: RetroIo): RetroReport => {
   const { dataDir, since, until } = args;
   const runs = readRuns(dataDir).filter(({ summary }) => {
     if (summary.unreadable) {
@@ -163,8 +161,12 @@ export const buildRetro = (args: Args, io: RetroIo): RetroReport => {
     }
     if (firstMoveTo(entries, "stuck") !== undefined) {
       stuck++;
+      // The stop's code (the line's cause), not its text: the text carries counts and command
+      // output, so it would split one cause into a row per run. A line from before causes
+      // existed falls back to its text.
       const line = entries.find((entry) => entry.event === "stuck");
-      const reason = line === undefined ? null : dataText(line.data, "reason");
+      const reason =
+        line === undefined ? null : (line.cause?.reason ?? dataText(line.data, "reason"));
       reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
     }
     if (summary.prEnd === "merged") {
@@ -189,12 +191,12 @@ export const buildRetro = (args: Args, io: RetroIo): RetroReport => {
       share: share(stuck, runs.length),
       by_reason: [...reasons]
         .map(([reason, count]) => ({ reason, runs: count }))
-        .sort((a, b) => b.runs - a.runs || ((a.reason ?? "") < (b.reason ?? "") ? -1 : 1)),
+        .sort((a, b) => b.runs - a.runs || byReason(a.reason, b.reason)),
     },
     claim_to_pr_open_minutes: { runs: minutes.length, median: median(minutes), p90: p90(minutes) },
     merged_without_change_requests: {
       merged: merged.length,
-      runs: clean,
+      without_change_requests: clean,
       share: share(clean, merged.length),
     },
   };
@@ -223,7 +225,7 @@ const lines = (report: RetroReport): Array<string> => {
     mid === null || high === null
       ? "claim to pr-open: n/a"
       : `claim to pr-open: median ${mins(mid)}, p90 ${mins(high)} (${timed} runs)`,
-    `merged without change requests: ${percent(merged.runs, merged.merged)}`,
+    `merged without change requests: ${percent(merged.without_change_requests, merged.merged)}`,
   ];
 };
 

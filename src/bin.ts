@@ -14,7 +14,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { runCli, USAGE } from "./cli.ts";
-import type { InstallEnv } from "./install.ts";
+import type { CommandResult, InstallEnv } from "./install.ts";
 import { FactoryLayer } from "./main.ts";
 import * as Paths from "./paths.ts";
 import { takeRunnerLock } from "./runnerLock.ts";
@@ -24,6 +24,27 @@ const realDataDir = (): string => Paths.dataDirOf(process.env, NodeOS.homedir(),
 
 /** The folder holding `package.json`. */
 const packageRoot = NodePath.resolve(import.meta.dirname, "..");
+
+/** Runs a command to the end, or until `timeoutMs`. */
+const runCommand = (
+  command: string,
+  args: ReadonlyArray<string>,
+  timeoutMs: number,
+): CommandResult => {
+  const done = NodeChildProcess.spawnSync(command, [...args], {
+    encoding: "utf8",
+    timeout: timeoutMs,
+  });
+  return {
+    status: done.status,
+    stdout: done.stdout ?? "",
+    // A timeout or a missing CLI sets `error` and leaves stderr empty; say so.
+    stderr:
+      done.error !== undefined
+        ? `${done.error.message}\n${done.stderr ?? ""}`
+        : (done.stderr ?? ""),
+  };
+};
 
 /** What install touches on this machine: the real HOME, commands (30 s each), clock and terminal. */
 const realInstallEnv = (): InstallEnv => {
@@ -38,21 +59,7 @@ const realInstallEnv = (): InstallEnv => {
     execPath: process.execPath,
     pathEnv: process.env["PATH"] ?? "/usr/bin:/bin",
     packageRoot,
-    run: (command, args) => {
-      const done = NodeChildProcess.spawnSync(command, [...args], {
-        encoding: "utf8",
-        timeout: 30_000,
-      });
-      return {
-        status: done.status,
-        stdout: done.stdout ?? "",
-        // A timeout or a missing CLI sets `error` and leaves stderr empty; say so.
-        stderr:
-          done.error !== undefined
-            ? `${done.error.message}\n${done.stderr ?? ""}`
-            : (done.stderr ?? ""),
-      };
-    },
+    run: (command, args) => runCommand(command, args, 30_000),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: Date.now,
     out: (line) => process.stdout.write(`${line}\n`),
@@ -97,20 +104,7 @@ if (command === "run") {
     out: (line) => console.log(line),
     err: (line) => console.error(line),
     installEnv: realInstallEnv,
-    gh: (args) => {
-      const done = NodeChildProcess.spawnSync("gh", [...args], {
-        encoding: "utf8",
-        timeout: 60_000,
-      });
-      return {
-        status: done.status,
-        stdout: done.stdout ?? "",
-        stderr:
-          done.error !== undefined
-            ? `${done.error.message}\n${done.stderr ?? ""}`
-            : (done.stderr ?? ""),
-      };
-    },
+    gh: (args) => runCommand("gh", args, 60_000),
   }).then((code) => {
     process.exitCode = code;
   });

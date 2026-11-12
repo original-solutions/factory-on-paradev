@@ -13,10 +13,10 @@ import * as Result from "effect/Result";
 import { readAttentionFile } from "./attention.ts";
 import { parseMachineConfig } from "./config.ts";
 import { pauseClaimsNow, resumeClaimsNow, stopRun } from "./control.ts";
-import { install, uninstall, type InstallEnv } from "./install.ts";
+import { install, uninstall, type CommandResult, type InstallEnv } from "./install.ts";
 import { packageVersion } from "./paths.ts";
 import { isRunner, lockHolder } from "./runnerLock.ts";
-import { retro, RETRO_USAGE, type CommandResult } from "./retro.ts";
+import { retro, RETRO_USAGE } from "./retro.ts";
 import { readTextOrNull } from "./syncFiles.ts";
 import {
   buildStatus,
@@ -25,8 +25,6 @@ import {
 } from "./status.ts";
 
 export const USAGE = `usage: factory-runner run | install | uninstall | status [--json] | runs stop <run id> | claims pause|resume | ${RETRO_USAGE}`;
-
-export type { CommandResult };
 
 /** What the commands read and write, so a test passes a fixture data dir and captures the output. */
 export interface CliIo {
