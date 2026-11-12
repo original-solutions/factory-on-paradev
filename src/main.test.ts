@@ -260,6 +260,8 @@ interface FakeParadev {
   listDown?: string;
   /** Rewrites the recorded `schema` answer. */
   schema: (answer: unknown) => unknown;
+  /** Answers the `pages` commands; absent, they are unexpected. */
+  pages?: (argv: ReadonlyArray<string>) => RunResult;
   readonly calls: Array<ReadonlyArray<string>>;
 }
 
@@ -304,6 +306,7 @@ const paradevAnswer = (paradev: FakeParadev, argv: ReadonlyArray<string>): RunRe
         ? reply(0, JSON.stringify(paradev.projects))
         : reply(1, "", `Error: ${paradev.listDown}\n`);
     default:
+      if (argv[0] === "pages" && paradev.pages !== undefined) return paradev.pages(argv);
       throw new Error(`the scripted superset got an unexpected call: ${argv.join(" ")}`);
   }
 };
@@ -325,7 +328,8 @@ const withParadev = (
 
 // ---- the machine config ---------------------------------------------------------------------
 
-const PARADEV_BLOCK = `paradev:\n  agent: claude\n  cli: ${CLI}\n`;
+// The belt is off, so a pass makes no `pages` call; `the belt page` turns it on.
+const PARADEV_BLOCK = `paradev:\n  belt:\n    enabled: false\n  agent: claude\n  cli: ${CLI}\n`;
 
 const configFor = (
   repos: ReadonlyArray<readonly [string, string]> = [["a/b", "/b"]],
@@ -801,6 +805,69 @@ describe("on the Paradev CLI", () => {
         assert.strictEqual(finishedPasses(factoryDir), 3);
         assert.ok(logs.includes("factory config reloaded"), logs.join("\n"));
         assert.strictEqual(startedLines(), 1);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("the belt page: the first pass publishes it, and each pass hands the belt to the writer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        const pages: Array<ReadonlyArray<string>> = [];
+        paradev.pages = (argv) => {
+          pages.push(argv);
+          return argv[1] === "publish"
+            ? reply(0, readFixture("pages-publish-probe-ws").stdout)
+            : reply(0, readFixture("pages-storage-set-belt").stdout);
+        };
+        const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    visibility: just_me\n`;
+        const { loop, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", belt), noGhProcess, {}, paradev);
+        yield* waitUntil("the belt write", () => pages.some((argv) => argv[1] === "storage"));
+        const publish = pages[0]!;
+        assert.deepStrictEqual(publish.slice(0, 2), ["pages", "publish"]);
+        assert.strictEqual(publish[2], NodePath.join(factoryDir, "belt-page", "index.html"));
+        assert.notInclude(publish, "--workspace");
+        const set = pages.find((argv) => argv[1] === "storage")!;
+        assert.deepStrictEqual(set.slice(0, 8), [
+          "pages",
+          "storage",
+          "30c684ae-67ab-41c9-b673-cdacc8d5254e",
+          "--key",
+          "belt",
+          "--scope",
+          "shared",
+          "--set",
+        ]);
+        const written = JSON.parse(set[8]!) as {
+          v: number;
+          runner: { version: string; paradevCli: string; paradevOnline: boolean; claimsPaused: boolean };
+        };
+        assert.strictEqual(written.v, 1);
+        assert.strictEqual(written.runner.paradevCli, "2.0.8");
+        assert.isTrue(written.runner.paradevOnline);
+        assert.isFalse(written.runner.claimsPaused);
+        // A later pass with the same belt publishes nothing and writes nothing.
+        yield* idleAfter(loop, factoryDir, 1);
+        const before = pages.length;
+        yield* onePassMore(loop, factoryDir);
+        assert.strictEqual(pages.length, before);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a belt write that fails is a warning in the log and no pass error", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        paradev.pages = (argv) =>
+          argv[1] === "publish"
+            ? reply(0, readFixture("pages-publish-probe-ws").stdout)
+            : reply(1, "", "Error: A stored value is at most 65536 bytes\n");
+        const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n`;
+        const { loop, logs, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", belt), noGhProcess, {}, paradev);
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* waitUntil("the belt warning", () => logs.some((line) => line.includes("65536 bytes")));
+        assert.deepStrictEqual(eventsOf(factoryDir, "error"), []);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
