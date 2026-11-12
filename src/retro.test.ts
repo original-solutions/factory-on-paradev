@@ -4,11 +4,13 @@ import * as NodePath from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { runCli, type CliIo, type CommandResult } from "./cli.ts";
-import { makeCause, type RunEvent } from "./ledger/events.ts";
+import { runCli, type CliIo } from "./cli.ts";
+import type { CommandResult } from "./install.ts";
+import { makeCause, type Cause, type RunEvent } from "./ledger/events.ts";
 import { Ledger } from "./ledger/ledger.ts";
 import { parseTs } from "./ledger/time.ts";
 import { useTempDirs } from "./ledger/testSupport.ts";
+import { median, p90 } from "./retro.ts";
 
 const tempDir = useTempDirs();
 
@@ -21,10 +23,16 @@ const cause = makeCause("start", "seed");
 const moved = (from: string, to: string): RunEvent =>
   ({ event: "state_changed", data: { from, to } }) as RunEvent;
 const claimed: RunEvent = { event: "claimed", data: { machine: "m", github_user: "u" } };
-const stuck = (reason: string): RunEvent => ({ event: "stuck", data: { reason } });
 const approved: RunEvent = { event: "step_changed", data: { step: "approved" } };
 
-type Line = readonly [minutes: number, event: RunEvent];
+type Line = readonly [minutes: number, event: RunEvent, cause?: Cause];
+
+/** A `stuck` line as the runner writes it: the stop's code is its cause, the text its reason. */
+const stuck = (minutes: number, code: string, text: string): Line => [
+  minutes,
+  { event: "stuck", data: { reason: text } },
+  makeCause("gate", code),
+];
 
 /**
  * A run of issue `issue` whose lines are written `minutes` after `startMs`; finished with `end`
@@ -44,9 +52,9 @@ const seedRun = (
     { clock: () => now },
   );
   try {
-    for (const [minutes, event] of lines) {
+    for (const [minutes, event, lineCause] of lines) {
       now = startMs + minutes * MINUTE;
-      ledger.append(event, cause);
+      ledger.append(event, lineCause ?? cause);
     }
     if (end !== undefined) {
       now += MINUTE;
@@ -63,10 +71,14 @@ const PR = (n: number) => `https://github.com/rawphp/softfac/pull/${n}`;
  * One run per rule, and one outside the window:
  * - #1 claimed 5 min in, pr-open 30 min after the claim, merged with an approval: reached without a person.
  * - #2 asked for info before pr-open (90 min after the claim), merged after a change request.
- * - #3 stuck twice; its first stuck line says why. Never reached pr-open.
- * - #4 and #5 stuck once each.
+ * - #3 stuck twice; its first stuck line's code says why. Never reached pr-open.
+ * - #4 and #5 stuck once each; #4 shares #3's code with different text.
  * - #7 reached pr-open 10 min after the claim, then got stuck: still reached without a person.
  * - #8 started at the window's first instant and is still building.
+ * - #9 got stuck, then a person sent it on to pr-open 40 min after the claim: not reached
+ *   without a person, but timed.
+ * - #10 reached pr-open 20 min after the claim; its PR was closed, not merged, so gh is not asked.
+ * - #11 moved to stuck with no stuck line: counted under no reason.
  * - #6 started at the window's end, so it is not in it; its merged PR has no reviews.
  */
 const fixture = (dataDir: string) => {
@@ -99,22 +111,22 @@ const fixture = (dataDir: string) => {
   seedRun(dataDir, 3, start + 2 * MINUTE, [
     [0, claimed],
     [1, moved("ready", "building")],
-    [2, stuck("gate red")],
+    stuck(2, "gate-retries-used-up", "the gate failed after 3 attempts: npm test failed (exit 1)"),
     [3, moved("building", "stuck")],
     [4, moved("stuck", "building")],
-    [5, stuck("review cap")],
+    stuck(5, "review-cap", "review cap"),
     [6, moved("building", "stuck")],
   ]);
   seedRun(dataDir, 4, start + 3 * MINUTE, [
     [0, claimed],
     [1, moved("ready", "building")],
-    [2, stuck("gate red")],
+    stuck(2, "gate-retries-used-up", "the gate failed after 4 attempts: npm run lint failed (exit 2)"),
     [3, moved("building", "stuck")],
   ]);
   seedRun(dataDir, 5, start + 4 * MINUTE, [
     [0, claimed],
     [1, moved("ready", "building")],
-    [2, stuck("no PR")],
+    stuck(2, "pr-not-bound", "no PR"),
     [3, moved("building", "stuck")],
   ]);
   seedRun(
@@ -132,12 +144,36 @@ const fixture = (dataDir: string) => {
     [0, claimed],
     [1, moved("ready", "building")],
     [10, moved("building", "pr-open")],
-    [20, stuck("review cap")],
+    stuck(20, "review-cap", "review cap"),
     [21, moved("pr-open", "stuck")],
   ]);
   seedRun(dataDir, 8, SINCE, [
     [0, claimed],
     [1, moved("ready", "building")],
+  ]);
+  seedRun(dataDir, 9, start + 6 * MINUTE, [
+    [0, claimed],
+    [1, moved("ready", "building")],
+    stuck(2, "gate-retries-used-up", "the gate failed after 3 attempts: tsc failed (exit 2)"),
+    [3, moved("building", "stuck")],
+    [30, moved("stuck", "building")],
+    [40, moved("building", "pr-open")],
+  ]);
+  seedRun(
+    dataDir,
+    10,
+    start + 7 * MINUTE,
+    [
+      [0, claimed],
+      [1, moved("ready", "building")],
+      [20, moved("building", "pr-open")],
+    ],
+    { prUrl: PR(10), prEnd: "closed" },
+  );
+  seedRun(dataDir, 11, start + 8 * MINUTE, [
+    [0, claimed],
+    [1, moved("ready", "building")],
+    [2, moved("building", "stuck")],
   ]);
 };
 
@@ -210,13 +246,14 @@ describe("factory-runner retro", () => {
     expect(s.errs).toEqual([]);
     expect(code).toBe(0);
     expect(s.outs).toEqual([
-      "runs: 7 (since 2026-10-04, until 2026-10-05)",
-      "reached pr-open without a person: 2/7 (29%)",
-      "stuck: 4/7 (57%)",
-      "  gate red: 2",
-      "  no PR: 1",
-      "  review cap: 1",
-      "claim to pr-open: median 30 min, p90 90 min (3 runs)",
+      "runs: 10 (since 2026-10-04, until 2026-10-05)",
+      "reached pr-open without a person: 3/10 (30%)",
+      "stuck: 6/10 (60%)",
+      "  gate-retries-used-up: 3",
+      "  pr-not-bound: 1",
+      "  review-cap: 1",
+      "  (no reason): 1",
+      "claim to pr-open: median 30 min, p90 90 min (5 runs)",
       "merged without change requests: 1/2 (50%)",
     ]);
     expect(s.calls).toEqual([
@@ -235,19 +272,20 @@ describe("factory-runner retro", () => {
       data_dir: s.dataDir,
       since: "2026-10-04",
       until: "2026-10-05",
-      runs: 7,
-      reached_pr_open_without_person: { runs: 2, share: 2 / 7 },
+      runs: 10,
+      reached_pr_open_without_person: { runs: 3, share: 3 / 10 },
       stuck: {
-        runs: 4,
-        share: 4 / 7,
+        runs: 6,
+        share: 6 / 10,
         by_reason: [
-          { reason: "gate red", runs: 2 },
-          { reason: "no PR", runs: 1 },
-          { reason: "review cap", runs: 1 },
+          { reason: "gate-retries-used-up", runs: 3 },
+          { reason: "pr-not-bound", runs: 1 },
+          { reason: "review-cap", runs: 1 },
+          { reason: null, runs: 1 },
         ],
       },
-      claim_to_pr_open_minutes: { runs: 3, median: 30, p90: 90 },
-      merged_without_change_requests: { merged: 2, runs: 1, share: 0.5 },
+      claim_to_pr_open_minutes: { runs: 5, median: 30, p90: 90 },
+      merged_without_change_requests: { merged: 2, without_change_requests: 1, share: 0.5 },
     });
   });
 
@@ -256,8 +294,12 @@ describe("factory-runner retro", () => {
     fixture(all.dataDir);
     expect(await runCli(["retro", "--data-dir", all.dataDir, "--json"], all.io)).toBe(0);
     const report = JSON.parse(all.outs.join("\n"));
-    expect(report).toMatchObject({ since: null, until: null, runs: 8 });
-    expect(report.merged_without_change_requests).toEqual({ merged: 3, runs: 2, share: 2 / 3 });
+    expect(report).toMatchObject({ since: null, until: null, runs: 11 });
+    expect(report.merged_without_change_requests).toEqual({
+      merged: 3,
+      without_change_requests: 2,
+      share: 2 / 3,
+    });
 
     const until = setup();
     fixture(until.dataDir);
@@ -307,6 +349,14 @@ describe("factory-runner retro", () => {
     expect(s.errs.join("\n")).toContain("HTTP 404");
   });
 
+  it("fails when gh answers with no reviews list", async () => {
+    const s = setup(() => ({ status: 0, stdout: "{}", stderr: "" }));
+    fixture(s.dataDir);
+    expect(await runCli(["retro", "--data-dir", s.dataDir, ...window], s.io)).toBe(1);
+    expect(s.outs).toEqual([]);
+    expect(s.errs.join("\n")).toContain(`gh pr view ${PR(1)} gave no reviews list`);
+  });
+
   it("refuses a missing --data-dir, a bad date and an unknown flag with the usage", async () => {
     for (const argv of [
       ["retro"],
@@ -327,5 +377,23 @@ describe("factory-runner retro", () => {
     expect(await runCli(["retro", "--data-dir", missing], s.io)).toBe(1);
     expect(s.errs.join("\n")).toContain(missing);
     expect(NodeFS.existsSync(missing)).toBe(false);
+  });
+});
+
+describe("median and p90", () => {
+  it("median is the middle value, or the mean of the middle two", () => {
+    expect(median([])).toBeNull();
+    expect(median([5])).toBe(5);
+    expect(median([10, 20])).toBe(15);
+    expect(median([1, 2, 9])).toBe(2);
+  });
+
+  it("p90 is the nearest-rank 90th percentile, not the largest value", () => {
+    const upTo = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+    expect(p90([])).toBeNull();
+    expect(p90([7])).toBe(7);
+    expect(p90(upTo(10))).toBe(9);
+    expect(p90(upTo(11))).toBe(10);
+    expect(p90(upTo(20))).toBe(18);
   });
 });
