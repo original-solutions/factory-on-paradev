@@ -1,4 +1,6 @@
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -27,7 +29,7 @@ export class FactoryPaths extends Context.Service<
 export const dataDirOf = (
   env: { readonly FACTORY_RUNNER_HOME?: string | undefined },
   home: string,
-  path: Path.Path,
+  path: Pick<Path.Path, "resolve" | "join">,
 ): string => {
   const set = env.FACTORY_RUNNER_HOME;
   return set !== undefined && set !== ""
@@ -51,3 +53,38 @@ export const layer = Layer.effect(
     };
   }),
 );
+
+/** The launchd label of the runner agent. */
+export const LABEL = "io.github.rawphp.factory-runner";
+/** The launchd label of the agent that rotates the runner's log. */
+export const LOGROTATE_LABEL = "io.github.rawphp.factory-runner.logrotate";
+
+/**
+ * Where `install` puts things under `home`: the share folder with its `versions/` and the
+ * `current` link, the two LaunchAgent files, and the log folder with the runner's log and the
+ * rotation agent's own.
+ */
+export const installPathsOf = (home: string) => {
+  const share = NodePath.join(home, ".local", "share", "factory-runner");
+  const launchAgents = NodePath.join(home, "Library", "LaunchAgents");
+  const logDir = NodePath.join(home, "Library", "Logs", "factory-runner");
+  return {
+    share,
+    versions: NodePath.join(share, "versions"),
+    current: NodePath.join(share, "current"),
+    launchAgents,
+    runnerPlist: NodePath.join(launchAgents, `${LABEL}.plist`),
+    rotatePlist: NodePath.join(launchAgents, `${LOGROTATE_LABEL}.plist`),
+    logDir,
+    log: NodePath.join(logDir, "runner.log"),
+    rotateLog: NodePath.join(logDir, "logrotate.log"),
+  };
+};
+
+/** The `version` of the `package.json` in `packageRoot`. */
+export const packageVersion = (packageRoot: string): string =>
+  (
+    JSON.parse(NodeFS.readFileSync(NodePath.join(packageRoot, "package.json"), "utf8")) as {
+      version: string;
+    }
+  ).version;

@@ -168,6 +168,26 @@ const readFile = (path: string): Loaded => {
   return { items, warnings };
 };
 
+/**
+ * The items in `<dataDir>/attention.json`, open and dismissed apart, for a reader that is not the
+ * running pass (`factory-runner status`), with the warnings the file gave: one that cannot be read
+ * or is not the expected shape lists no item, and only its warning says so. It writes nothing.
+ */
+export const readAttentionFile = (
+  dataDir: string,
+): {
+  readonly open: ReadonlyArray<AttentionItem>;
+  readonly dismissed: ReadonlyArray<AttentionItem>;
+  readonly warnings: ReadonlyArray<string>;
+} => {
+  const { items, warnings } = readFile(NodePath.join(dataDir, ATTENTION_FILE));
+  return {
+    open: items.filter((kept) => !kept.dismissed).map((kept) => kept.item),
+    dismissed: items.filter((kept) => kept.dismissed).map((kept) => kept.item),
+    warnings,
+  };
+};
+
 /** Writes the items whole or not at all, private to the owner, as the pause file is. */
 const writeFile = (dir: string, items: ReadonlyArray<Kept>): void => {
   ensureDir(dir);

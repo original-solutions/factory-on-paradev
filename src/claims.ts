@@ -9,6 +9,7 @@ import * as NodePath from "node:path";
 
 import { errnoCode } from "./ledger/errors.ts";
 import { formatTs, parseTs } from "./ledger/time.ts";
+import { writeFileWhole } from "./syncFiles.ts";
 
 /** The file in the data dir that holds claims back by hand. */
 export const PAUSE_FILE = "claims-paused";
@@ -86,28 +87,6 @@ export const loadHandPause = (dataDir: string): HandPause | null => {
   return { sinceMs: parseTs(marker.text.trim()) ?? marker.mtimeMs };
 };
 
-/** Writes `text` to `path` whole or not at all, private to the owner, replacing what is there. */
-const writeMarker = (path: string, text: string) => {
-  const temp = `${path}.${process.pid}.tmp`;
-  const fd = NodeFS.openSync(
-    temp,
-    NodeFS.constants.O_WRONLY | NodeFS.constants.O_CREAT | NodeFS.constants.O_EXCL,
-    0o600,
-  );
-  try {
-    NodeFS.writeFileSync(fd, text);
-    NodeFS.fsyncSync(fd);
-  } finally {
-    NodeFS.closeSync(fd);
-  }
-  try {
-    NodeFS.renameSync(temp, path);
-  } catch (error) {
-    NodeFS.rmSync(temp, { force: true });
-    throw error;
-  }
-};
-
 /** What {@link pauseClaims} found. */
 export type Paused =
   /** Claims were not paused, and now are. */
@@ -123,7 +102,7 @@ export type Paused =
 export const pauseClaims = (dataDir: string, nowMs: number): Paused => {
   const pause = loadHandPause(dataDir);
   if (pause !== null) return { kind: "already", sinceMs: pause.sinceMs };
-  writeMarker(NodePath.join(dataDir, PAUSE_FILE), `${formatTs(nowMs)}\n`);
+  writeFileWhole(NodePath.join(dataDir, PAUSE_FILE), `${formatTs(nowMs)}\n`);
   return { kind: "now" };
 };
 
