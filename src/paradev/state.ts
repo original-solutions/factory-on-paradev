@@ -20,6 +20,13 @@ const Turn = Schema.Struct({
 });
 export type Turn = typeof Turn.Type;
 
+const PendingSend = Schema.Struct({
+  commandId: Schema.String,
+  /** The `lastEventAt` read before the text was typed; null when the agent had no hook yet. */
+  before: Schema.NullOr(Schema.Number),
+});
+export type PendingSend = typeof PendingSend.Type;
+
 const ThreadRecordSchema = Schema.Struct({
   v: Schema.Literal(1),
   /** `local:<workspaceId>`. */
@@ -42,6 +49,12 @@ const ThreadRecordSchema = Schema.Struct({
    * the next send adopts the agent it started. Absent in records written before it existed.
    */
   pendingResume: Schema.optional(Schema.NullOr(Schema.String)),
+  /**
+   * The send about to type, or that typed, its text, whose turn is not recorded yet: a repeat of its
+   * command id types nothing and counts a hook newer than `before` as the reaction. Absent in
+   * records written before it existed.
+   */
+  pendingSend: Schema.optional(Schema.NullOr(PendingSend)),
 });
 export type ThreadRecord = typeof ThreadRecordSchema.Type;
 
