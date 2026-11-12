@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - small files read and written before or outside any layer: the pause file, the LaunchAgent files, the machine config.
 /**
- * The synchronous whole-file write and the missing-is-null read that the pause file, `install` and
+ * The synchronous whole-file write and the missing-is-null reads that the pause file, `install` and
  * the operator commands share. The Effect code writes through `files.ts`.
  */
 import * as NodeFS from "node:fs";
@@ -37,6 +37,16 @@ export const writeFileWhole = (path: string, text: string, mode = 0o600): void =
 export const readTextOrNull = (path: string): string | null => {
   try {
     return NodeFS.readFileSync(path, "utf8");
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return null;
+    throw error;
+  }
+};
+
+/** The entry's own stats (a link is not followed), or null when it does not exist. Any other failure throws. */
+export const lstatOrNull = (path: string): NodeFS.Stats | null => {
+  try {
+    return NodeFS.lstatSync(path);
   } catch (error) {
     if (errnoCode(error) === "ENOENT") return null;
     throw error;

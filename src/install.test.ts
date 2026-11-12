@@ -38,7 +38,7 @@ const makePackage = (): string => {
   write(NodePath.join(root, "package.json"), JSON.stringify({ version: "1.2.3" }));
   write(NodePath.join(root, "src", "bin.ts"), "// bin\n");
   write(NodePath.join(root, "scripts", "rotate-log.sh"), "#!/bin/bash\n");
-  write(NodePath.join(root, "config.example.yml"), "example: config\n");
+  write(NodePath.join(root, "config.example.yml"), EXAMPLE);
   write(NodePath.join(root, "node_modules", "x", "index.js"), "module.exports = 1;\n");
   return root;
 };
@@ -53,6 +53,10 @@ interface Fixture {
   readonly dataDir: string;
   /** Milliseconds the fake clock has moved since the fixture was made. */
   readonly elapsed: () => number;
+  /** Whether a bootstrap of the runner writes `runner started`; a test can change it between runs. */
+  startsRunner: boolean;
+  /** Called on every sleep with the sleep's number, counted from the fixture's start. */
+  onSleep: (count: number) => void;
 }
 
 const makeFixture = (
@@ -87,7 +91,7 @@ const makeFixture = (
     factoryRunnerHome: undefined,
     uid: UID,
     execPath: "/opt/node/bin/node",
-    pathEnv: "/usr/bin:/bin",
+    pathEnv: "/opt/homebrew/bin:/usr/bin:/bin",
     packageRoot,
     run: (command, args) => {
       calls.push([command, ...args]);
@@ -118,7 +122,7 @@ const makeFixture = (
       if (verb === "bootstrap") {
         const name = NodePath.basename(args[2] ?? "", ".plist");
         loaded.add(name);
-        if (name === LABEL && options.startsRunner !== false && options.startsOnSleep === undefined) {
+        if (name === LABEL && fixture.startsRunner && options.startsOnSleep === undefined) {
           NodeFS.mkdirSync(NodePath.dirname(log), { recursive: true });
           NodeFS.appendFileSync(log, "2026-11-12 runner started\n");
         }
@@ -133,6 +137,7 @@ const makeFixture = (
         NodeFS.mkdirSync(NodePath.dirname(log), { recursive: true });
         NodeFS.appendFileSync(log, "2026-11-12 runner started\n");
       }
+      fixture.onSleep(sleeps);
     },
     now: () => clock,
     out: (line) => outs.push(line),
@@ -140,7 +145,19 @@ const makeFixture = (
   };
   const outs: Array<string> = [];
   const errs: Array<string> = [];
-  return { env, home, calls, errs, outs, log, dataDir, elapsed: () => clock - start };
+  const fixture: Fixture = {
+    env,
+    home,
+    calls,
+    errs,
+    outs,
+    log,
+    dataDir,
+    elapsed: () => clock - start,
+    startsRunner: options.startsRunner !== false,
+    onSleep: () => {},
+  };
+  return fixture;
 };
 
 const runnerPlist = (home: string) => installPathsOf(home).runnerPlist;
@@ -219,6 +236,10 @@ describe("install", () => {
     expect(runner).toContain("RunAtLoad");
     expect(runner).toContain("KeepAlive");
     expect(runner).toMatch(/<key>ThrottleInterval<\/key>\s*<integer>10<\/integer>/);
+    // The caller's PATH, so the runner finds git, gh and a Homebrew node under launchd.
+    expect(runner).toMatch(
+      /<key>EnvironmentVariables<\/key>\s*<dict>\s*<key>PATH<\/key>\s*<string>\/opt\/homebrew\/bin:\/usr\/bin:\/bin<\/string>/,
+    );
     expect(runner).toMatch(new RegExp(`<key>StandardOutPath</key>\\s*<string>${f.log}</string>`));
     expect(rotate).toContain("/bin/bash");
     expect(rotate).toContain(`${share}/current/scripts/rotate-log.sh`);
@@ -226,7 +247,7 @@ describe("install", () => {
     expect(rotate).toMatch(/<key>StartInterval<\/key>\s*<integer>600<\/integer>/);
 
     expect(NodeFS.readFileSync(NodePath.join(f.dataDir, "config.yml"), "utf8")).toBe(
-      "example: config\n",
+      EXAMPLE,
     );
     expect(verbs(f)).toEqual([
       ["bootstrap", `gui/${UID}`, logrotatePlist(f.home)],
@@ -253,10 +274,12 @@ describe("install", () => {
     const f = makeFixture();
     expect(await install(f.env)).toBe(0);
     const config = NodePath.join(f.dataDir, "config.yml");
-    NodeFS.writeFileSync(config, "edited: true\n");
+    const edited = EXAMPLE.replace(/^poll_seconds: 60$/m, "poll_seconds: 90");
+    expect(edited).not.toBe(EXAMPLE);
+    NodeFS.writeFileSync(config, edited);
     f.calls.length = 0;
     expect(await install(f.env)).toBe(0);
-    expect(NodeFS.readFileSync(config, "utf8")).toBe("edited: true\n");
+    expect(NodeFS.readFileSync(config, "utf8")).toBe(edited);
     // Same plists as before, and still a full reload: no kickstart, no check of the file on disk.
     expect(verbs(f)).toEqual([
       ["bootout", `gui/${UID}/${LOGROTATE_LABEL}`],
@@ -331,6 +354,76 @@ describe("install", () => {
     expect(f.elapsed()).toBe(before);
   });
 
+  it("swaps in a new copy of the same version only once the old runner is gone", async () => {
+    const f = makeFixture();
+    expect(await install(f.env)).toBe(0);
+    const next = makePackage();
+    write(NodePath.join(next, "src", "bin.ts"), "// bin, next\n");
+    const share = NodePath.join(f.home, ".local", "share", "factory-runner");
+    const running = () => NodeFS.readFileSync(NodePath.join(share, "current", "src", "bin.ts"), "utf8");
+    const seen: Array<string> = [];
+    const env: InstallEnv = {
+      ...f.env,
+      packageRoot: next,
+      run: (command, args) => {
+        if (args[0] === "bootout" || args[0] === "bootstrap") seen.push(`${args[0]} ${running()}`);
+        return f.env.run(command, args);
+      },
+    };
+    expect(await install(env)).toBe(0);
+    expect(seen).toEqual([
+      "bootout // bin\n",
+      "bootstrap // bin\n",
+      "bootout // bin\n",
+      "bootstrap // bin, next\n",
+    ]);
+    expect(NodeFS.readdirSync(NodePath.join(share, "versions"))).toEqual(["1.2.3"]);
+  });
+
+  it("keeps the installed version and drops its copy when the runner will not boot out", async () => {
+    const f = makeFixture();
+    expect(await install(f.env)).toBe(0);
+    const next = makePackage();
+    write(NodePath.join(next, "src", "bin.ts"), "// bin, next\n");
+    const env: InstallEnv = {
+      ...f.env,
+      packageRoot: next,
+      run: (command, args) =>
+        args[0] === "bootout" && args[1] === `gui/${UID}/${LABEL}`
+          ? { status: 1, stdout: "", stderr: "boom\n" }
+          : f.env.run(command, args),
+    };
+    expect(await install(env)).toBe(1);
+    const versions = NodePath.join(f.home, ".local", "share", "factory-runner", "versions");
+    expect(NodeFS.readdirSync(versions)).toEqual(["1.2.3"]);
+    expect(NodeFS.readFileSync(NodePath.join(versions, "1.2.3", "src", "bin.ts"), "utf8")).toBe(
+      "// bin\n",
+    );
+  });
+
+  it("does not count a `runner started` the old runner logs while the agents are reloaded", async () => {
+    const f = makeFixture({ bootoutLingers: 2 });
+    expect(await install(f.env)).toBe(0);
+    // The new runner never starts; the old one, crash-looping under KeepAlive, restarts and logs
+    // its start while install waits for the log rotation agent to go.
+    f.startsRunner = false;
+    const first = f.elapsed() / 1_000 + 1;
+    f.onSleep = (count) => {
+      if (count === first) NodeFS.appendFileSync(f.log, "2026-11-12 runner started\n");
+    };
+    expect(await install(f.env)).toBe(1);
+    expect(f.errs.join("\n")).toContain('no "runner started"');
+  });
+
+  it("finds `runner started` after the log is rotated during the wait", async () => {
+    const f = makeFixture({ startsRunner: false });
+    write(f.log, `${"x".repeat(5_000)}\n`);
+    f.onSleep = (count) => {
+      if (count === 2) NodeFS.writeFileSync(f.log, "2026-11-12 runner started\n");
+    };
+    expect(await install(f.env)).toBe(0);
+  });
+
   it("writes the resolved data dir into the runner agent when FACTORY_RUNNER_HOME is set", async () => {
     const f = makeFixture();
     const dataDir = NodeFS.mkdtempSync(NodePath.join(tmp, "data-"));
@@ -346,7 +439,7 @@ describe("install", () => {
       new RegExp(`<key>FACTORY_RUNNER_HOME</key>\\s*<string>${dataDir}</string>`),
     );
     expect(NodeFS.readFileSync(NodePath.join(dataDir, "config.yml"), "utf8")).toBe(
-      "example: config\n",
+      EXAMPLE,
     );
     expect(NodeFS.existsSync(f.dataDir)).toBe(false);
   });
@@ -374,6 +467,24 @@ describe("install", () => {
     expect(NodeFS.existsSync(NodePath.join(f.home, ".local"))).toBe(false);
     expect(NodeFS.existsSync(NodePath.join(f.home, "Library"))).toBe(false);
     expect(launchctl(f)).toEqual([]);
+  });
+
+  it("stops before writing anything when the machine config is there but does not load", async () => {
+    const f = makeFixture();
+    write(NodePath.join(f.dataDir, "config.yml"), "paradev: [unclosed\n");
+    expect(await install(f.env)).toBe(1);
+    const message = f.errs.join("\n");
+    expect(message).toContain("the machine config does not load");
+    expect(message).toContain(NodePath.join(f.dataDir, "config.yml"));
+    expect(f.calls).toEqual([]);
+    expect(NodeFS.existsSync(NodePath.join(f.home, ".local"))).toBe(false);
+    expect(NodeFS.existsSync(NodePath.join(f.home, "Library"))).toBe(false);
+
+    const g = makeFixture();
+    NodeFS.mkdirSync(NodePath.join(g.dataDir, "config.yml"), { recursive: true });
+    expect(await install(g.env)).toBe(1);
+    expect(g.errs.join("\n")).toContain(`cannot read ${NodePath.join(g.dataDir, "config.yml")}`);
+    expect(g.calls).toEqual([]);
   });
 
   it("checks the superset CLI the machine config names, else the bundled one", async () => {

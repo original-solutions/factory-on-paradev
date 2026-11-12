@@ -84,7 +84,9 @@ const status = (args: ReadonlyArray<string>, io: CliIo): number => {
     io.err(USAGE);
     return 2;
   }
-  const { open, dismissed } = readAttentionFile(io.dataDir);
+  const { open, dismissed, warnings } = readAttentionFile(io.dataDir);
+  // On stderr in both forms, so `--json` stays the report and a bad file is not read as no items.
+  for (const warning of warnings) io.err(`factory-runner: warning: ${warning}`);
   const report = buildStatus({
     status: factoryStatus(io),
     version: packageVersion(io.packageRoot),

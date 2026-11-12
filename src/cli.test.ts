@@ -168,6 +168,22 @@ describe("status", () => {
     expect(s.outs.join("\n")).not.toContain("an old thing someone dismissed");
   });
 
+  it("warns on stderr when attention.json cannot be read, so no items is not read as nothing to do", async () => {
+    const s = setup();
+    const file = NodePath.join(s.dataDir, "attention.json");
+    NodeFS.writeFileSync(file, "{not json");
+    expect(await runCli(["status", "--json"], s.io)).toBe(0);
+    expect(JSON.parse(s.outs.join("\n")).attention).toEqual([]);
+    expect(s.errs).toEqual([
+      `factory-runner: warning: ${file} is not valid JSON, so no attention item is kept`,
+    ]);
+    s.outs.length = 0;
+    s.errs.length = 0;
+    NodeFS.writeFileSync(file, JSON.stringify({ nothing: [] }));
+    expect(await runCli(["status"], s.io)).toBe(0);
+    expect(s.errs.join("\n")).toContain(`${file} has no items list`);
+  });
+
   it("runs from the command line: data_dir is FACTORY_RUNNER_HOME and version is the package's", () => {
     const dataDir = tempDir("bin");
     const done = NodeChildProcess.spawnSync(
