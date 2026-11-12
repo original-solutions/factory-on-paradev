@@ -217,6 +217,17 @@ describe("beltPayload", () => {
     assert.isAbove(beltBytes(withOneMore), BELT_MAX_BYTES);
   });
 
+  it("cuts a belt that is only a little over 60 KiB", () => {
+    const runs = Array.from({ length: 200 }, (_, i) => (i % 25 === 0 ? run(i + 1) : finished(i + 1)));
+    const whole: BeltV1 = { ...payload([]), runs: runs.map((entry) => payload([entry]).runs[0]!) };
+    // Between the cap and twice it.
+    assert.isAbove(beltBytes(whole), BELT_MAX_BYTES);
+    assert.isBelow(beltBytes(whole), 2 * BELT_MAX_BYTES);
+    const belt = payload(runs);
+    assert.isAtMost(beltBytes(belt), BELT_MAX_BYTES);
+    assert.isBelow(belt.runs.length, runs.length);
+  });
+
   it("holds no gate output or log text", () => {
     const runs = Array.from({ length: 500 }, (_, i) => (i % 25 === 0 ? run(i + 1) : finished(i + 1)));
     const text = JSON.stringify(payload(runs));
