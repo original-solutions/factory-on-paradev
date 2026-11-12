@@ -817,8 +817,9 @@ describe("on the Paradev CLI", () => {
         const pages: Array<ReadonlyArray<string>> = [];
         paradev.pages = (argv) => {
           pages.push(argv);
+          // Paradev answers with the visibility it gave the page: the one asked for.
           return argv[1] === "publish"
-            ? reply(0, readFixture("pages-publish-probe-ws").stdout)
+            ? reply(0, JSON.stringify({ ...JSON.parse(readFixture("pages-publish-probe-ws").stdout), visibility: "org" }))
             : reply(0, readFixture("pages-storage-set-belt").stdout);
         };
         const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    visibility: org\n`;

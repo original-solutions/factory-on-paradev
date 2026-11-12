@@ -13,7 +13,7 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-import type { AttentionItem } from "../attention.ts";
+import { LAST_ERROR, type AttentionItem } from "../attention.ts";
 import { beltBytes, type BeltV1 } from "../belt.ts";
 import type { BeltVisibility } from "../config.ts";
 import { writeFileAtomically } from "../files.ts";
@@ -154,8 +154,8 @@ export const beltPayload = (input: BeltInput): BeltV1 => {
 
 /**
  * What the belt says of an item. Failed passes and a config that did not load quote log lines
- * and error text, so they get a fixed line; any other item drops a trailing `last error:`, which
- * quotes a command's output.
+ * and error text, so they get a fixed line; any other item drops what follows
+ * {@link LAST_ERROR}, a command's output.
  */
 const attentionText = (item: AttentionItem): string => {
   switch (item.kind) {
@@ -164,7 +164,7 @@ const attentionText = (item: AttentionItem): string => {
     case "config":
       return "The machine config did not load; the runner log says why.";
     default: {
-      const at = item.message.indexOf("; last error: ");
+      const at = item.message.indexOf(LAST_ERROR);
       return cut(at === -1 ? item.message : item.message.slice(0, at), REASON_MAX)!;
     }
   }
@@ -200,7 +200,8 @@ const SavedPage = Schema.Struct({
   visibility: Schema.optional(Schema.String),
 });
 const decodeSaved = Schema.decodeUnknownOption(Schema.fromJsonString(SavedPage));
-const Published = Schema.Struct({ id: Schema.String });
+/** The publish answer: the page, and the visibility Paradev gave it (absent from none on record). */
+const Published = Schema.Struct({ id: Schema.String, visibility: Schema.optional(Schema.String) });
 
 /**
  * The page to write to: the one `<data>/belt.json` names when it was published from this
@@ -243,7 +244,16 @@ const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget, nowMs: nu
   }
   target.memo.publishTimedOutAtMs = null;
   const pageId = published.success.id;
-  yield* writeFileAtomically(savedFile, `${JSON.stringify({ pageId, htmlSha256, visibility })}\n`);
+  // What Paradev says the page is at, not what was asked: a version published to an existing
+  // page may keep its audience.
+  const got = published.success.visibility ?? visibility;
+  yield* writeFileAtomically(savedFile, `${JSON.stringify({ pageId, htmlSha256, visibility: got })}\n`);
+  if (got !== visibility) {
+    yield* Effect.logWarning(
+      `belt page ${pageId} is at visibility ${got}, not ${visibility}: no belt goes to it; delete ${savedFile} to publish a new page`,
+    );
+    return null;
+  }
   return pageId;
 });
 

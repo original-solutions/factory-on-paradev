@@ -293,7 +293,14 @@ describe("the belt write and its size cap", () => {
 
   it.effect("a belt.json from before visibility was saved publishes again with the configured one", () =>
     withWriter(
-      [publishStep, setStep],
+      [
+        {
+          argv: isPublish,
+          fixture: "pages-publish-probe-ws",
+          edit: (answer) => ({ ...(answer as object), visibility: "org" }),
+        },
+        setStep,
+      ],
       (write, _dataDir, fake) =>
         Effect.gen(function* () {
           yield* write(at(recordedBelt(), NOW), NOW);
