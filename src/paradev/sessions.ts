@@ -920,15 +920,14 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         if ("terminal" in other) {
           return yield* deliver(yield* withTurn(record, pending, "resume", other.terminal), commandId, text);
         }
-        // A terminal with no agent of the preset: one starting has a process; with none, the
-        // resume started nothing, and it is no longer pending.
+        // A terminal with no agent of the preset: one starting has a process. With none, the
+        // resume started nothing; with no agent process, the steps below resume again, and that
+        // resume writes its own pendingResume.
         if ((yield* processes.find(commandOf(record), worktreePath)) !== null) {
           return yield* fail(
             `a resume of ${pending} is pending and terminal ${other.unclear.join(", ")} shows no ${record.agent} agent yet; nothing was started`,
           );
         }
-        record = { ...record, pendingResume: null };
-        yield* save(record);
       }
       if (other !== null && "terminal" in other) {
         return yield* fail(
