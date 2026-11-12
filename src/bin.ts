@@ -22,10 +22,12 @@ const run = Effect.gen(function* () {
     Effect.sync(() => takeRunnerLock(baseDir)),
     (taken) => Effect.sync(() => (taken.kind === "taken" ? taken.release() : undefined)),
   );
+  // The effect ends rather than exiting the process, so the scope closes first; runMain leaves a
+  // success's exit code to `process.exitCode`.
   if (lock.kind === "held") {
     return yield* Effect.sync(() => {
       console.error(`factory-runner: another runner holds ${lock.path} (pid ${lock.pid})`);
-      process.exit(1);
+      process.exitCode = 1;
     });
   }
   yield* Layer.build(FactoryLayer);
