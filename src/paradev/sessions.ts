@@ -1,14 +1,14 @@
 /**
  * `FactorySessions` over Paradev's `superset` CLI, for workspaces on this Mac: one workspace per
  * thread, one factory agent per workspace, and the adapter's own records in `state.ts`. This file
- * has `findProject`, `launch`, `status`, `thread`, `runningThreads`, `worktreeCheckout`,
- * `lastActivity` and `worktreesDirectory`; `send`, `archive` and `removeWorktree` come later.
+ * answers every method of the core's `FactorySessions`.
  */
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
@@ -31,6 +31,7 @@ import { FactoryProcess, type RunResult, type RunSpawnError } from "../process.t
 import {
   type FactorySessions,
   type LaunchRequest,
+  MessageRejectedError,
   type RunStatus,
   SessionsError,
   ThreadNotFoundError,
@@ -93,6 +94,13 @@ const Explained = Schema.Struct({
 });
 type Explanation = typeof Explained.Type;
 const Transcript = Schema.Struct({ text: Schema.String });
+const Archived = Schema.Struct({
+  deleted: Schema.Array(Schema.String),
+  notFound: Schema.Array(Schema.String),
+  failed: Schema.Array(Schema.Unknown),
+});
+/** A Claude session id: the name of its `.jsonl`, passed on as `--resume-session`. */
+const SESSION_ID = /^[A-Za-z0-9-]+$/;
 
 /** A launch or read the adapter cannot carry out, with what it found. */
 export class ParadevAdapterError extends Schema.TaggedError<ParadevAdapterError>()(
@@ -202,12 +210,17 @@ export interface ParadevSessionsConfig {
    * agent shows none until its first hook. Default 5, 10 and 15 seconds.
    */
   readonly agentPollDelaysMs?: ReadonlyArray<number>;
+  /** How often `send` reads explain for the agent's reaction. Default 2 s. */
+  readonly sendPollMs?: number;
+  /** How long `send` waits for a reaction: after the text, then after Enter. Default 20 s, 10 s. */
+  readonly sendWaitsMs?: readonly [number, number];
+  /** Claude's own session store, where resume finds the session id. Default `~/.claude/projects`. */
+  readonly claudeProjectsDir?: string;
 }
 
 const AGENT_POLL_DELAYS_MS: ReadonlyArray<number> = [5_000, 10_000, 15_000];
 
-/** What this issue builds of `FactorySessions`. */
-export type ParadevSessions = Omit<FactorySessions["Service"], "send" | "archive" | "removeWorktree">;
+export type ParadevSessions = FactorySessions["Service"];
 
 type Operation = SessionsError["operation"];
 
@@ -228,6 +241,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const remoteBase = normalizeRemoteBase(config.remoteBase);
   const fetchRetryDelaysMs = config.fetchRetryDelaysMs ?? FETCH_RETRY_DELAYS_MS;
   const agentPollDelaysMs = config.agentPollDelaysMs ?? AGENT_POLL_DELAYS_MS;
+  const sendPollMs = config.sendPollMs ?? 2_000;
+  const sendWaitsMs = config.sendWaitsMs ?? [20_000, 10_000];
+  const claudeProjectsDir = config.claudeProjectsDir ?? `${globalThis.process.env.HOME ?? ""}/.claude/projects`;
   /** The process a record's preset runs: the configured command for the configured preset. */
   const commandOf = (record: ThreadRecord) =>
     record.agent === config.agent ? (config.agentCommand ?? config.agent) : record.agent;
@@ -788,6 +804,151 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     return (newest === undefined ? null : worktreesRootOf(newest.worktreePath!, newest.branch)) ?? defaultDir;
   }, (effect) => effect.pipe(Effect.mapError(failWith("worktrees-directory"))));
 
+  // ---- send, resume ---------------------------------------------------------------------------
+
+  /** The record with `terminal` (when given) as its current agent and a turn for `commandId`. */
+  const withTurn = (record: ThreadRecord, commandId: string, kind: "send" | "resume", terminal?: string) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      yield* save({
+        ...record,
+        terminals: terminal === undefined ? record.terminals : [...record.terminals, terminal],
+        turns: [...record.turns, { commandId, at: now, kind }],
+      });
+    });
+
+  /**
+   * The id of the newest session Claude keeps for `worktreePath`: the newest `*.jsonl` under its
+   * projects folder, named for the path with `/` and `.` as `-`. Null when there is none.
+   */
+  const newestSession = (worktreePath: string) =>
+    Effect.gen(function* () {
+      const folder = `${claudeProjectsDir}/${worktreePath.replace(/[/.]/g, "-")}`;
+      const names = yield* fs.readDirectory(folder).pipe(
+        Effect.catchIf((error) => error.reason._tag === "NotFound", () => Effect.succeed([] as ReadonlyArray<string>)),
+      );
+      let newest: { readonly id: string; readonly at: number } | null = null;
+      for (const name of names) {
+        const id = name.endsWith(".jsonl") ? name.slice(0, -".jsonl".length) : "";
+        if (!SESSION_ID.test(id)) continue;
+        const info = yield* fs.stat(`${folder}/${name}`);
+        const at = Option.getOrUndefined(info.mtime)?.getTime() ?? 0;
+        if (info.type === "File" && (newest === null || at > newest.at)) newest = { id, at };
+      }
+      return newest?.id ?? null;
+    });
+
+  /**
+   * Starts the dead agent's Claude session again in a new terminal, with `text` as its prompt.
+   * An agent of the preset in a terminal the record does not have is one an earlier resume
+   * started: it is taken, and nothing is closed or started. The dead terminal is closed first,
+   * since its agent reads `working` for ever.
+   */
+  const resume = (record: ThreadRecord, worktreePath: string, commandId: string, text: string) =>
+    Effect.gen(function* () {
+      const answer = yield* snapshot(record.workspaceId);
+      const found = agentIn(answer, record.workspaceId, record.agent, record.terminals);
+      if (found !== null && "terminal" in found) return yield* withTurn(record, commandId, "resume", found.terminal);
+      const dead = record.terminals.at(-1)!;
+      const listed = answer.workspaces.find((ws) => ws.id === record.workspaceId)?.terminals.some((t) => t.id === dead);
+      if (listed === true) {
+        yield* call(cli, ["terminals", "close", "--local", "--workspace", record.workspaceId, "--terminal", dead], 30_000);
+      }
+      const session = yield* newestSession(worktreePath);
+      if (session === null) return yield* new ThreadNotFoundError({ threadId: record.threadId });
+      const argv = [
+        "agents", "create", "--local", "--workspace", record.workspaceId, "--agent", record.agent,
+        "--resume-session", session, "--prompt", text,
+      ];
+      // No retry: a second create could start a second agent; the snapshot above adopts it.
+      const started = yield* decodeAnswer(AgentStarted, yield* call(cli, argv, 120_000), argv);
+      yield* withTurn(record, commandId, "resume", started.sessionId);
+    });
+
+  /** Reads explain every `sendPollMs` for up to `windowMs`: whether its last hook is newer than `before`. */
+  const reactedWithin = (record: ThreadRecord, terminal: string, before: number | null, windowMs: number) =>
+    Effect.gen(function* () {
+      for (let waited = 0; waited < windowMs; waited += sendPollMs) {
+        yield* Effect.sleep(sendPollMs);
+        const { lastEventAt } = yield* explain(record, terminal);
+        if (lastEventAt !== null && (before === null || lastEventAt > before)) return true;
+      }
+      return false;
+    });
+
+  const send = Effect.fn("ParadevSessions.send")(function* (threadId: string, commandId: string, text: string) {
+    const record = yield* recordOf(threadId, "send");
+    if (record.turns.some((turn) => turn.commandId === commandId)) return;
+    const terminal = record.terminals.at(-1);
+    if (record.archivedAt !== null || terminal === undefined) return yield* new ThreadNotFoundError({ threadId });
+    if (record.worktreePath === null) return yield* fail(`thread ${threadId} has no worktree to look for its agent in`);
+
+    const explained = yield* explain(record, terminal).pipe(
+      Effect.catchIf(
+        (error) => error.kind === "AGENT_EXITED",
+        (): Effect.Effect<Explanation> => Effect.succeed({ state: "exited", lastEventType: null, lastEventAt: null }),
+      ),
+      Effect.catchIf(isNotFound, () => Effect.fail(new ThreadNotFoundError({ threadId }))),
+    );
+    // A killed agent still reads `working`, and its terminal is a shell that would run the text:
+    // the process decides, whatever the state says.
+    const { run } = yield* runOf(record, explained, yield* Clock.currentTimeMillis);
+    const alive = run !== "interrupted" && (yield* processes.find(commandOf(record), record.worktreePath)) !== null;
+    if (!alive) return yield* resume(record, record.worktreePath, commandId, text);
+
+    const terminalArgv = ["terminals", "send", "--local", "--workspace", record.workspaceId, "--terminal", terminal];
+    yield* call(cli, [...terminalArgv, "--text", text], 30_000);
+    const [first, second] = sendWaitsMs;
+    if (!(yield* reactedWithin(record, terminal, explained.lastEventAt, first))) {
+      yield* call(cli, [...terminalArgv, "--keys", "enter"], 30_000);
+      if (!(yield* reactedWithin(record, terminal, explained.lastEventAt, second))) {
+        return yield* new MessageRejectedError({
+          threadId,
+          commandId,
+          cause: `the agent did not react within ${(first + second) / 1000} s, Enter included`,
+        });
+      }
+    }
+    yield* withTurn(record, commandId, "send");
+  }, (effect) =>
+    effect.pipe(
+      Effect.mapError((error) =>
+        error instanceof ThreadNotFoundError || error instanceof MessageRejectedError || error instanceof SessionsError
+          ? error
+          : failWith("send")(error),
+      ),
+    ));
+
+  // ---- archive, removeWorktree --------------------------------------------------------------
+
+  const archive = Effect.fn("ParadevSessions.archive")(function* (threadId: string) {
+    const workspaceId = workspaceIdOf(threadId);
+    const record = workspaceId === null ? null : yield* local(readThread(dataDir, workspaceId));
+    // A thread the adapter does not know is gone already.
+    if (record === null) return;
+    const argv = ["workspaces", "archive", record.workspaceId, "--local"];
+    const gone = yield* callWithRetry(cli, argv, 120_000).pipe(
+      Effect.flatMap((answer) => decodeAnswer(Archived, answer, argv)),
+      Effect.map((answer) => answer.deleted.includes(record.workspaceId) || answer.notFound.includes(record.workspaceId)
+        ? null
+        : answer),
+      Effect.catchIf(isNotFound, () => Effect.succeed(null)),
+    );
+    if (gone !== null) {
+      return yield* fail(`workspaces archive did not archive ${record.workspaceId}: ${JSON.stringify(gone.failed)}`);
+    }
+    yield* save({ ...record, archivedAt: record.archivedAt ?? (yield* Clock.currentTimeMillis) });
+  }, (effect) => effect.pipe(Effect.mapError(failWith("archive"))));
+
+  /** `git worktree remove --force` in the clone the worktree belongs to; its branch stays. */
+  const removeWorktree = Effect.fn("ParadevSessions.removeWorktree")(function* (path: string) {
+    if (!(yield* fs.exists(path))) return;
+    const common = yield* gitOk(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    const clone = common.endsWith("/.git") ? common.slice(0, -"/.git".length) : common;
+    const repo = yield* sessionRepo(clone);
+    yield* repo.gitOk(["worktree", "remove", "--force", path], { timeoutMs: 60_000 });
+  }, (effect) => effect.pipe(Effect.mapError(failWith("remove-worktree"))));
+
   const findProject = Effect.fn("ParadevSessions.findProject")(function* (workspaceRoot: string) {
     const project = yield* local(Effect.flatMap(listProjects, (projects) => projectAt(projects, workspaceRoot)));
     if (project === null) return null;
@@ -803,6 +964,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     launch,
     status,
     thread,
+    send,
+    archive,
+    removeWorktree,
     runningThreads,
     worktreeCheckout,
     lastActivity,
