@@ -1844,19 +1844,26 @@ describe("send", () => {
     }),
   );
 
-  it.live("a terminals send that Paradev refused before typing clears the send, so a repeat types it", () =>
-    Effect.gen(function* () {
-      const t = rig(
-        [l1Snapshot(), quiet(), { argv: textSend, fail: "Host service for this machine isn't running" }],
-        { agentRunning: true, config: FAST_POLL },
-      );
-      yield* seed(t.data, record());
-      const error = yield* Effect.flip(t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT)));
-      assert.deepInclude(error, { _tag: "FactorySessionsError", operation: "send" });
-      assert.deepStrictEqual(t.unused(), []);
-      assert.deepStrictEqual(yield* savedL1(t.data), record({ pendingSend: null }));
-    }),
-  );
+  const refusals: ReadonlyArray<readonly [string, string, boolean]> = [
+    ["the host service is not running", "Host service for this machine isn't running", true],
+    ["the agent exited", `No agent is running in terminal ${L1_TERM}`, true],
+    ["a failure Paradev does not name", "something Paradev never said", false],
+  ];
+  for (const [what, stderr, untyped] of refusals) {
+    it.live(`a terminals send that fails as ${what} ${untyped ? "clears the send, so a repeat types it" : "keeps the send pending"}`, () =>
+      Effect.gen(function* () {
+        const t = rig([l1Snapshot(), quiet(), { argv: textSend, fail: stderr }], { agentRunning: true, config: FAST_POLL });
+        yield* seed(t.data, record());
+        const error = yield* Effect.flip(t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT)));
+        assert.deepInclude(error, { _tag: "FactorySessionsError", operation: "send" });
+        assert.deepStrictEqual(t.unused(), []);
+        assert.deepStrictEqual(
+          yield* savedL1(t.data),
+          record({ pendingSend: untyped ? null : { commandId: SEND_ID, before: AFTER_GATE_AT } }),
+        );
+      }),
+    );
+  }
 
   it.live("a send under another command id clears the pending one and types as a fresh send", () =>
     Effect.gen(function* () {
