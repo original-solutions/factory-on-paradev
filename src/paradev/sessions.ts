@@ -821,7 +821,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   // ---- send, resume ---------------------------------------------------------------------------
 
-  /** The record with `terminal` (when given) as its current agent, a turn for `commandId`, no resume pending. */
+  /** The record with `terminal` (when given) as its current agent, a turn for `commandId`, nothing pending. */
   const withTurn = (record: ThreadRecord, commandId: string, kind: "send" | "resume", terminal?: string) =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
@@ -830,6 +830,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         terminals: terminal === undefined ? record.terminals : [...record.terminals, terminal],
         turns: [...record.turns, { commandId, at: now, kind }],
         pendingResume: null,
+        pendingSend: null,
       };
       yield* save(next);
       return next;
@@ -881,15 +882,22 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       yield* withTurn(pending, commandId, "resume", started.sessionId);
     });
 
-  /** Reads explain every `sendPollMs` for up to `windowMs`: whether its last hook is newer than `before`. */
+  /** Whether the agent's last hook is newer than `before`, the hook read before the text was typed. */
+  const hookedSince = (explained: Explanation, before: number | null) =>
+    explained.lastEventAt !== null && (before === null || explained.lastEventAt > before);
+
+  /**
+   * Reads explain every `sendPollMs` for up to `windowMs`, at least once: null as soon as the last
+   * hook is newer than `before`, else the last explanation read.
+   */
   const reactedWithin = (record: ThreadRecord, terminal: string, before: number | null, windowMs: number) =>
     Effect.gen(function* () {
-      for (let waited = 0; waited < windowMs; waited += sendPollMs) {
+      for (let waited = sendPollMs; ; waited += sendPollMs) {
         yield* Effect.sleep(sendPollMs);
-        const { lastEventAt } = yield* explain(record, terminal);
-        if (lastEventAt !== null && (before === null || lastEventAt > before)) return true;
+        const explained = yield* explain(record, terminal);
+        if (hookedSince(explained, before)) return null;
+        if (waited >= windowMs) return explained;
       }
-      return false;
     });
 
   /**
@@ -899,6 +907,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * record lacks is the one a pending resume started, and is adopted under that resume's id;
    * with no resume pending it makes the process lookup ambiguous, so nothing is typed. Nor is it
    * when the agent is `blocked`: its permission prompt would take the text and Enter as an answer.
+   * The send is recorded as pending before its text is typed, so a repeat of its command id types
+   * nothing: a hook since the text was typed counts its turn, and none fails for the next repeat.
    */
   const deliver = (record: ThreadRecord, commandId: string, text: string): Effect.Effect<
     void,
@@ -907,6 +917,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     Effect.gen(function* () {
       const threadId = record.threadId;
       if (record.turns.some((turn) => turn.commandId === commandId)) return;
+      // The core gave up on that send and sent another: this one is a fresh send.
+      if (record.pendingSend != null && record.pendingSend.commandId !== commandId) {
+        record = { ...record, pendingSend: null };
+        yield* save(record);
+      }
       const terminal = record.terminals.at(-1);
       if (record.archivedAt !== null || terminal === undefined) return yield* new ThreadNotFoundError({ threadId });
       const worktreePath = record.worktreePath;
@@ -943,6 +958,15 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const { explained, run } = yield* explainRun(record, terminal);
       const alive = run !== "interrupted" && (yield* processes.find(commandOf(record), worktreePath)) !== null;
       if (!alive) return yield* resume(record, true, worktreePath, commandId, text);
+      // This command id typed its text before, then failed or crashed before counting its turn.
+      const typed = record.pendingSend ?? null;
+      if (typed !== null) {
+        if (!hookedSince(explained, typed.before)) {
+          return yield* fail(`${commandId} typed its text before and the agent shows no hook since; nothing was typed`);
+        }
+        yield* withTurn(record, commandId, "send");
+        return;
+      }
       // A blocked agent shows a permission prompt: the text and Enter would answer it.
       if (explained.state === "blocked") {
         return yield* new MessageRejectedError({
@@ -952,20 +976,31 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         });
       }
 
+      const before = explained.lastEventAt;
+      const typing: ThreadRecord = { ...record, pendingSend: { commandId, before } };
+      yield* save(typing);
       const terminalArgv = ["terminals", "send", "--local", "--workspace", record.workspaceId, "--terminal", terminal];
       yield* call(cli, [...terminalArgv, "--text", text], 30_000);
       const [first, second] = sendWaitsMs;
-      if (!(yield* reactedWithin(record, terminal, explained.lastEventAt, first))) {
+      if ((yield* reactedWithin(typing, terminal, before, first)) !== null) {
         yield* call(cli, [...terminalArgv, "--keys", "enter"], 30_000);
-        if (!(yield* reactedWithin(record, terminal, explained.lastEventAt, second))) {
+        const last = yield* reactedWithin(typing, terminal, before, second);
+        // Only an idle agent dropped the text; a busy one may still have it queued.
+        if (last?.state === "idle") {
+          yield* save({ ...typing, pendingSend: null });
           return yield* new MessageRejectedError({
             threadId,
             commandId,
             cause: `the agent did not react within ${(first + second) / 1000} s, Enter included`,
           });
         }
+        if (last !== null) {
+          return yield* fail(
+            `the agent, ${last.state}, did not react within ${(first + second) / 1000} s, Enter included; the text may still be queued`,
+          );
+        }
       }
-      yield* withTurn(record, commandId, "send");
+      yield* withTurn(typing, commandId, "send");
     });
 
   const send = Effect.fn("ParadevSessions.send")(function* (threadId: string, commandId: string, text: string) {
