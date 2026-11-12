@@ -127,6 +127,13 @@ export const baseNotOnOrigin = (base: string): string =>
 /** The ledger detail when the watched repo has no T3 project on this machine. */
 export const NO_PROJECT = "no T3 project for this repo on this machine";
 
+/**
+ * The ledger detail when the project at the repo's path is the clone of another GitHub repo
+ * (`other`), or of none (null): a session there would work on that repo's code.
+ */
+export const otherRepoProject = (repo: string, other: string | null): string =>
+  `the project at this repo's path is the clone of ${other ?? "no GitHub repo"}, not ${repo}`;
+
 /** The ledger detail when the T3 project and the T3 settings name no default model. */
 export const NO_DEFAULT_MODEL = "no default model: set one on the T3 project or in Settings";
 

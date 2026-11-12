@@ -717,6 +717,7 @@ const launchSession = Effect.fn("RunnerStart.launchSession")(function* (
   const commandId = `softfac:${runIdToString(run)}:launch`;
   const target = launchable(
     found === undefined ? yield* ctx.sessions.findProject(ctx.repoPath) : found,
+    ctx.repo,
   );
   if (Result.isFailure(target)) {
     const missing = target.failure;

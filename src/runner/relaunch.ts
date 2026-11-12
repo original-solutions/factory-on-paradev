@@ -82,7 +82,7 @@ export const relaunchSession = Effect.fn("RunnerRelaunch.relaunchSession")(funct
     yield* goStuck(ctx, issue, out, at, "launch-failed", stop);
     return { kind: "stuck", reason: recordedReason(stop) } as const;
   });
-  const target = launchable(yield* ctx.sessions.findProject(ctx.repoPath));
+  const target = launchable(yield* ctx.sessions.findProject(ctx.repoPath), ctx.repo);
   if (Result.isFailure(target)) {
     const missing = target.failure;
     return yield* refuse(from.earlierCall ? sessionMayExistNote(missing, commandId) : missing);

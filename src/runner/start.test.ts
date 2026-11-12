@@ -46,6 +46,7 @@ import {
   LAUNCH_FAILED,
   NO_DEFAULT_MODEL,
   NO_PROJECT,
+  otherRepoProject,
   TEXT_CHANGED,
   launchMessage,
   sessionMayExistNote,
@@ -1155,6 +1156,35 @@ describe("start: the launch", () => {
         ...startedEvents().slice(0, 3),
         ...stuckTail(NO_DEFAULT_MODEL, "launch-failed"),
       ]);
+    }),
+  );
+
+  // A path that is another repo's clone: a session there would work on that repo's code. A project
+  // of this repo in another case, or one whose adapter does not know its repo, launches.
+  it.effect("a project that is another repo's clone, or of none, goes stuck before any launch", () =>
+    Effect.gen(function* () {
+      for (const other of ["rawphp/other", null] as const) {
+        const dataDir = tempDir();
+        const { tracker, calls } = fakeTracker({});
+        const t3 = fakeSessions(dataDir, { project: { id: "proj-1", model: MODEL, repo: other } });
+        const outcome = yield* startIn(dataDir, tracker, t3.sessions);
+        const reason = otherRepoProject(REPO, other);
+        assert.deepStrictEqual(outcome, { kind: "stuck", run: run7, reason });
+        assert.deepStrictEqual(calls.slice(3), stuckCalls(LAUNCH_FAILED, null));
+        assert.deepStrictEqual(t3.calls, ["findProject /work/softfac"]);
+      }
+      assert.strictEqual(
+        otherRepoProject(REPO, null),
+        "the project at this repo's path is the clone of no GitHub repo, not rawphp/softfac",
+      );
+      for (const repo of ["RawPHP/SoftFac", undefined]) {
+        const dataDir = tempDir();
+        const { tracker } = fakeTracker({});
+        const project = { id: "proj-1", model: MODEL, ...(repo !== undefined && { repo }) };
+        const t3 = fakeSessions(dataDir, { project });
+        const outcome = yield* startIn(dataDir, tracker, t3.sessions);
+        assert.notStrictEqual(outcome.kind, "stuck", String(repo));
+      }
     }),
   );
 

@@ -92,6 +92,7 @@ import {
   type InterruptContext,
 } from "./runner/building.ts";
 import { feedback, type FeedbackContext } from "./runner/feedback.ts";
+import { isOtherRepoProject } from "./runner/launchTarget.ts";
 import {
   gate as gateStep,
   lastPass,
@@ -1039,8 +1040,9 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     // The repos `repos:` lists, each with its clone a Paradev project on this Mac. A repo whose
     // clone is none, or is the project of another GitHub repo (a `path` copied from another
     // entry), is skipped with one item that says so: a session there would work on the other
-    // repo's code. A lookup that fails keeps the repo and its items as they are, since the
-    // Paradev hold already covers a Paradev that does not answer. A repo that has left `repos:`
+    // repo's code; the launch refuses such a project too, for a pass whose lookup failed. A lookup
+    // that fails keeps the repo and its items as they are, since the Paradev hold already covers
+    // a Paradev that does not answer. A repo that has left `repos:`
     // has departed while it still has an open item: read from the items, so it holds across
     // restarts.
     const listWatched = Effect.gen(function* () {
@@ -1052,10 +1054,6 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       for (const [index, entry] of machine.repos.entries()) {
         if (projects !== null) {
           const project = projects[index] ?? null;
-          const otherRepo =
-            project !== null &&
-            project.repo !== undefined &&
-            (project.repo === null || asciiLower(project.repo) !== asciiLower(entry.repo));
           const skip =
             project === null
               ? {
@@ -1063,11 +1061,11 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
                   id: noProjectItemId(entry.repo),
                   message: `${plain(entry.repo)}: its clone ${plain(entry.path)} is no Paradev project on this Mac; add it once with: ${plain(addProjectCommand(entry.path))}`,
                 }
-              : otherRepo
+              : isOtherRepoProject(project, entry.repo)
                 ? {
                     reason: "paradev-project-repo",
-                    id: otherRepoItemId(entry.repo, project.repo),
-                    message: `${plain(entry.repo)}: its clone ${plain(entry.path)} is the Paradev project of ${project.repo === null ? "no GitHub repo" : plain(project.repo)}; point its path at a clone of ${plain(entry.repo)}`,
+                    id: otherRepoItemId(entry.repo, project.repo ?? null),
+                    message: `${plain(entry.repo)}: its clone ${plain(entry.path)} is the Paradev project of ${plain(project.repo ?? "no GitHub repo")}; point its path at a clone of ${plain(entry.repo)}`,
                   }
                 : null;
           yield* attention.clear(

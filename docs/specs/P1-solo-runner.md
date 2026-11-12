@@ -405,7 +405,7 @@ Reserved for P4: a `control_plane` block, whose `url` will default to `https://f
 
 A repo whose `path` is not a Paradev project on this Mac is skipped with `claim_skipped` reason `no-paradev-project` and one attention item that gives the `projects create` command.
 
-A repo whose `path` is the Paradev project of another GitHub repo, or of none, is skipped with `claim_skipped` reason `paradev-project-repo` and one attention item naming both: a session there would work on the other repo's code.
+A repo whose `path` is the Paradev project of another GitHub repo, or of none, is skipped with `claim_skipped` reason `paradev-project-repo` and one attention item naming both: a session there would work on the other repo's code. A launch refuses such a project too, so a pass whose project lookup failed cannot start one there.
 
 ### Repo config
 
