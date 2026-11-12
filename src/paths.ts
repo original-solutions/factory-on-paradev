@@ -55,9 +55,9 @@ export const layer = Layer.effect(
 );
 
 /** The launchd label of the runner agent. */
-export const LABEL = "io.github.rawphp.factory-runner";
+export const LABEL = "io.github.original-solutions.factory-runner";
 /** The launchd label of the agent that rotates the runner's log. */
-export const LOGROTATE_LABEL = "io.github.rawphp.factory-runner.logrotate";
+export const LOGROTATE_LABEL = "io.github.original-solutions.factory-runner.logrotate";
 
 /**
  * Where `install` puts things under `home`: the share folder with its `versions/` and the
