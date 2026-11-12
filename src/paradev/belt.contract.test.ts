@@ -286,6 +286,11 @@ describe("the belt write and its size cap", () => {
           assert.strictEqual(warnings.length, 1);
           assert.include(warnings[0], "org");
           assert.strictEqual(saved(dataDir).visibility, "org");
+          // Paradev has answered for this HTML at this visibility: later passes do not ask again.
+          yield* write(at(recordedBelt(), NOW + 60_000), NOW + 60_000);
+          yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS * 2), NOW + PUBLISH_RETRY_MS * 2);
+          assert.strictEqual(fake.calls.filter(isPublish).length, 1);
+          assert.strictEqual(fake.calls.filter(isSet).length, 0);
         }),
       { seed: seedPage(HTML, "org") },
     ),
