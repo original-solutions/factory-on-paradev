@@ -143,6 +143,7 @@ const saved = (dataDir: string) =>
     pageId: string;
     htmlSha256: string;
     visibility: string;
+    asked: string;
   };
 
 /** A `belt.json` naming the spike's page, published from `html` at `visibility`. */
@@ -177,6 +178,7 @@ describe("the belt write and its size cap", () => {
           pageId: PAGE_ID,
           htmlSha256: sha256(HTML),
           visibility: "just_me",
+          asked: "just_me",
         });
         assert.deepStrictEqual(fake.calls[1], [
           "pages",
@@ -230,6 +232,7 @@ describe("the belt write and its size cap", () => {
             pageId: PAGE_ID,
             htmlSha256: sha256(HTML),
             visibility: "just_me",
+            asked: "just_me",
           });
         }),
       { seed: seedPage("an older page") },

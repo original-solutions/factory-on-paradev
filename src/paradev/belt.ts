@@ -193,11 +193,15 @@ export interface BeltTarget {
   readonly memo: BeltMemo;
 }
 
-/** `<data>/belt.json`. A file from before `visibility` was saved reads as published at none. */
+/**
+ * `<data>/belt.json`: the page, the HTML last published to it, the visibility asked for then and
+ * the one Paradev reported. A file from before the visibilities were saved reads as neither.
+ */
 const SavedPage = Schema.Struct({
   pageId: Schema.String,
   htmlSha256: Schema.String,
   visibility: Schema.optional(Schema.String),
+  asked: Schema.optional(Schema.String),
 });
 const decodeSaved = Schema.decodeUnknownOption(Schema.fromJsonString(SavedPage));
 /** The publish answer: the page, and the visibility Paradev gave it (absent from none on record). */
@@ -222,6 +226,9 @@ const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget, nowMs: nu
   );
   const { visibility } = target;
   if (saved?.htmlSha256 === htmlSha256 && saved.visibility === visibility) return saved.pageId;
+  // Paradev kept the page at another audience when asked for this one: asking again with the
+  // same HTML gets the same answer, so the page waits for a new HTML, config or belt.json.
+  if (saved?.htmlSha256 === htmlSha256 && saved.asked === visibility) return null;
   const timedOutAt = target.memo.publishTimedOutAtMs;
   if (saved === null && timedOutAt !== null && nowMs - timedOutAt < PUBLISH_RETRY_MS) return null;
   const file = path.join(target.dataDir, "belt-page", "index.html");
@@ -247,7 +254,10 @@ const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget, nowMs: nu
   // What Paradev says the page is at, not what was asked: a version published to an existing
   // page may keep its audience.
   const got = published.success.visibility ?? visibility;
-  yield* writeFileAtomically(savedFile, `${JSON.stringify({ pageId, htmlSha256, visibility: got })}\n`);
+  yield* writeFileAtomically(
+    savedFile,
+    `${JSON.stringify({ pageId, htmlSha256, visibility: got, asked: visibility })}\n`,
+  );
   if (got !== visibility) {
     yield* Effect.logWarning(
       `belt page ${pageId} is at visibility ${got}, not ${visibility}: no belt goes to it; delete ${savedFile} to publish a new page`,
