@@ -144,6 +144,42 @@ describe("beltPayload", () => {
     ]);
   });
 
+  it("puts no log line or error text from an attention item on the belt", () => {
+    const item = (id: string, kind: AttentionItem["kind"], message: string): AttentionItem => ({
+      id,
+      kind,
+      repo: null,
+      issue: null,
+      run: null,
+      message,
+      firstSeenMs: NOW,
+    });
+    const belt = payload(
+      [],
+      [
+        item("pass-errors", "pass-errors", "the pass has failed 3 times in a row, last: error: gh: secret-repo not found"),
+        item("config", "config", "machine config not loaded: /Users/x/.config/factory-runner/config.yml: repos: is missing"),
+        item(
+          "config-not-loaded:a/b",
+          "attention",
+          "a/b: project config not loaded for 3 passes in a row, issues are not being picked up; last error: fatal: could not read Username",
+        ),
+        item("long", "attention", "w".repeat(400)),
+      ],
+    );
+    const text = JSON.stringify(belt.attention);
+    for (const leak of ["error: gh", "secret-repo", "config.yml", "fatal:", "Username"]) {
+      assert.notInclude(text, leak);
+    }
+    assert.include(belt.attention[0]!.text, "runner log");
+    assert.include(belt.attention[1]!.text, "runner log");
+    assert.strictEqual(
+      belt.attention[2]!.text,
+      "a/b: project config not loaded for 3 passes in a row, issues are not being picked up",
+    );
+    assert.isAtMost(belt.attention[3]!.text.length, 300);
+  });
+
   it("keeps every run when the payload fits", () => {
     const runs = [run(1), finished(2), finished(3)];
     assert.strictEqual(payload(runs).runs.length, 3);

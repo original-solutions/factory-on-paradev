@@ -16,10 +16,12 @@ import {
   BELT_HTML,
   HEARTBEAT_MS,
   newBeltMemo,
+  PUBLISH_RETRY_MS,
   writeBelt,
   type BeltMemo,
   type BeltTarget,
 } from "./belt.ts";
+import { FactoryProcess, type RunResult } from "../process.ts";
 import { layer as cliLayer, SupersetCli } from "./cli.ts";
 import { fakeSuperset, readFixture, type Step } from "./fake-superset.ts";
 
@@ -47,6 +49,26 @@ const isSet = (argv: ReadonlyArray<string>) => argv[0] === "pages" && argv[1] ==
 const publishStep: Step = { argv: isPublish, fixture: "pages-publish-probe-ws" };
 const setStep: Step = { argv: isSet, fixture: "pages-storage-set-belt" };
 
+interface WriterOptions {
+  /** Writes files into the data dir before the writer runs. */
+  readonly seed?: (dataDir: string) => void;
+  readonly visibility?: BeltVisibility;
+  readonly memo?: BeltMemo;
+  /** The first `pages publish` gets no answer in time: the CLI runner's timeout. */
+  readonly firstPublishTimesOut?: boolean;
+}
+
+type BeltVisibility = BeltTarget["visibility"];
+
+const timedOut: RunResult = {
+  exitCode: null,
+  timedOut: true,
+  tail: "",
+  stderrTail: "",
+  truncated: false,
+  tailTruncated: false,
+};
+
 /**
  * Runs `body` with a temp data dir, a scripted superset and the warnings the writer logs. The
  * script must be used up.
@@ -59,20 +81,36 @@ const withWriter = <A>(
     fake: ReturnType<typeof fakeSuperset>,
     warnings: Array<string>,
   ) => Effect.Effect<A, never, FileSystem.FileSystem | Path.Path>,
-  seed: (dataDir: string) => void = () => {},
-  memo: BeltMemo = newBeltMemo(),
+  options: WriterOptions = {},
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const dataDir = yield* fs.makeTempDirectoryScoped({ prefix: "belt-" });
-      seed(dataDir);
+      options.seed?.(dataDir);
       const fake = fakeSuperset(script);
+      const scripted = yield* Effect.provide(
+        Effect.gen(function* () {
+          return yield* FactoryProcess;
+        }),
+        fake.layer,
+      );
+      let timeOut = options.firstPublishTimesOut === true;
+      const process = FactoryProcess.of({
+        run: (input) => {
+          if (timeOut && input.args?.[1] === "publish") {
+            timeOut = false;
+            fake.calls.push((input.args ?? []).slice(0, -1));
+            return Effect.succeed(timedOut);
+          }
+          return scripted.run(input);
+        },
+      });
       const cli = yield* Effect.provide(
         Effect.gen(function* () {
           return yield* SupersetCli;
         }),
-        cliLayer({ cli: "superset" }).pipe(Layer.provide(fake.layer)),
+        cliLayer({ cli: "superset" }).pipe(Layer.provide(Layer.succeed(FactoryProcess, process))),
       );
       const warnings: Array<string> = [];
       const capture = Logger.make(({ logLevel, message }) => {
@@ -83,8 +121,8 @@ const withWriter = <A>(
         dataDir,
         host: "mac",
         version: "0.0.0",
-        visibility: "just_me",
-        memo,
+        visibility: options.visibility ?? "just_me",
+        memo: options.memo ?? newBeltMemo(),
       };
       const result = yield* body(
         (belt, nowMs) =>
@@ -104,7 +142,17 @@ const saved = (dataDir: string) =>
   JSON.parse(NodeFS.readFileSync(NodePath.join(dataDir, "belt.json"), "utf8")) as {
     pageId: string;
     htmlSha256: string;
+    visibility: string;
   };
+
+/** A `belt.json` naming the spike's page, published from `html` at `visibility`. */
+const seedPage =
+  (html = HTML, visibility = "just_me", pageId = PAGE_ID) =>
+  (dataDir: string) =>
+    NodeFS.writeFileSync(
+      NodePath.join(dataDir, "belt.json"),
+      JSON.stringify({ pageId, htmlSha256: sha256(html), visibility }),
+    );
 
 describe("the belt write and its size cap", () => {
   it.effect("the first pass publishes belt.html without --workspace, saves the page, then writes the belt", () =>
@@ -125,7 +173,11 @@ describe("the belt write and its size cap", () => {
           "--no-watch",
         ]);
         assert.notInclude(fake.calls[0]!, "--workspace");
-        assert.deepStrictEqual(saved(dataDir), { pageId: PAGE_ID, htmlSha256: sha256(HTML) });
+        assert.deepStrictEqual(saved(dataDir), {
+          pageId: PAGE_ID,
+          htmlSha256: sha256(HTML),
+          visibility: "just_me",
+        });
         assert.deepStrictEqual(fake.calls[1], [
           "pages",
           "storage",
@@ -142,7 +194,7 @@ describe("the belt write and its size cap", () => {
     ),
   );
 
-  it.effect("a saved page with the same HTML is not published again", () =>
+  it.effect("a saved page with the same HTML and visibility is not published again", () =>
     withWriter(
       [setStep],
       (write, _dataDir, fake) =>
@@ -151,11 +203,7 @@ describe("the belt write and its size cap", () => {
           assert.strictEqual(fake.calls.length, 1);
           assert.isTrue(isSet(fake.calls[0]!));
         }),
-      (dataDir) =>
-        NodeFS.writeFileSync(
-          NodePath.join(dataDir, "belt.json"),
-          JSON.stringify({ pageId: PAGE_ID, htmlSha256: sha256(HTML) }),
-        ),
+      { seed: seedPage() },
     ),
   );
 
@@ -174,27 +222,64 @@ describe("the belt write and its size cap", () => {
             PAGE_ID,
             "--label",
             "runner 0.0.0",
+            "--visibility",
+            "just_me",
             "--no-watch",
           ]);
-          assert.deepStrictEqual(saved(dataDir), { pageId: PAGE_ID, htmlSha256: sha256(HTML) });
+          assert.deepStrictEqual(saved(dataDir), {
+            pageId: PAGE_ID,
+            htmlSha256: sha256(HTML),
+            visibility: "just_me",
+          });
         }),
-      (dataDir) =>
-        NodeFS.writeFileSync(
-          NodePath.join(dataDir, "belt.json"),
-          JSON.stringify({ pageId: PAGE_ID, htmlSha256: sha256("an older page") }),
-        ),
+      { seed: seedPage("an older page") },
+    ),
+  );
+
+  it.effect("a visibility that changed in the config is published to the saved page before the belt is written", () =>
+    withWriter(
+      [publishStep, setStep],
+      (write, dataDir, fake) =>
+        Effect.gen(function* () {
+          yield* write(at(recordedBelt(), NOW), NOW);
+          const publish = fake.calls[0]!;
+          assert.isTrue(isPublish(publish));
+          assert.deepStrictEqual(publish.slice(3, 5), ["--page", PAGE_ID]);
+          assert.deepStrictEqual(publish.slice(7, 9), ["--visibility", "just_me"]);
+          assert.isTrue(isSet(fake.calls[1]!));
+          assert.strictEqual(saved(dataDir).visibility, "just_me");
+        }),
+      // Published for the org; the config now says just_me.
+      { seed: seedPage(HTML, "org") },
+    ),
+  );
+
+  it.effect("a belt.json from before visibility was saved publishes again with the configured one", () =>
+    withWriter(
+      [publishStep, setStep],
+      (write, _dataDir, fake) =>
+        Effect.gen(function* () {
+          yield* write(at(recordedBelt(), NOW), NOW);
+          assert.deepStrictEqual(fake.calls[0]!.slice(7, 9), ["--visibility", "org"]);
+        }),
+      {
+        visibility: "org",
+        seed: (dataDir) =>
+          NodeFS.writeFileSync(
+            NodePath.join(dataDir, "belt.json"),
+            JSON.stringify({ pageId: PAGE_ID, htmlSha256: sha256(HTML) }),
+          ),
+      },
     ),
   );
 
   it.effect("an unchanged payload is not written again until the last write is 10 minutes old", () =>
-    withWriter([publishStep, setStep, setStep, setStep], (write, _dataDir, fake) =>
+    withWriter([publishStep, setStep, setStep, setStep, setStep], (write, _dataDir, fake) =>
       Effect.gen(function* () {
         const belt = recordedBelt();
         yield* write(at(belt, NOW), NOW);
-        // Only `updatedAt` and the pass time differ: no write.
+        // Only `updatedAt` differs: no write.
         yield* write(at(belt, NOW + 60_000), NOW + 60_000);
-        const later = { ...belt, runner: { ...belt.runner, lastPassAt: new Date(NOW + 120_000).toISOString() } };
-        yield* write(at(later, NOW + 120_000), NOW + 120_000);
         yield* write(at(belt, NOW + HEARTBEAT_MS - 1), NOW + HEARTBEAT_MS - 1);
         assert.strictEqual(fake.calls.filter(isSet).length, 1);
         // The heartbeat: the same payload, 10 minutes after the last write.
@@ -204,10 +289,35 @@ describe("the belt write and its size cap", () => {
         const changed = { ...belt, counts: { ...belt.counts, building: belt.counts.building + 1 } };
         yield* write(at(changed, NOW + HEARTBEAT_MS + 1), NOW + HEARTBEAT_MS + 1);
         assert.strictEqual(fake.calls.filter(isSet).length, 3);
+        // So is a new pass time: only `updatedAt` is ignored.
+        const later = { ...changed, runner: { ...changed.runner, lastPassAt: "2026-11-12T09:30:00.000Z" } };
+        yield* write(at(later, NOW + HEARTBEAT_MS + 2), NOW + HEARTBEAT_MS + 2);
+        assert.strictEqual(fake.calls.filter(isSet).length, 4);
         assert.strictEqual(HEARTBEAT_MS, 10 * 60_000);
       }),
     ),
   );
+
+  it.effect("a page that changes is written to at once, whatever was written to the last one", () => {
+    const memo = newBeltMemo();
+    const other = "11111111-2222-3333-4444-555555555555";
+    return Effect.gen(function* () {
+      yield* withWriter(
+        [setStep],
+        (write) => write(at(recordedBelt(), NOW), NOW),
+        { seed: seedPage(), memo },
+      );
+      yield* withWriter(
+        [setStep],
+        (write, _dataDir, fake) =>
+          Effect.gen(function* () {
+            yield* write(at(recordedBelt(), NOW + 60_000), NOW + 60_000);
+            assert.strictEqual(fake.calls.find(isSet)![2], other);
+          }),
+        { seed: seedPage(HTML, "just_me", other), memo },
+      );
+    });
+  });
 
   it.effect("a value over 65536 bytes is a warning, and the next pass writes again", () =>
     withWriter(
@@ -242,6 +352,26 @@ describe("the belt write and its size cap", () => {
     ),
   );
 
+  it.effect("a first publish that times out may have made a page, so no new one is tried for an hour", () =>
+    withWriter(
+      [publishStep, setStep],
+      (write, dataDir, fake, warnings) =>
+        Effect.gen(function* () {
+          yield* write(at(recordedBelt(), NOW), NOW);
+          assert.strictEqual(warnings.length, 1);
+          assert.include(warnings[0], "TIMEOUT");
+          // Passes within the hour publish nothing.
+          yield* write(at(recordedBelt(), NOW + 60_000), NOW + 60_000);
+          yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS - 1), NOW + PUBLISH_RETRY_MS - 1);
+          assert.strictEqual(fake.calls.filter(isPublish).length, 1);
+          yield* write(at(recordedBelt(), NOW + PUBLISH_RETRY_MS), NOW + PUBLISH_RETRY_MS);
+          assert.strictEqual(fake.calls.filter(isPublish).length, 2);
+          assert.strictEqual(saved(dataDir).pageId, PAGE_ID);
+        }),
+      { firstPublishTimesOut: true },
+    ),
+  );
+
   it.effect("a republish that fails is a warning and the belt still goes to the saved page", () =>
     withWriter(
       [{ argv: isPublish, fail: "Could not connect to API" }, setStep],
@@ -254,11 +384,7 @@ describe("the belt write and its size cap", () => {
           // The old hash stays, so the next pass publishes again.
           assert.strictEqual(saved(dataDir).htmlSha256, sha256("an older page"));
         }),
-      (dataDir) =>
-        NodeFS.writeFileSync(
-          NodePath.join(dataDir, "belt.json"),
-          JSON.stringify({ pageId: PAGE_ID, htmlSha256: sha256("an older page") }),
-        ),
+      { seed: seedPage("an older page") },
     ),
   );
 });

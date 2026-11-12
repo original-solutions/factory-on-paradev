@@ -24,6 +24,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe, vi } from "vitest";
 
 import { Attention, type NewItem } from "./attention.ts";
+import { pauseClaims } from "./claims.ts";
 import {
   timeLimitOnlyProjectConfig,
   type MachineConfig,
@@ -820,13 +821,18 @@ describe("on the Paradev CLI", () => {
             ? reply(0, readFixture("pages-publish-probe-ws").stdout)
             : reply(0, readFixture("pages-storage-set-belt").stdout);
         };
-        const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    visibility: just_me\n`;
+        const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    visibility: org\n`;
         const { loop, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", belt), noGhProcess, {}, paradev);
         yield* waitUntil("the belt write", () => pages.some((argv) => argv[1] === "storage"));
         const publish = pages[0]!;
         assert.deepStrictEqual(publish.slice(0, 2), ["pages", "publish"]);
         assert.strictEqual(publish[2], NodePath.join(factoryDir, "belt-page", "index.html"));
         assert.notInclude(publish, "--workspace");
+        // The visibility the config names.
+        assert.deepStrictEqual(publish.slice(publish.indexOf("--visibility"), publish.indexOf("--visibility") + 2), [
+          "--visibility",
+          "org",
+        ]);
         const set = pages.find((argv) => argv[1] === "storage")!;
         assert.deepStrictEqual(set.slice(0, 8), [
           "pages",
@@ -846,11 +852,46 @@ describe("on the Paradev CLI", () => {
         assert.strictEqual(written.runner.paradevCli, "2.0.8");
         assert.isTrue(written.runner.paradevOnline);
         assert.isFalse(written.runner.claimsPaused);
-        // A later pass with the same belt publishes nothing and writes nothing.
+        // A later pass publishes nothing and hands its own belt over: its pass time is new.
         yield* idleAfter(loop, factoryDir, 1);
-        const before = pages.length;
+        const writes = () => pages.filter((argv) => argv[1] === "storage");
+        const before = writes().length;
         yield* onePassMore(loop, factoryDir);
-        assert.strictEqual(pages.length, before);
+        yield* waitUntil("the second belt write", () => writes().length > before);
+        assert.strictEqual(pages.filter((argv) => argv[1] === "publish").length, 1);
+        const second = JSON.parse(writes().at(-1)![8]!) as { runner: { lastPassAt: string } };
+        assert.notStrictEqual(second.runner.lastPassAt, (JSON.parse(set[8]!) as { runner: { lastPassAt: string } }).runner.lastPassAt);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("the belt says when Paradev is offline and when claims are paused by hand", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        const writes: Array<{ runner: { paradevOnline: boolean; claimsPaused: boolean } }> = [];
+        paradev.pages = (argv) => {
+          if (argv[1] === "publish") return reply(0, readFixture("pages-publish-probe-ws").stdout);
+          writes.push(JSON.parse(argv[8]!) as (typeof writes)[number]);
+          return reply(0, readFixture("pages-storage-set-belt").stdout);
+        };
+        const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n`;
+        const { loop, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", belt), noGhProcess, {}, paradev);
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* waitUntil("the first belt write", () => writes.length > 0);
+        assert.deepStrictEqual(
+          { online: writes[0]!.runner.paradevOnline, paused: writes[0]!.runner.claimsPaused },
+          { online: true, paused: false },
+        );
+        paradev.down = "Host service for this machine isn't running";
+        pauseClaims(factoryDir, Date.now());
+        const before = writes.length;
+        yield* onePassMore(loop, factoryDir);
+        yield* waitUntil("the next belt write", () => writes.length > before);
+        assert.deepStrictEqual(
+          { online: writes.at(-1)!.runner.paradevOnline, paused: writes.at(-1)!.runner.claimsPaused },
+          { online: false, paused: true },
+        );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
