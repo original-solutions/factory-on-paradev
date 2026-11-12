@@ -822,7 +822,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   // ---- send, resume ---------------------------------------------------------------------------
 
-  /** The record with `terminal` (when given) as its current agent, a turn for `commandId`, nothing pending. */
+  /** The record with `terminal` (when given) as its current agent, a turn for `commandId`, no resume pending. */
   const withTurn = (record: ThreadRecord, commandId: string, kind: "send" | "resume", terminal?: string) =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
@@ -830,7 +830,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         ...record,
         terminals: terminal === undefined ? record.terminals : [...record.terminals, terminal],
         turns: [...record.turns, { commandId, at: now, kind }],
-        pending: null,
+        pendingResume: null,
       };
       yield* save(next);
       return next;
@@ -838,12 +838,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   /**
    * The id of the newest session Claude keeps for `worktreePath`: the newest `*.jsonl` under its
-   * projects folder, which Claude names for the path with every character but a letter or digit
-   * as `-`. Null when there is none.
+   * projects folder, named for the path with `/` and `.` as `-`. Null when there is none.
    */
   const newestSession = (worktreePath: string) =>
     Effect.gen(function* () {
-      const folder = `${claudeProjectsDir}/${worktreePath.replace(/[^A-Za-z0-9]/g, "-")}`;
+      const folder = `${claudeProjectsDir}/${worktreePath.replace(/[/.]/g, "-")}`;
       const names = yield* fs.readDirectory(folder).pipe(
         Effect.catchIf((error) => error.reason._tag === "NotFound", () => Effect.succeed([] as ReadonlyArray<string>)),
       );
@@ -862,7 +861,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * Starts the dead agent's Claude session again in a new terminal, with `text` as its prompt.
    * The dead terminal is closed first when the snapshot still lists it, since its agent reads
    * `working` for ever. The resume is recorded as pending before `agents create`, which is not
-   * retried: an agent it started before failing is adopted by the next send of the same id.
+   * retried: an agent it started before failing is adopted by the next send.
    */
   const resume = (record: ThreadRecord, listed: boolean, worktreePath: string, commandId: string, text: string) =>
     Effect.gen(function* () {
@@ -872,7 +871,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       }
       const session = yield* newestSession(worktreePath);
       if (session === null) return yield* new ThreadNotFoundError({ threadId: record.threadId });
-      const pending: ThreadRecord = { ...record, pending: { commandId, kind: "resume", before: null } };
+      const pending: ThreadRecord = { ...record, pendingResume: commandId };
       yield* save(pending);
       const argv = [
         "agents", "create", "--local", "--workspace", record.workspaceId, "--agent", record.agent,
@@ -894,32 +893,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     });
 
   /**
-   * After the text went in: a reaction in the first window, else Enter once and the second.
-   * No reaction is `MessageRejectedError`, and the send stays pending, so the same id again
-   * looks for a late reaction instead of typing the text twice.
-   */
-  const awaitReaction = (record: ThreadRecord, terminal: string, commandId: string, before: number | null) =>
-    Effect.gen(function* () {
-      const [first, second] = sendWaitsMs;
-      if (!(yield* reactedWithin(record, terminal, before, first))) {
-        yield* call(cli, ["terminals", "send", "--local", "--workspace", record.workspaceId, "--terminal", terminal, "--keys", "enter"], 30_000);
-        if (!(yield* reactedWithin(record, terminal, before, second))) {
-          return yield* new MessageRejectedError({
-            threadId: record.threadId,
-            commandId,
-            cause: `the agent did not react within ${(first + second) / 1000} s, Enter included`,
-          });
-        }
-      }
-      yield* withTurn(record, commandId, "send");
-    });
-
-  /**
    * Types into the current terminal only when its agent is alive. A killed agent still reads
    * `working`, and its terminal is a shell that would run the text, so the process decides as
-   * well as the state. An agent of the preset in a terminal the record lacks is the one a pending
-   * resume started, which is adopted; any other makes the process lookup ambiguous, so nothing
-   * is typed.
+   * well as the state. The snapshot is read first: an agent of the preset in a terminal the
+   * record lacks is the one a pending resume started, and is adopted under that resume's id;
+   * with no resume pending it makes the process lookup ambiguous, so nothing is typed.
    */
   const deliver = (record: ThreadRecord, commandId: string, text: string): Effect.Effect<
     void,
@@ -932,22 +910,25 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       if (record.archivedAt !== null || terminal === undefined) return yield* new ThreadNotFoundError({ threadId });
       const worktreePath = record.worktreePath;
       if (worktreePath === null) return yield* fail(`thread ${threadId} has no worktree to look for its agent in`);
-      const pending = record.pending ?? null;
-      if (pending?.kind === "send" && pending.commandId === commandId) {
-        return yield* awaitReaction(record, terminal, commandId, pending.before);
-      }
 
       const answer = yield* snapshot(record.workspaceId).pipe(
         Effect.catchIf(isNotFound, () => Effect.fail(new ThreadNotFoundError({ threadId }))),
       );
       const other = agentIn(answer, record.workspaceId, record.agent, record.terminals);
-      if (pending?.kind === "resume" && other !== null) {
-        if ("unclear" in other) {
+      const pending = record.pendingResume ?? null;
+      if (pending !== null && other !== null) {
+        if ("terminal" in other) {
+          return yield* deliver(yield* withTurn(record, pending, "resume", other.terminal), commandId, text);
+        }
+        // A terminal with no agent of the preset: one starting has a process; with none, the
+        // resume started nothing, and it is no longer pending.
+        if ((yield* processes.find(commandOf(record), worktreePath)) !== null) {
           return yield* fail(
-            `a resume of ${pending.commandId} is pending and terminal ${other.unclear.join(", ")} shows no ${record.agent} agent yet; nothing was started`,
+            `a resume of ${pending} is pending and terminal ${other.unclear.join(", ")} shows no ${record.agent} agent yet; nothing was started`,
           );
         }
-        return yield* deliver(yield* withTurn(record, pending.commandId, "resume", other.terminal), commandId, text);
+        record = { ...record, pendingResume: null };
+        yield* save(record);
       }
       if (other !== null && "terminal" in other) {
         return yield* fail(
@@ -963,10 +944,20 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const alive = run !== "interrupted" && (yield* processes.find(commandOf(record), worktreePath)) !== null;
       if (!alive) return yield* resume(record, true, worktreePath, commandId, text);
 
-      yield* call(cli, ["terminals", "send", "--local", "--workspace", record.workspaceId, "--terminal", terminal, "--text", text], 30_000);
-      const typed: ThreadRecord = { ...record, pending: { commandId, kind: "send", before: explained.lastEventAt } };
-      yield* save(typed);
-      yield* awaitReaction(typed, terminal, commandId, explained.lastEventAt);
+      const terminalArgv = ["terminals", "send", "--local", "--workspace", record.workspaceId, "--terminal", terminal];
+      yield* call(cli, [...terminalArgv, "--text", text], 30_000);
+      const [first, second] = sendWaitsMs;
+      if (!(yield* reactedWithin(record, terminal, explained.lastEventAt, first))) {
+        yield* call(cli, [...terminalArgv, "--keys", "enter"], 30_000);
+        if (!(yield* reactedWithin(record, terminal, explained.lastEventAt, second))) {
+          return yield* new MessageRejectedError({
+            threadId,
+            commandId,
+            cause: `the agent did not react within ${(first + second) / 1000} s, Enter included`,
+          });
+        }
+      }
+      yield* withTurn(record, commandId, "send");
     });
 
   const send = Effect.fn("ParadevSessions.send")(function* (threadId: string, commandId: string, text: string) {
