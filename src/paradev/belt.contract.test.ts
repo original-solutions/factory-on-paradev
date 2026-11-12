@@ -254,6 +254,21 @@ describe("the belt write and its size cap", () => {
     ),
   );
 
+  it.effect("while the page cannot be moved to the configured visibility, no belt is written to it", () =>
+    withWriter(
+      [{ argv: isPublish, fail: "Could not connect to API" }],
+      (write, dataDir, fake, warnings) =>
+        Effect.gen(function* () {
+          yield* write(at(recordedBelt(), NOW), NOW);
+          assert.strictEqual(warnings.length, 1);
+          assert.strictEqual(fake.calls.filter(isSet).length, 0);
+          assert.strictEqual(saved(dataDir).visibility, "org");
+        }),
+      // Published for the org; the config now says just_me.
+      { seed: seedPage(HTML, "org") },
+    ),
+  );
+
   it.effect("a belt.json from before visibility was saved publishes again with the configured one", () =>
     withWriter(
       [publishStep, setStep],
