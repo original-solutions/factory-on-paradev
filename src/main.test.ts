@@ -1223,7 +1223,7 @@ describe("the default-branch reads of a runner clone", () => {
     NodeFS.writeFileSync(NodePath.join(origin, "package.json"), PACKAGE_JSON);
     NodeFS.writeFileSync(NodePath.join(origin, "package-lock.json"), "{}\n");
     git(origin, "add", ".");
-    git(origin, "commit", "-q", "-m", "manifests");
+    git(origin, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "manifests");
     const clone = NodePath.join(cloneDirs("clone"), "repo");
     git(origin, "clone", "-q", origin, clone);
     return clone;
