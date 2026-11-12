@@ -858,6 +858,14 @@ const downOf = (error: CliError): ParadevDown => ({
 /** The item a repo whose clone is no Paradev project on this Mac keeps open, by repo. */
 const noProjectItemId = (repo: string) => `no-paradev-project:${asciiLower(repo)}`;
 
+/**
+ * The item a repo whose clone is the Paradev project of another GitHub repo (`other`, null for
+ * none) keeps open, by repo and that other repo, so a project that changes repo raises a new item.
+ */
+const otherRepoItemPrefix = (repo: string) => `paradev-project-repo:${asciiLower(repo)}:`;
+const otherRepoItemId = (repo: string, other: string | null) =>
+  `${otherRepoItemPrefix(repo)}${other === null ? "-" : asciiLower(other)}`;
+
 /** The most of a manifest the default-branch reads take; a longer one is a read that did not finish. */
 const MANIFEST_BYTES = 4 * 1024 * 1024;
 
@@ -893,7 +901,7 @@ const gitOutput = (process: FactoryProcess["Service"], root: string, args: Reado
  * each launch fetches its base into the clone's `refs/remotes/origin/<base>`, so these read the
  * default branch as of the last launch on it.
  */
-const defaultedFiles = Effect.fn("Factory.defaultedFiles")(function* (
+export const defaultedFiles = Effect.fn("Factory.defaultedFiles")(function* (
   process: FactoryProcess["Service"],
   root: string,
 ): Effect.fn.Return<Defaulted | "unresolved"> {
@@ -1006,32 +1014,58 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       return Result.isFailure(status) ? downOf(status.failure) : null;
     });
     // The repos `repos:` lists, each with its clone a Paradev project on this Mac. A repo whose
-    // clone is none is skipped with one item that says how to add it; a lookup that fails keeps
-    // the repo and its item as they are, since the Paradev hold already covers a Paradev that
-    // does not answer. A repo that has left `repos:` has departed while it still has an open
-    // item: read from the items, so it holds across restarts.
+    // clone is none, or is the project of another GitHub repo (a `path` copied from another
+    // entry), is skipped with one item that says so: a session there would work on the other
+    // repo's code. A lookup that fails keeps the repo and its items as they are, since the
+    // Paradev hold already covers a Paradev that does not answer. A repo that has left `repos:`
+    // has departed while it still has an open item: read from the items, so it holds across
+    // restarts.
     const listWatched = Effect.gen(function* () {
       const repos: Array<WatchedProject> = [];
       const unresolved: Array<string> = [];
       for (const entry of machine.repos) {
         const found = yield* Effect.result(sessions.findProject(entry.path));
-        if (Result.isSuccess(found) && found.success === null) {
-          yield* world.record({
-            event: "claim_skipped",
-            data: { repo: entry.repo, reason: "no-paradev-project" },
-          });
-          yield* attention.raise({
-            id: noProjectItemId(entry.repo),
-            kind: "attention",
-            repo: entry.repo,
-            issue: null,
-            run: null,
-            message: `${plain(entry.repo)}: its clone ${plain(entry.path)} is no Paradev project on this Mac; add it once with: ${plain(addProjectCommand(entry.path))}`,
-          });
-          continue;
-        }
         if (Result.isSuccess(found)) {
-          yield* attention.clear((item) => item.id === noProjectItemId(entry.repo));
+          const project = found.success;
+          const otherRepo =
+            project !== null &&
+            project.repo !== undefined &&
+            (project.repo === null || asciiLower(project.repo) !== asciiLower(entry.repo));
+          const skip =
+            project === null
+              ? {
+                  reason: "no-paradev-project",
+                  id: noProjectItemId(entry.repo),
+                  message: `${plain(entry.repo)}: its clone ${plain(entry.path)} is no Paradev project on this Mac; add it once with: ${plain(addProjectCommand(entry.path))}`,
+                }
+              : otherRepo
+                ? {
+                    reason: "paradev-project-repo",
+                    id: otherRepoItemId(entry.repo, project.repo),
+                    message: `${plain(entry.repo)}: its clone ${plain(entry.path)} is the Paradev project of ${project.repo === null ? "no GitHub repo" : plain(project.repo)}; point its path at a clone of ${plain(entry.repo)}`,
+                  }
+                : null;
+          yield* attention.clear(
+            (item) =>
+              item.id !== skip?.id &&
+              (item.id === noProjectItemId(entry.repo) ||
+                item.id.startsWith(otherRepoItemPrefix(entry.repo))),
+          );
+          if (skip !== null) {
+            yield* world.record({
+              event: "claim_skipped",
+              data: { repo: entry.repo, reason: skip.reason },
+            });
+            yield* attention.raise({
+              id: skip.id,
+              kind: "attention",
+              repo: entry.repo,
+              issue: null,
+              run: null,
+              message: skip.message,
+            });
+            continue;
+          }
         }
         if (machine.defaultProject === undefined) {
           repos.push({ ...entry, title: entry.repo });

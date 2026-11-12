@@ -42,6 +42,11 @@ export interface FactoryProject {
    * neither names one; the factory then launches nothing.
    */
   readonly model: Model | null;
+  /**
+   * The GitHub repo (`owner/name`) the project's clone belongs to, null when the project names
+   * none. Absent when the adapter does not know it.
+   */
+  readonly repo?: string | null;
 }
 
 /** Everything `launch` needs. */

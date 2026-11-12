@@ -31,9 +31,12 @@ export const isAlive = (pid: number): boolean => {
 export const isRunnerCommand = (command: string): boolean =>
   /(?:^|[\s/])(?:bin\.ts|factory-runner) run(?:\s|$)/.test(command);
 
-/** The command line of `pid` as `ps` shows it; null when `ps` cannot say. */
+/**
+ * The command line of `pid` as `ps` shows it, never cut to a width (`-ww`); null when `ps` cannot
+ * say.
+ */
 const commandOf = (pid: number): string | null => {
-  const shown = NodeChildProcess.spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+  const shown = NodeChildProcess.spawnSync("ps", ["-ww", "-p", String(pid), "-o", "command="], {
     encoding: "utf8",
     timeout: 5_000,
   });

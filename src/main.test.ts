@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - the stop request is a file in the data dir.
 // @effect-diagnostics globalDate:off - the waits for a pass use the wall clock, as the loop does.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
@@ -40,6 +41,7 @@ import { readRun } from "./ledger/read.ts";
 import { newRunId, runIdToString, runPath, type RunId } from "./ledger/runId.ts";
 import { T0, ticking, useTempDirs } from "./ledger/testSupport.ts";
 import {
+  defaultedFiles,
   factoryRuntime,
   FactoryLoop,
   gateDecided,
@@ -55,7 +57,13 @@ import { AgentProcess } from "./paradev/sessions.ts";
 import { writeThread } from "./paradev/state.ts";
 import * as Paths from "./paths.ts";
 import { PARADEV_HOLD_PASSES, PARADEV_OFFLINE_ITEM_ID, type PassWorld, type Repo } from "./pass.ts";
-import { FactoryProcess, RunSpawnError, type RunInput, type RunResult } from "./process.ts";
+import {
+  FactoryProcess,
+  layer as processLayer,
+  RunSpawnError,
+  type RunInput,
+  type RunResult,
+} from "./process.ts";
 import { CUT_SHORT_COMMENT } from "./runner/messages.ts";
 import { utcSecond, type StartContext } from "./runner/start.ts";
 import { stopRequestPath } from "./runner/stop.ts";
@@ -1042,6 +1050,73 @@ describe("on the Paradev CLI", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("a repo whose path is another GitHub repo's Paradev project is skipped with one item, until the path is fixed", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // `/b` is the clone of c/d: a session for a/b there would work on c/d's code.
+        const paradev = newParadev([projectAt("c/d", "/b")]);
+        const { loop, attention, factoryDir } = yield* started(VALID, recordingProcess().process, {}, paradev);
+        const skips = () =>
+          eventsOf(factoryDir, "claim_skipped").filter(
+            (entry) => (entry.data as { reason?: string }).reason === "paradev-project-repo",
+          );
+        const items = () =>
+          attention.list().pipe(
+            Effect.map((open) => open.filter((item) => item.id.startsWith("paradev-project-repo:a/b:"))),
+          );
+        yield* idleAfter(loop, factoryDir, 1);
+        assert.deepStrictEqual(
+          skips().map((entry) => entry.data),
+          [{ repo: "a/b", reason: "paradev-project-repo" }],
+        );
+        let open = yield* items();
+        assert.strictEqual(open.length, 1);
+        assert.strictEqual(open[0]!.repo, "a/b");
+        assert.include(open[0]!.message, "/b is the Paradev project of c/d");
+        assert.deepStrictEqual(
+          loop.status.state === "running" ? loop.status.settings.repos : null,
+          [],
+        );
+        assert.strictEqual(open[0]!.id, "paradev-project-repo:a/b:c/d");
+        // A project that names no GitHub repo is skipped the same way; its item replaces the first.
+        paradev.projects = [{ ...projectAt("a/b", "/b"), repo: "-" }];
+        yield* onePassMore(loop, factoryDir);
+        assert.strictEqual(skips().length, 2);
+        open = yield* items();
+        assert.strictEqual(open.length, 1);
+        assert.strictEqual(open[0]!.id, "paradev-project-repo:a/b:-");
+        assert.include(open[0]!.message, "/b is the Paradev project of no GitHub repo");
+        // The clone is a/b's, in another case: the repo is worked, and the item clears.
+        paradev.projects = [projectAt("A/B", "/b")];
+        yield* onePassMore(loop, factoryDir);
+        assert.strictEqual(skips().length, 2);
+        assert.deepStrictEqual(yield* items(), []);
+        assert.deepStrictEqual(
+          loop.status.state === "running" ? loop.status.settings.repos : null,
+          ["a/b"],
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a repo whose project is gone, then another repo's, swaps its item", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev([C_D_PROJECT]);
+        const { loop, attention, factoryDir } = yield* started(VALID, recordingProcess().process, {}, paradev);
+        const ids = () =>
+          attention.list().pipe(
+            Effect.map((open) => open.filter((item) => item.repo === "a/b").map((item) => item.id)),
+          );
+        yield* idleAfter(loop, factoryDir, 1);
+        assert.deepStrictEqual(yield* ids(), ["no-paradev-project:a/b"]);
+        paradev.projects.push(projectAt("c/d", "/b"));
+        yield* onePassMore(loop, factoryDir);
+        assert.deepStrictEqual(yield* ids(), ["paradev-project-repo:a/b:c/d"]);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("a repo that is not a Paradev project is left out of the status's repos", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1096,6 +1171,119 @@ describe("on the Paradev CLI", () => {
       }),
     );
   });
+});
+
+describe("the default-branch reads of a runner clone", () => {
+  const cloneDirs = useTempDirs();
+  const git = (cwd: string, ...args: Array<string>) =>
+    NodeChildProcess.execFileSync("git", args, { cwd, encoding: "utf8" });
+  const PACKAGE_JSON = '{"scripts":{"test":"vitest"}}\n';
+
+  /** A clone of a repo whose `main` holds a package.json and an npm lockfile, with `origin/HEAD`. */
+  const cloneWithManifests = () => {
+    const origin = cloneDirs("origin");
+    git(origin, "init", "-q", "-b", "main");
+    NodeFS.writeFileSync(NodePath.join(origin, "package.json"), PACKAGE_JSON);
+    NodeFS.writeFileSync(NodePath.join(origin, "package-lock.json"), "{}\n");
+    git(origin, "add", ".");
+    git(origin, "commit", "-q", "-m", "manifests");
+    const clone = NodePath.join(cloneDirs("clone"), "repo");
+    git(origin, "clone", "-q", origin, clone);
+    return clone;
+  };
+
+  const readsOf = (root: string) =>
+    defaultedFiles(Effect.runSync(Effect.provide(FactoryProcess, processLayer)), root);
+
+  it.effect("reads origin/HEAD's branch and root manifests, not the working tree's", () =>
+    Effect.gen(function* () {
+      const clone = cloneWithManifests();
+      // A session's edit in the clone's working tree is not the default branch.
+      NodeFS.writeFileSync(NodePath.join(clone, "package.json"), "{}\n");
+      NodeFS.writeFileSync(NodePath.join(clone, "composer.json"), "{}\n");
+      assert.deepStrictEqual(yield* readsOf(clone), {
+        head: {
+          branch: "main",
+          files: { packageJson: PACKAGE_JSON, composerJson: null, lockfiles: ["package-lock.json"] },
+        },
+      });
+    }),
+  );
+
+  it.effect("a clone with no origin/HEAD has no default branch to read", () =>
+    Effect.gen(function* () {
+      const root = cloneDirs("no-origin");
+      git(root, "init", "-q", "-b", "main");
+      assert.deepStrictEqual(yield* readsOf(root), { head: null });
+    }),
+  );
+
+  /** git answers by its argv after `-C <root>`; anything unscripted fails to start. */
+  const scriptedGit = (answers: Record<string, Partial<RunResult>>) =>
+    FactoryProcess.of({
+      run: (input) => {
+        const answer = answers[(input.args ?? []).slice(2).join(" ")];
+        return answer === undefined
+          ? Effect.fail(new RunSpawnError({ shell: false, cause: new Error("not scripted") }))
+          : Effect.succeed({ ...reply(0, ""), ...answer });
+      },
+    });
+  const HEAD = { "rev-parse --abbrev-ref origin/HEAD": { tail: "origin/main\n" } };
+  const TREE = { "ls-tree --name-only origin/HEAD": { tail: "package.json\npackage-lock.json\n" } };
+
+  for (const [what, answers] of [
+    ["the head read does not finish", { "rev-parse --abbrev-ref origin/HEAD": { timedOut: true } }],
+    ["the tree read fails", { ...HEAD, "ls-tree --name-only origin/HEAD": { exitCode: 128 } }],
+    ["a manifest the tree lists cannot be shown", { ...HEAD, ...TREE, "show origin/HEAD:package.json": { exitCode: 128 } }],
+    [
+      "a manifest is longer than the read takes",
+      { ...HEAD, ...TREE, "show origin/HEAD:package.json": { tail: "{", tailTruncated: true } },
+    ],
+  ] as const) {
+    it.effect(`is unresolved when ${what}`, () =>
+      Effect.gen(function* () {
+        assert.strictEqual(yield* defaultedFiles(scriptedGit(answers), "/p"), "unresolved");
+      }),
+    );
+  }
+
+  it.effect("a repo whose reads are unresolved is left out of the pass, and the pass says so", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // /b reads whole; /d's package.json cannot be shown this pass.
+        const other = FactoryProcess.of({
+          run: (input) => {
+            const args = input.args ?? [];
+            if (input.command !== "git" || args[0] !== "-C") return noGhProcess.run(input);
+            const step = args.slice(2).join(" ");
+            if (step === "rev-parse --abbrev-ref origin/HEAD") return Effect.succeed(reply(0, "origin/main\n"));
+            if (step === "ls-tree --name-only origin/HEAD") return Effect.succeed(reply(0, "package.json\n"));
+            if (step === "show origin/HEAD:package.json") {
+              return Effect.succeed(args[1] === "/b" ? reply(0, PACKAGE_JSON) : reply(128, "", "fatal: bad object\n"));
+            }
+            return noGhProcess.run(input);
+          },
+        });
+        const { loop, logs, factoryDir } = yield* started(
+          configFor(
+            [
+              ["a/b", "/b"],
+              ["c/d", "/d"],
+            ],
+            "/gh",
+            "default_project:\n  instructors: [rawphp]\n",
+          ),
+          other,
+        );
+        yield* idleAfter(loop, factoryDir, 1);
+        assert.include(logs, "watched: 1 project(s) could not be settled this pass (/d)");
+        assert.deepStrictEqual(
+          loop.status.state === "running" ? loop.status.settings.repos : null,
+          ["a/b"],
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
 });
 
 describe("liveWorld", () => {

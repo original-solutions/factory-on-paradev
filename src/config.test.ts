@@ -889,8 +889,8 @@ describe("loaders", () => {
 });
 
 describe("the example machine config", () => {
-  // config.example.yml is what `install` copies to ~/.config/factory-runner/config.yml when there
-  // is none, so it must load as it stands.
+  // config.example.yml is copied as it stands to ~/.config/factory-runner/config.yml (by hand
+  // until `install` does it, #25), so it must load as it stands.
   effectIt.effect("the example machine config loads as it stands", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path;

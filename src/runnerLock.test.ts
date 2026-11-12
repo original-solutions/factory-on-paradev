@@ -90,6 +90,23 @@ describe("the runner lock", () => {
     expect(isRunner(process.pid)).toBe(false);
   });
 
+  it("knows a live runner whose command line is longer than any terminal width", async () => {
+    // A LaunchAgent's runner: an absolute node and an install path, well past 80 columns.
+    const deep = NodePath.join(tempDir(), "x".repeat(200), "factory-runner", "current", "src", "bin.ts");
+    const child = NodeChildProcess.spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", deep, "run"], {
+      stdio: "ignore",
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", reject);
+      });
+      expect(isRunner(child.pid!)).toBe(true);
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+
   it("is taken over from a live pid that is no runner: the dead runner's pid, reused", () => {
     const dir = tempDir();
     NodeFS.writeFileSync(NodePath.join(dir, LOCK_FILE), `${process.pid}\n`);

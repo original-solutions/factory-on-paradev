@@ -1,11 +1,12 @@
 # The runner's machine config for this Mac: how the factory runs on local Paradev.
-# `factory-runner install` copies this file to ~/.config/factory-runner/config.yml when there is
-# none. The runner reads it at start. No path here is expanded, so there is no `~`: write each
-# one out in full.
+# Copy this file by hand to ~/.config/factory-runner/config.yml; `factory-runner install` will copy
+# it there when there is none once it exists (#25). The runner reads it at start. No path here is
+# expanded, so there is no `~`: write each one out in full.
 
 # The gh login directory the runner's own GitHub calls act as (claims, labels, comments, the
 # gate). Log in to it once with GH_CONFIG_DIR=<this directory> gh auth login. The agent sessions
-# do not use it: Paradev starts them with this Mac's active gh login.
+# do not use it: Paradev starts them with this Mac's active gh login. Here it is t3fac's, so both
+# factories act as the one factory account while they run side by side.
 gh_config_dir: /Users/tomkaczocha/.config/t3fac/gh
 
 # Seconds between passes over GitHub. At least 10.

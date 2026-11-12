@@ -380,7 +380,7 @@ Kept from t3fac with the same meaning and defaults: `gh_config_dir`, `poll_secon
 
 Kept but must be empty: `model_fallbacks`.
 
-Ignored with a warning, as t3fac does for retired keys: `model_instance`, `model`, `prune_branches_after_days`, `prune_branches_dry_run`, `deploy_wait_minutes`.
+Ignored with a warning, as t3fac does for retired keys: `model_instance`, `model`, `prune_branches_after_days`, `prune_branches_dry_run`, `deploy_wait_minutes`, `keep_versions`.
 
 New:
 
@@ -404,6 +404,8 @@ paradev:
 Reserved for P4: a `control_plane` block, whose `url` will default to `https://factory.originalsolutions.com.au`. P1 refuses the block with "the control plane arrives in phase 4", so no P1 config can depend on a shape P4 has not settled.
 
 A repo whose `path` is not a Paradev project on this Mac is skipped with `claim_skipped` reason `no-paradev-project` and one attention item that gives the `projects create` command.
+
+A repo whose `path` is the Paradev project of another GitHub repo, or of none, is skipped with `claim_skipped` reason `paradev-project-repo` and one attention item naming both: a session there would work on the other repo's code.
 
 ### Repo config
 

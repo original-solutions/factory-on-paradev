@@ -1013,7 +1013,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const findProject = Effect.fn("ParadevSessions.findProject")(function* (workspaceRoot: string) {
     const project = yield* local(Effect.flatMap(listProjects, (projects) => projectAt(projects, workspaceRoot)));
     if (project === null) return null;
-    return { id: project.id, model: paradevModel(config) };
+    return { id: project.id, model: paradevModel(config), repo: GITHUB_REPO.exec(project.repo)?.[1] ?? null };
   }, (effect) => effect.pipe(Effect.mapError(failWith("find-project"))));
 
   return {

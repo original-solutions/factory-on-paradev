@@ -1561,6 +1561,7 @@ describe("findProject", () => {
       ]);
       const project = yield* t.run((s) => s.findProject(`${root}/`));
       assert.strictEqual(project?.id, SPIKE_PROJECT);
+      assert.strictEqual(project?.repo, "original-solutions/factory-paradev-spike");
       // No paradev.model or paradev.effort: the agent's defaults, so no --model and no --effort.
       assert.deepStrictEqual(project?.model, { instanceId: "claude", model: "" });
       assert.isNull(yield* t.run((s) => s.findProject(root)));
