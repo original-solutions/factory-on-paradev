@@ -2,15 +2,29 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { runCli, type CliIo } from "./cli.ts";
 import type { CommandResult } from "./install.ts";
 import { makeCause, type Cause, type RunEvent } from "./ledger/events.ts";
 import { Ledger } from "./ledger/ledger.ts";
+import { runIdFileName, runPath, type RunId } from "./ledger/runId.ts";
 import { parseTs } from "./ledger/time.ts";
 import { useTempDirs } from "./ledger/testSupport.ts";
 import { median, p90 } from "./retro.ts";
+
+// Records every full-file read, and lets a test make one run file unreadable; `node:fs`
+// namespaces are frozen, so the module itself is wrapped.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
+
+const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+
+afterEach(() => {
+  vi.mocked(NodeFS.readFileSync).mockImplementation(actualFs.readFileSync);
+});
 
 const tempDir = useTempDirs();
 
@@ -43,7 +57,7 @@ const seedRun = (
   issue: number,
   startMs: number,
   lines: ReadonlyArray<Line>,
-  end?: { readonly prUrl: string; readonly prEnd: "merged" | "closed" | null },
+  end?: { readonly prUrl: string | null; readonly prEnd: "merged" | "closed" | null },
 ) => {
   let now = startMs;
   const ledger = Ledger.create(
@@ -66,6 +80,38 @@ const seedRun = (
 };
 
 const PR = (n: number) => `https://github.com/rawphp/softfac/pull/${n}`;
+
+const runOf = (issue: number): RunId => ({ repo: "rawphp/softfac", issue: String(issue), attempt: 1 });
+
+/** A run file written line by line as given, `[minutes after startMs, event, data]`, with no causes. */
+const writeRaw = (
+  dataDir: string,
+  issue: number,
+  startMs: number,
+  lines: ReadonlyArray<readonly [minutes: number, event: string, data: unknown]>,
+) => {
+  const path = runPath(dataDir, runOf(issue));
+  NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
+  NodeFS.writeFileSync(
+    path,
+    lines
+      .map(([minutes, event, data]) => {
+        const ms = startMs + minutes * MINUTE;
+        return `${JSON.stringify({ ts: new Date(ms).toISOString(), ms, event, data })}\n`;
+      })
+      .join(""),
+  );
+};
+
+/** Makes the run file of `issue` fail to read, whoever runs the test. */
+const unreadable = (dataDir: string, issue: number) => {
+  const path = runPath(dataDir, runOf(issue));
+  NodeFS.writeFileSync(path, "x\n");
+  vi.mocked(NodeFS.readFileSync).mockImplementation(((target: never, ...rest: never[]) => {
+    if (String(target) === path) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+    return (actualFs.readFileSync as (...args: never[]) => unknown)(target, ...rest);
+  }) as typeof NodeFS.readFileSync);
+};
 
 /**
  * One run per rule, and one outside the window:
@@ -349,12 +395,97 @@ describe("factory-runner retro", () => {
     expect(s.errs.join("\n")).toContain("HTTP 404");
   });
 
-  it("fails when gh answers with no reviews list", async () => {
-    const s = setup(() => ({ status: 0, stdout: "{}", stderr: "" }));
+  it("fails when gh answers with no reviews list, or with text that is not JSON", async () => {
+    for (const stdout of ["{}", "not json"]) {
+      const s = setup(() => ({ status: 0, stdout, stderr: "" }));
+      fixture(s.dataDir);
+      expect(await runCli(["retro", "--data-dir", s.dataDir, ...window], s.io), stdout).toBe(1);
+      expect(s.outs, stdout).toEqual([]);
+      expect(s.errs.join("\n"), stdout).toContain(`gh pr view ${PR(1)} gave no reviews list`);
+    }
+  });
+
+  it("groups a stuck line with no cause, from before causes existed, under its text", async () => {
+    const s = setup();
+    const start = SINCE + 10 * 60 * MINUTE;
+    writeRaw(s.dataDir, 20, start, [
+      [0, "claimed", { machine: "m", github_user: "u" }],
+      [1, "state_changed", { from: "ready", to: "building" }],
+      [2, "stuck", { reason: "review cap" }],
+      [3, "state_changed", { from: "building", to: "stuck" }],
+    ]);
+    seedRun(s.dataDir, 21, start + MINUTE, [
+      [0, claimed],
+      [1, moved("ready", "building")],
+      stuck(2, "review-cap", "review cap"),
+      [3, moved("building", "stuck")],
+    ]);
+    expect(await runCli(["retro", "--data-dir", s.dataDir, ...window, "--json"], s.io)).toBe(0);
+    // The old line is named by its text; the coded line by its code, not the same text.
+    expect(JSON.parse(s.outs.join("\n")).stuck).toEqual({
+      runs: 2,
+      share: 1,
+      by_reason: [
+        { reason: "review cap", runs: 1 },
+        { reason: "review-cap", runs: 1 },
+      ],
+    });
+  });
+
+  it("leaves an unreadable run file out of the report and warns about it", async () => {
+    const s = setup();
     fixture(s.dataDir);
-    expect(await runCli(["retro", "--data-dir", s.dataDir, ...window], s.io)).toBe(1);
-    expect(s.outs).toEqual([]);
-    expect(s.errs.join("\n")).toContain(`gh pr view ${PR(1)} gave no reviews list`);
+    unreadable(s.dataDir, 12);
+    const code = await runCli(["retro", "--data-dir", s.dataDir, ...window], s.io);
+    expect(code).toBe(0);
+    expect(s.outs[0]).toBe("runs: 10 (since 2026-10-04, until 2026-10-05)");
+    expect(s.errs).toEqual([
+      `factory-runner: warning: ${runIdFileName(runOf(12))} could not be read`,
+    ]);
+  });
+
+  it("warns about a merged run with no PR URL, and leaves it out of the merged count", async () => {
+    const s = setup();
+    fixture(s.dataDir);
+    seedRun(
+      s.dataDir,
+      12,
+      SINCE + 11 * 60 * MINUTE,
+      [
+        [0, claimed],
+        [1, moved("ready", "building")],
+        [2, moved("building", "pr-open")],
+      ],
+      { prUrl: null, prEnd: "merged" },
+    );
+    const code = await runCli(["retro", "--data-dir", s.dataDir, ...window, "--json"], s.io);
+    expect(code).toBe(0);
+    expect(s.errs).toEqual([
+      `factory-runner: warning: ${runIdFileName(runOf(12))} merged with no PR URL`,
+    ]);
+    expect(JSON.parse(s.outs.join("\n"))).toMatchObject({
+      runs: 11,
+      merged_without_change_requests: { merged: 2, without_change_requests: 1, share: 0.5 },
+    });
+    expect(s.calls).toEqual([
+      ["pr", "view", PR(1), "--json", "reviews"],
+      ["pr", "view", PR(2), "--json", "reviews"],
+    ]);
+  });
+
+  it("with --since, does not read a finished run file last written before it", async () => {
+    const s = setup();
+    fixture(s.dataDir);
+    const before = SINCE - 2 * 24 * 60 * MINUTE;
+    seedRun(s.dataDir, 12, before, [[0, claimed]], { prUrl: PR(12), prEnd: "closed" });
+    const old = runPath(s.dataDir, runOf(12));
+    NodeFS.utimesSync(old, before / 1000, before / 1000);
+    vi.mocked(NodeFS.readFileSync).mockClear();
+    expect(await runCli(["retro", "--data-dir", s.dataDir, ...window], s.io)).toBe(0);
+    const reads = vi.mocked(NodeFS.readFileSync).mock.calls.map(([path]) => String(path));
+    expect(reads).not.toContain(old);
+    expect(reads).toContain(runPath(s.dataDir, runOf(1)));
+    expect(s.outs[0]).toBe("runs: 10 (since 2026-10-04, until 2026-10-05)");
   });
 
   it("refuses a missing --data-dir, a bad date and an unknown flag with the usage", async () => {

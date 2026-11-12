@@ -132,7 +132,9 @@ const noChangeRequests = (url: string, io: RetroIo): boolean => {
 /** The report for the runs of `args.dataDir` that started in the window. Throws on a `gh` failure. */
 const buildRetro = (args: Args, io: RetroIo): RetroReport => {
   const { dataDir, since, until } = args;
-  const runs = readRuns(dataDir).filter(({ summary }) => {
+  // A run that started in the window wrote its last line in it too, so a finished file last
+  // written before `--since` holds none of the window's runs and is not read.
+  const runs = readRuns(dataDir, { skipFinishedBefore: since?.ms }).filter(({ summary }) => {
     if (summary.unreadable) {
       io.err(`factory-runner: warning: ${runIdFileName(summary.id)} could not be read`);
       return false;
