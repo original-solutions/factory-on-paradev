@@ -57,6 +57,19 @@ describe("thread records", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("a pending send reads back, and a record written before pendingSend existed still decodes", () =>
+    Effect.gen(function* () {
+      const data = tempDir("state");
+      const pending = record({ pendingSend: { commandId: "softfac:o__r__1__1:gate-1", before: null } });
+      yield* writeThread(data, pending);
+      assert.deepStrictEqual(yield* readThread(data, WS), pending);
+      NodeFS.writeFileSync(threadFile(data), JSON.stringify(record()));
+      const older = yield* readThread(data, WS);
+      assert.deepStrictEqual(older, record());
+      assert.notProperty(older, "pendingSend");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("a missing record reads as null", () =>
     Effect.gen(function* () {
       assert.isNull(yield* readThread(tempDir("state"), WS));
