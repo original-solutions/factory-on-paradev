@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Factory belt</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 1.5rem; color: #1b1b1b; background: #fafafa; }
+  h1 { font-size: 1.15rem; margin: 0 0 0.5rem; }
+  h2 { font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+  p { margin: 0 0 0.35rem; }
+  .muted { color: #666; }
+  .warn { color: #a40000; font-weight: 600; }
+  .counts span { display: inline-block; margin-right: 1rem; }
+  .counts strong { font-size: 1.1rem; }
+  ul { margin: 0; padding-left: 1.2rem; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+  th { font-weight: 600; background: #f0f0f0; }
+  tr.finished td { color: #666; }
+  .reason { white-space: pre-line; color: #6b4b00; }
+</style>
+</head>
+<body>
+<h1>Factory belt</h1>
+<div id="belt"><p class="muted">Reading the belt…</p></div>
+<p id="error" class="warn"></p>
+<script>
+  // The factory runner writes its belt to this page's shared storage under "belt" after each
+  // pass, and again every 10 minutes when nothing changed. A Paradev page's CSP blocks outside
+  // requests, so this page fetches nothing: it reads storage once, then follows the subscription.
+  const KEY = "belt";
+  const OPTIONS = { scope: "shared" };
+  // Two missed heartbeats: the runner has stopped, or cannot reach Paradev.
+  const STALE_MS = 25 * 60 * 1000;
+
+  const beltEl = document.getElementById("belt");
+  const errorEl = document.getElementById("error");
+
+  function esc(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function message(e) {
+    return e && e.message ? e.message : String(e);
+  }
+
+  function ago(iso) {
+    const ms = Date.now() - Date.parse(iso);
+    if (!Number.isFinite(ms)) return "";
+    const minutes = Math.round(ms / 60000);
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return minutes + " min ago";
+    const hours = Math.round(minutes / 60);
+    return hours < 48 ? hours + " h ago" : Math.round(hours / 24) + " days ago";
+  }
+
+  function duration(ms) {
+    if (typeof ms !== "number") return "";
+    const minutes = Math.round(ms / 60000);
+    return minutes < 60 ? minutes + " min" : Math.floor(minutes / 60) + " h " + (minutes % 60) + " min";
+  }
+
+  // Only a GitHub pull request is a link; anything else is shown as text.
+  function prLink(url) {
+    if (typeof url !== "string" || !/^https:\/\/github\.com\/[^\s"'<>]+$/.test(url)) return esc(url);
+    const label = url.replace(/^https:\/\/github\.com\//, "");
+    return "<a href=\"" + esc(url) + "\" target=\"_blank\" rel=\"noopener noreferrer\">" + esc(label) + "</a>";
+  }
+
+  function isBelt(value) {
+    return value != null && typeof value === "object" && value.v === 1 && Array.isArray(value.runs);
+  }
+
+  // A stored value may come as JSON text or as the value itself.
+  function beltOf(value) {
+    if (typeof value === "string") {
+      try {
+        value = JSON.parse(value);
+      } catch (e) {
+        return null;
+      }
+    }
+    return isBelt(value) ? value : null;
+  }
+
+  function render(belt) {
+    if (belt == null) {
+      beltEl.innerHTML = "<p class=\"muted\">No belt yet: the runner writes one after its first pass.</p>";
+      return;
+    }
+    const r = belt.runner || {};
+    const c = belt.counts || {};
+    const stale = Date.now() - Date.parse(belt.updatedAt) > STALE_MS;
+    const flags = [];
+    if (stale) flags.push("No word from the runner for " + ago(belt.updatedAt).replace(" ago", "") + ".");
+    if (r.paradevOnline === false) flags.push("Paradev is offline: no issue is claimed.");
+    if (r.claimsPaused) flags.push("Claims are paused by hand.");
+    const attention = (belt.attention || []).map((item) =>
+      "<li>" + esc(item.text) + " <span class=\"muted\">(" + esc(ago(item.since)) + ")</span></li>"
+    ).join("");
+    const rows = belt.runs.map((run) =>
+      "<tr class=\"" + (run.finished ? "finished" : "") + "\">" +
+      "<td>" + esc(run.repo + "#" + run.issue) + "</td>" +
+      "<td>" + esc(run.title) + (run.reason ? "<div class=\"reason\">" + esc(run.reason) + "</div>" : "") + "</td>" +
+      "<td>" + esc(run.finished ? "finished" : run.state) + "</td>" +
+      "<td>" + esc(run.step) + "</td>" +
+      "<td>" + prLink(run.prUrl) + "</td>" +
+      "<td>" + esc(run.finished ? duration(run.totalMs) : ago(run.startedTs)) + "</td>" +
+      "</tr>"
+    ).join("");
+    beltEl.innerHTML =
+      "<p><strong>" + esc(r.host) + "</strong> <span class=\"muted\">runner " + esc(r.version) +
+      ", Paradev CLI " + esc(r.paradevCli) + ", updated " + esc(ago(belt.updatedAt)) + "</span></p>" +
+      flags.map((text) => "<p class=\"warn\">" + esc(text) + "</p>").join("") +
+      "<p class=\"counts\">" +
+      "<span><strong>" + esc(c.triage) + "</strong> triage</span>" +
+      "<span><strong>" + esc(c.building) + "</strong> building</span>" +
+      "<span><strong>" + esc(c.prOpen) + "</strong> PR open</span>" +
+      "<span><strong>" + esc(c.needsInfo) + "</strong> needs info</span>" +
+      "<span><strong>" + esc(c.stuck) + "</strong> stuck</span>" +
+      "<span><strong>" + esc(c.finished7d) + "</strong> finished in 7 days</span></p>" +
+      (attention ? "<h2>Needs a person</h2><ul>" + attention + "</ul>" : "") +
+      "<h2>Runs</h2>" +
+      (rows
+        ? "<table><thead><tr><th>Issue</th><th>Title</th><th>State</th><th>Step</th><th>PR</th><th>Time</th></tr></thead><tbody>" + rows + "</tbody></table>"
+        : "<p class=\"muted\">No runs this week.</p>");
+  }
+
+  // A get can overlap another; only the latest may render, so an older value never wins.
+  let latest = 0;
+
+  function show(value) {
+    latest += 1;
+    render(beltOf(value));
+    errorEl.textContent = "";
+  }
+
+  async function load(storage) {
+    const call = ++latest;
+    let value;
+    try {
+      value = await storage.get(KEY, OPTIONS);
+    } catch (e) {
+      if (call === latest) errorEl.textContent = "Could not read the belt: " + message(e);
+      return;
+    }
+    if (call !== latest) return;
+    render(beltOf(value));
+    errorEl.textContent = "";
+  }
+
+  function start() {
+    const storage = window.superset && window.superset.storage;
+    if (!storage || typeof storage.get !== "function") {
+      beltEl.innerHTML = "";
+      errorEl.textContent = "This page reads Paradev page storage, which is not available here.";
+      return;
+    }
+    load(storage);
+    if (typeof storage.subscribe !== "function") return;
+    try {
+      // A change may carry the new value; when it does not, read it.
+      Promise.resolve(
+        storage.subscribe(KEY, (value) => (beltOf(value) ? show(value) : load(storage)), OPTIONS)
+      ).catch((e) => { errorEl.textContent = "Could not follow the belt: " + message(e); });
+    } catch (e) {
+      errorEl.textContent = "Could not follow the belt: " + message(e);
+    }
+  }
+
+  start();
+</script>
+</body>
+</html>
