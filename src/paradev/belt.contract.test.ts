@@ -146,13 +146,16 @@ const saved = (dataDir: string) =>
     asked: string;
   };
 
-/** A `belt.json` naming the spike's page, published from `html` at `visibility`. */
+/**
+ * A `belt.json` naming the spike's page, published from `html` at `visibility`, and, when given,
+ * the visibility that publish asked for.
+ */
 const seedPage =
-  (html = HTML, visibility = "just_me", pageId = PAGE_ID) =>
+  (html = HTML, visibility = "just_me", pageId = PAGE_ID, asked?: string) =>
   (dataDir: string) =>
     NodeFS.writeFileSync(
       NodePath.join(dataDir, "belt.json"),
-      JSON.stringify({ pageId, htmlSha256: sha256(html), visibility }),
+      JSON.stringify({ pageId, htmlSha256: sha256(html), visibility, ...(asked === undefined ? {} : { asked }) }),
     );
 
 describe("the belt write and its size cap", () => {
@@ -296,6 +299,36 @@ describe("the belt write and its size cap", () => {
           assert.strictEqual(fake.calls.filter(isSet).length, 0);
         }),
       { seed: seedPage(HTML, "org") },
+    ),
+  );
+
+  it.effect("a page Paradev kept at another visibility is published again once the runner's HTML changes", () =>
+    withWriter(
+      [publishStep, setStep],
+      (write, _dataDir, fake) =>
+        Effect.gen(function* () {
+          yield* write(at(recordedBelt(), NOW), NOW);
+          const publish = fake.calls.find(isPublish)!;
+          assert.deepStrictEqual(publish.slice(3, 5), ["--page", PAGE_ID]);
+          assert.deepStrictEqual(publish.slice(7, 9), ["--visibility", "just_me"]);
+          assert.strictEqual(fake.calls.filter(isSet).length, 1);
+        }),
+      // Asked for just_me with an older page, Paradev kept org.
+      { seed: seedPage("an older page", "org", PAGE_ID, "just_me") },
+    ),
+  );
+
+  it.effect("a page Paradev moved to the visibility asked is moved again when the config changes", () =>
+    withWriter(
+      [publishStep, setStep],
+      (write, _dataDir, fake) =>
+        Effect.gen(function* () {
+          yield* write(at(recordedBelt(), NOW), NOW);
+          assert.deepStrictEqual(fake.calls.find(isPublish)!.slice(7, 9), ["--visibility", "just_me"]);
+          assert.strictEqual(fake.calls.filter(isSet).length, 1);
+        }),
+      // Asked for org and got it; the config now says just_me.
+      { seed: seedPage(HTML, "org", PAGE_ID, "org") },
     ),
   );
 
