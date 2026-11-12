@@ -343,20 +343,20 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   /**
    * What the snapshot shows in the workspace beyond the terminals in `skip`: a terminal running
    * an agent of `preset`, which a launch takes as its own; `unclear` for any other terminal (a
-   * starting agent shows no agent until its first hook, and a person may open a shell), beside
-   * which a launch neither takes nor starts an agent; else nothing.
+   * starting agent shows no agent until its first hook, and a person may open a shell), with
+   * those terminals' ids, beside which a launch neither takes nor starts an agent; else nothing.
    */
   const agentIn = (
     answer: SnapshotAnswer,
     workspaceId: string,
     preset: string,
     skip: ReadonlyArray<string>,
-  ): { readonly terminal: string } | "unclear" | null => {
+  ): { readonly terminal: string } | { readonly unclear: ReadonlyArray<string> } | null => {
     const terminals = answer.workspaces.find((ws) => ws.id === workspaceId)?.terminals ?? [];
     const others = terminals.filter((t) => !skip.includes(t.id));
     const agent = others.find((t) => t.agent?.id === preset);
     if (agent !== undefined) return { terminal: agent.id };
-    return others.length > 0 ? "unclear" : null;
+    return others.length > 0 ? { unclear: others.map((t) => t.id) } : null;
   };
 
   /**
@@ -368,7 +368,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       for (let polled = 0; ; polled += 1) {
         const found = agentIn(yield* snapshot(workspaceId), workspaceId, preset, skip);
         const wait = agentPollDelaysMs[polled];
-        if (found !== "unclear" || wait === undefined) return found;
+        if (found === null || "terminal" in found || wait === undefined) return found;
         yield* Effect.sleep(wait);
       }
     });
@@ -560,7 +560,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       // The reset waits for the snapshot: an agent an earlier attempt started works there.
       if (!snapshotDone) {
         const found = yield* findAgent(record.workspaceId, placed.agent, placed.terminals);
-        if (found === "unclear") return yield* noAgentYet(placed);
+        if (found !== null && "unclear" in found) return yield* noAgentYet(placed);
         if (found !== null) return yield* withAgent(placed, found.terminal, request);
       }
       if (checked.state === "kept") {
@@ -570,14 +570,24 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       }
       if (checked.state === "behind") yield* checked.reset;
       // A create that timed out or failed may still have started the agent: a failed launch goes
-      // to stuck, so it looks for it now rather than leave it running unrecorded.
+      // to stuck, so it looks for it now and takes it. A terminal that still shows no agent is
+      // named in the error, since it may be that agent; a failed look keeps the create's error.
       const started = yield* createAgent(placed, request).pipe(
         Effect.catch((error) =>
-          findAgent(record.workspaceId, placed.agent, placed.terminals).pipe(
-            Effect.flatMap((found) =>
-              found !== null && found !== "unclear" ? Effect.succeed(found.terminal) : Effect.fail(error),
-            ),
-          ),
+          Effect.gen(function* () {
+            const found = yield* findAgent(record.workspaceId, placed.agent, placed.terminals).pipe(
+              Effect.catch((looked) =>
+                fail(`agents create failed (${error.message}), and looking for its agent failed too (${looked.message})`),
+              ),
+            );
+            if (found === null) return yield* Effect.fail(error);
+            if ("terminal" in found) return found.terminal;
+            return yield* fail(
+              `agents create failed (${error.message}), and workspace ${record.workspaceId} has terminal ` +
+                `${found.unclear.join(", ")} with no ${placed.agent} agent after ${agentPollDelaysMs.length + 1} looks: ` +
+                "it may be the agent that create started, still running, and it is not recorded",
+            );
+          }),
         ),
       );
       return yield* withAgent(placed, started, request);
@@ -601,7 +611,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     if (earlier !== null) {
       // It stopped between the record and the agent's start: the agent may be there already.
       const found = yield* findAgent(earlier.workspaceId, earlier.agent, []);
-      if (found === "unclear") return yield* noAgentYet(earlier);
+      if (found !== null && "unclear" in found) return yield* noAgentYet(earlier);
       if (found !== null) return launched(yield* withAgent(earlier, found.terminal, request));
       const base = yield* fetchBase(yield* projectOf(earlier.projectId), request.baseRef);
       return launched(yield* startAgent(earlier, request, base, true));

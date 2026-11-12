@@ -716,6 +716,55 @@ describe("launch", () => {
     }),
   );
 
+  it.live("agents create that fails beside a terminal with no agent names that terminal, and records none", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      // Paradev opened the terminal before the call gave up, and claude has not hooked in yet.
+      const starting: Step = {
+        argv: ["snapshot", "--workspace", X8_WS],
+        fixture: "snapshot-local-before-kill",
+        edit: snapshotOf(X8_WS, [{ id: "t-late", title: "", agent: null }]),
+      };
+      const script = [
+        ...launchScript(r).map((step): Step =>
+          step.fixture === "agents-create-local-resume" ? { argv: step.argv, fail: "Request timed out" } : step,
+        ),
+        starting,
+        starting,
+        starting,
+      ];
+      const t = rig(script, { config: { remoteBase: r.remoteBase, agentPollDelaysMs: [0, 0] } });
+      const error = yield* Effect.flip(t.run((s) => s.launch(request())));
+      assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.include(String(error.cause), "Request timed out");
+      assert.include(String(error.cause), "t-late");
+      assert.strictEqual(t.calls.filter(argvIs("agents", "create")).length, 1);
+      const saved = yield* readThread(t.data, X8_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.deepStrictEqual(saved!.terminals, []);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("agents create that fails, with the look after it failing too, keeps the create's error", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const script = [
+        ...launchScript(r).map((step): Step =>
+          step.fixture === "agents-create-local-resume" ? { argv: step.argv, fail: "Could not connect to API" } : step,
+        ),
+        { argv: ["snapshot", "--workspace", X8_WS], fail: `Workspace not found on host h: ${X8_WS}` },
+      ];
+      const t = rig(script, { config: { remoteBase: r.remoteBase } });
+      const error = yield* Effect.flip(t.run((s) => s.launch(request())));
+      assert.strictEqual(error._tag, "FactorySessionsError");
+      assert.include(String(error.cause), "Could not connect to API");
+      assert.include(String(error.cause), "Workspace not found");
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
   it.live("a project id that is not plain stops the launch before any git call", () =>
     Effect.gen(function* () {
       const r = repos();
