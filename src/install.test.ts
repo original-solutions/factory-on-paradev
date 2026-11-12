@@ -86,16 +86,18 @@ const makeFixture = (
           : ok;
       }
       const [verb, target = ""] = args;
-      const label = labelOf(verb === "bootstrap" ? (args[2] ?? "") : target);
       if (verb === "print") {
-        return loaded.has(label) ? ok : { status: 113, stdout: "", stderr: "not found" };
+        return loaded.has(labelOf(target)) ? ok : { status: 113, stdout: "", stderr: "not found" };
       }
       if (verb === "bootout") {
         loaded.delete(labelOf(target));
         return ok;
       }
       if (verb === "bootstrap" || verb === "kickstart") {
-        const name = verb === "bootstrap" ? NodePath.basename(args[2] ?? "", ".plist") : label;
+        const name =
+          verb === "bootstrap"
+            ? NodePath.basename(args[2] ?? "", ".plist")
+            : labelOf(args[2] ?? "");
         loaded.add(name);
         if (name === LABEL && options.startsRunner !== false) {
           NodeFS.mkdirSync(NodePath.dirname(log), { recursive: true });

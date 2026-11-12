@@ -91,7 +91,7 @@ describe("status", () => {
     seed(s.dataDir);
     NodeFS.writeFileSync(NodePath.join(s.dataDir, PAUSE_FILE), "2026-10-06T00:00:00.000Z\n");
     expect(await runCli(["status", "--json"], s.io)).toBe(0);
-    const expected = reportOf(s, { state: "idle", reason: "no factory config" });
+    const expected = reportOf(s, { state: "idle", reason: "the runner is not running" });
     expect(JSON.parse(s.outs.join("\n"))).toEqual(JSON.parse(JSON.stringify(expected)));
     expect(expected.runs.length).toBe(1);
     expect(expected.paused_by_hand).not.toBeNull();

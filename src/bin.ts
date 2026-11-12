@@ -2,18 +2,57 @@
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off - the command line writes to the terminal and exits with a code.
 /**
  * `factory-runner`: the command line. `run` is the factory loop in the foreground. The other
- * commands (`install`, `status`, ...) arrive with #25.
+ * commands (`install`, `uninstall`, `status`, `runs stop`, `claims`) are in `cli.ts`.
  */
+import * as NodeChildProcess from "node:child_process";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import type * as Path from "effect/Path";
 
+import { runCli, USAGE } from "./cli.ts";
+import type { InstallEnv } from "./install.ts";
 import { FactoryLayer } from "./main.ts";
 import * as Paths from "./paths.ts";
 import { takeRunnerLock } from "./runnerLock.ts";
 
-const USAGE = "usage: factory-runner run";
+/** The data dir of this process: `FACTORY_RUNNER_HOME`, else `~/.config/factory-runner`. */
+const realDataDir = (): string =>
+  // `dataDirOf` only calls `resolve` and `join`, which node:path has too.
+  Paths.dataDirOf(process.env, NodeOS.homedir(), NodePath as unknown as Path.Path);
+
+/** What install touches on this machine: the real HOME, commands (30 s each), clock and terminal. */
+const realInstallEnv = (): InstallEnv => {
+  const set = process.env["FACTORY_RUNNER_HOME"];
+  return {
+    home: NodeOS.homedir(),
+    dataDir: realDataDir(),
+    factoryRunnerHome: set !== undefined && set !== "" ? set : undefined,
+    uid: process.getuid?.() ?? 0,
+    execPath: process.execPath,
+    pathEnv: process.env["PATH"] ?? "/usr/bin:/bin",
+    packageRoot: NodePath.resolve(import.meta.dirname, ".."),
+    run: (command, args) => {
+      const done = NodeChildProcess.spawnSync(command, [...args], {
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+      return {
+        status: done.status,
+        stdout: done.stdout ?? "",
+        stderr: done.stderr ?? (done.error === undefined ? "" : done.error.message),
+      };
+    },
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: Date.now,
+    out: (line) => process.stdout.write(`${line}\n`),
+    err: (line) => process.stderr.write(`${line}\n`),
+  };
+};
 
 /** Takes the runner lock, then runs the factory until the process is told to stop. */
 const run = Effect.gen(function* () {
@@ -35,9 +74,24 @@ const run = Effect.gen(function* () {
 }).pipe(Effect.scoped, Effect.provide(Paths.layer), Effect.provide(NodeServices.layer));
 
 const [command, ...rest] = process.argv.slice(2);
-if (command === "run" && rest.length === 0) {
-  NodeRuntime.runMain(run);
+if (command === "run") {
+  if (rest.length === 0) {
+    NodeRuntime.runMain(run);
+  } else {
+    console.error(USAGE);
+    process.exitCode = 2;
+  }
 } else {
-  console.error(USAGE);
-  process.exitCode = 2;
+  const dataDir = realDataDir();
+  void runCli(process.argv.slice(2), {
+    dataDir,
+    machineConfigPath: NodePath.join(dataDir, "config.yml"),
+    packageRoot: NodePath.resolve(import.meta.dirname, ".."),
+    now: Date.now,
+    out: (line) => console.log(line),
+    err: (line) => console.error(line),
+    installEnv: realInstallEnv,
+  }).then((code) => {
+    process.exitCode = code;
+  });
 }

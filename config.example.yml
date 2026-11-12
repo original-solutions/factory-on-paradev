@@ -1,6 +1,6 @@
 # The runner's machine config for this Mac: how the factory runs on local Paradev.
 # Copy this file to ~/.config/factory-runner/config.yml (or config.yml in $FACTORY_RUNNER_HOME)
-# and edit it; `factory-runner install`, which arrives with #25, will copy it there when there is
+# and edit it; `factory-runner install` copies it there when there is
 # none. The runner reads it at start. As it stands it watches no repo, so it claims nothing. No
 # path here is expanded, so there is no `~`: write each one out in full.
 

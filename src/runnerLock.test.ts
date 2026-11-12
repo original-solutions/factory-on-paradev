@@ -177,7 +177,7 @@ describe("factory-runner run", () => {
   it("answers anything but run with the usage and exit 2", () => {
     const child = NodeChildProcess.spawnSync(
       process.execPath,
-      [NodePath.join(import.meta.dirname, "bin.ts"), "status"],
+      [NodePath.join(import.meta.dirname, "bin.ts"), "frobnicate"],
       { timeout: 30_000 },
     );
     expect(child.status).toBe(2);
