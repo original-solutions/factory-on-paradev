@@ -71,6 +71,7 @@ const serviceOver = (
         worktreesDir: `${dir}/worktrees`,
         factoryDir: dir,
         machineConfigPath: `${dir}/config.yml`,
+        claudeProjectsDir: `${dir}/claude-projects`,
       }),
     ),
     Layer.provide(Layer.succeed(FactoryProcess, process)),

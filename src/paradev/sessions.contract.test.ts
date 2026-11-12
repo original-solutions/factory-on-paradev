@@ -12,7 +12,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { useTempDirs } from "../ledger/testSupport.ts";
 import { FactoryPaths } from "../paths.ts";
 import { FactoryProcess, layer as processLayer } from "../process.ts";
-import { ThreadNotFoundError, type LaunchRequest } from "../sessions.ts";
+import { MessageRejectedError, ThreadNotFoundError, type LaunchRequest } from "../sessions.ts";
 import { layer as cliLayer } from "./cli.ts";
 import { fakeSuperset, readFixture, type Step } from "./fake-superset.ts";
 import {
@@ -162,6 +162,7 @@ const rig = (
       worktreesDir: "/default/worktrees",
       factoryDir: data,
       machineConfigPath: NodePath.join(data, "config.yml"),
+      claudeProjectsDir: "/default/claude-projects",
     }),
     Layer.succeed(
       AgentProcess,
@@ -1634,5 +1635,592 @@ describe("the real process lookup", () => {
     }).pipe(
       Effect.provide(agentProcessLayer.pipe(Layer.provide(Layer.mergeAll(processLayer, NodeServices.layer)))),
     ),
+  );
+});
+
+// ---- send, resume -----------------------------------------------------------------------------
+
+const GATE_TEXT = (readFixture("terminals-send-local").argv[7] as string);
+const SEND_ID = "softfac:original-solutions__factory-paradev-spike__1__1:gate-1";
+const AFTER_GATE_AT = lastEventAt("agents-explain-local-after-gate");
+/** The after-gate explain with its last hook moved by `ms`. */
+const hookedAt = (ms: number) => (answer: unknown) => ({ ...(answer as object), lastEventAt: AFTER_GATE_AT + ms });
+/** Two reaction polls after the text, one after Enter: the 20 s and 10 s windows, scaled down. */
+const FAST_POLL: Partial<ParadevSessionsConfig> = { sendPollMs: 1, sendWaitsMs: [2, 1] };
+const textSend = ["terminals", "send", "--local", "--workspace", L1_WS, "--terminal", L1_TERM, "--text", GATE_TEXT];
+const enterSend = ["terminals", "send", "--local", "--workspace", L1_WS, "--terminal", L1_TERM, "--keys", "enter"];
+const quiet = (): Step => ({ ...explainAt("agents-explain-local-after-gate") });
+const reacted = (): Step => ({ ...explainAt("agents-explain-local-after-gate"), edit: hookedAt(1) });
+/** The L1 workspace with its recorded agent's terminal, and a shell a person opened beside it. */
+const l1Snapshot = (): Step => ({
+  argv: ["snapshot", "--workspace", L1_WS],
+  fixture: "snapshot-local-killed",
+  edit: snapshotOf(L1_WS, [
+    { id: L1_TERM, title: "", agent: { id: "claude", state: "idle" } },
+    { id: "t-shell", title: "zsh", agent: null },
+  ]),
+});
+const savedL1 = (data: string) => readThread(data, L1_WS).pipe(Effect.provide(NodeServices.layer));
+
+describe("send", () => {
+  it.live("delivers the text, sees the agent react, and counts a send turn", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [l1Snapshot(), quiet(), { argv: textSend, fixture: "terminals-send-local" }, quiet(), reacted()],
+        { agentRunning: true, config: FAST_POLL },
+      );
+      yield* seed(t.data, record());
+      yield* t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some((argv) => argv.includes("--wait") || argv.includes("--keys")));
+      assert.deepStrictEqual(t.lookups, [["claude", record().worktreePath!]]);
+      const saved = yield* savedL1(t.data);
+      assert.deepStrictEqual(saved!.terminals, [L1_TERM]);
+      assert.deepStrictEqual(saved!.turns.map((turn) => [turn.commandId, turn.kind]), [
+        [LAUNCH_ID, "launch"],
+        [SEND_ID, "send"],
+      ]);
+      assert.isNull(saved!.pendingResume);
+    }),
+  );
+
+  it.live("returns at once for a command id already in the record's turns", () =>
+    Effect.gen(function* () {
+      const t = rig([], { agentRunning: true });
+      yield* seed(t.data, record({ turns: [...record().turns, { commandId: SEND_ID, at: 1, kind: "send" }] }));
+      yield* t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT));
+      assert.deepStrictEqual(t.calls, []);
+      assert.deepStrictEqual(t.lookups, []);
+    }),
+  );
+
+  it.live("with no reaction presses Enter once, and a reaction then counts the turn", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          l1Snapshot(),
+          quiet(),
+          { argv: textSend, fixture: "terminals-send-local" },
+          quiet(),
+          quiet(),
+          { argv: enterSend, fixture: "terminals-send-local" },
+          reacted(),
+        ],
+        { agentRunning: true, config: FAST_POLL },
+      );
+      yield* seed(t.data, record());
+      yield* t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual((yield* savedL1(t.data))!.turns.at(-1)!.kind, "send");
+    }),
+  );
+
+  it.live("still no reaction after Enter is MessageRejectedError, and no turn is counted", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          l1Snapshot(),
+          quiet(),
+          { argv: textSend, fixture: "terminals-send-local" },
+          quiet(),
+          quiet(),
+          { argv: enterSend, fixture: "terminals-send-local" },
+          quiet(),
+        ],
+        { agentRunning: true, config: FAST_POLL },
+      );
+      yield* seed(t.data, record());
+      const error = yield* Effect.flip(t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT)));
+      assert.instanceOf(error, MessageRejectedError);
+      assert.deepInclude(error, { threadId: `local:${L1_WS}`, commandId: SEND_ID });
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual(yield* savedL1(t.data), record());
+    }),
+  );
+
+  it.live("an agent with no hook yet counts its first hook as the reaction", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          l1Snapshot(),
+          { ...quiet(), edit: (answer) => ({ ...(answer as object), lastEventAt: null }) },
+          { argv: textSend, fixture: "terminals-send-local" },
+          reacted(),
+        ],
+        { agentRunning: true, config: FAST_POLL },
+      );
+      yield* seed(t.data, record());
+      yield* t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some((argv) => argv.includes("--keys")));
+      assert.strictEqual((yield* savedL1(t.data))!.turns.at(-1)!.kind, "send");
+    }),
+  );
+
+  it.live("the text is not sent again when its terminals send cannot connect", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [l1Snapshot(), quiet(), { argv: textSend, fail: "Could not connect to API" }],
+        { agentRunning: true, config: FAST_POLL },
+      );
+      yield* seed(t.data, record());
+      const error = yield* Effect.flip(t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT)));
+      assert.deepInclude(error, { _tag: "FactorySessionsError", operation: "send" });
+      assert.strictEqual(t.calls.filter(argvIs("terminals", "send")).length, 1);
+      assert.deepStrictEqual(yield* savedL1(t.data), record());
+    }),
+  );
+
+  it.live("an agent at a permission prompt is MessageRejectedError, with nothing typed and no Enter", () =>
+    Effect.gen(function* () {
+      // Text and Enter would answer the prompt: Enter picks its focused option.
+      const blocked = (answer: unknown) => ({ ...(answer as object), state: "blocked", lastEventType: "PermissionRequest" });
+      const t = rig([l1Snapshot(), { ...quiet(), edit: blocked }], { agentRunning: true, config: FAST_POLL });
+      yield* seed(t.data, record());
+      const error = yield* Effect.flip(t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT)));
+      assert.instanceOf(error, MessageRejectedError);
+      assert.deepInclude(error, { threadId: `local:${L1_WS}`, commandId: SEND_ID });
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some(argvIs("terminals", "send")));
+      assert.deepStrictEqual(yield* savedL1(t.data), record());
+    }),
+  );
+
+  it.live("a typed send clears a stale pendingResume, so a later agent of the preset is not adopted under it", () =>
+    Effect.gen(function* () {
+      const recordedOnly: Step = {
+        ...l1Snapshot(),
+        edit: snapshotOf(L1_WS, [{ id: L1_TERM, title: "", agent: { id: "claude", state: "idle" } }]),
+      };
+      const t = rig(
+        [recordedOnly, quiet(), { argv: textSend, fixture: "terminals-send-local" }, quiet(), reacted()],
+        { agentRunning: true, config: FAST_POLL },
+      );
+      yield* seed(t.data, record({ pendingResume: "softfac:original-solutions__factory-paradev-spike__1__1:resume-1" }));
+      yield* t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, GATE_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.filter(argvIs("terminals", "send")).length, 1);
+      const saved = yield* savedL1(t.data);
+      assert.deepStrictEqual(saved!.terminals, [L1_TERM]);
+      assert.deepStrictEqual(saved!.turns.map((turn) => [turn.commandId, turn.kind]), [
+        [LAUNCH_ID, "launch"],
+        [SEND_ID, "send"],
+      ]);
+      assert.isNull(saved!.pendingResume);
+    }),
+  );
+
+  it.live("a thread with no record, archived, or a workspace gone, is ThreadNotFoundError", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [{ argv: ["snapshot", "--workspace", L5_WS], fail: `Workspace not found on host abc: ${L5_WS}` }],
+        { agentRunning: true },
+      );
+      yield* seed(
+        t.data,
+        record({ threadId: `local:${L5_WS}`, workspaceId: L5_WS, terminals: [L5_RESUMED] }),
+        record({ archivedAt: 1 }),
+      );
+      assert.instanceOf(yield* Effect.flip(t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, "x"))), ThreadNotFoundError);
+      assert.instanceOf(yield* Effect.flip(t.run((s) => s.send(`local:${X8_WS}`, SEND_ID, "x"))), ThreadNotFoundError);
+      assert.instanceOf(yield* Effect.flip(t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, "x"))), ThreadNotFoundError);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.length, 1);
+    }),
+  );
+
+  it.live("an offline Paradev is a SessionsError for send", () =>
+    Effect.gen(function* () {
+      const t = rig([{ argv: argvIs("snapshot"), fixture: "agents-explain-local-appquit" }], { agentRunning: true });
+      yield* seed(t.data, record());
+      const error = yield* Effect.flip(t.run((s) => s.send(`local:${L1_WS}`, SEND_ID, "x")));
+      assert.deepInclude(error, { _tag: "FactorySessionsError", operation: "send" });
+    }),
+  );
+});
+
+describe("send to a dead agent resumes it", () => {
+  const WORKTREE = "/Users/me/.paradev/worktrees/factory-paradev-spike/fac/2-1";
+  const CLAUDE_FOLDER = "-Users-me--paradev-worktrees-factory-paradev-spike-fac-2-1";
+  const RESUME_TEXT = readFixture("agents-create-local-resume").argv.at(-1)!;
+  // Sorts after the newest by name, so only the mtime picks the newest.
+  const OLD_SESSION = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const NEWEST_SESSION = "fc58908c-4c0b-4fc1-abd1-77bac050ee83";
+  const deadRecord = (over: Partial<ThreadRecord> = {}) =>
+    record({ threadId: `local:${L5_WS}`, workspaceId: L5_WS, branch: "fac/2-1", worktreePath: WORKTREE, terminals: [L5_DEAD], ...over });
+
+  /** Claude's projects folder with two sessions for the worktree; the newest is NEWEST_SESSION. */
+  const claudeProjects = (sessions = true) => {
+    const dir = tempDir("claude-projects");
+    if (!sessions) return dir;
+    const folder = NodePath.join(dir, CLAUDE_FOLDER);
+    NodeFS.mkdirSync(folder, { recursive: true });
+    const old = NodePath.join(folder, `${OLD_SESSION}.jsonl`);
+    NodeFS.writeFileSync(old, "{}\n");
+    NodeFS.utimesSync(old, 1_000, 1_000);
+    NodeFS.writeFileSync(NodePath.join(folder, `${NEWEST_SESSION}.jsonl`), "{}\n");
+    NodeFS.writeFileSync(NodePath.join(folder, "notes.txt"), "not a session\n");
+    return dir;
+  };
+
+  const resumeArgv = [
+    "agents", "create", "--local", "--workspace", L5_WS, "--agent", "claude",
+    "--resume-session", NEWEST_SESSION, "--prompt", RESUME_TEXT,
+  ];
+  const closeArgv = ["terminals", "close", "--local", "--workspace", L5_WS, "--terminal", L5_DEAD];
+  const killed = explainAt("agents-explain-local-killed", L5_WS, L5_DEAD);
+  const snap = (fixture: string, edit?: (answer: unknown) => unknown): Step => ({
+    argv: ["snapshot", "--workspace", L5_WS],
+    fixture,
+    ...(edit === undefined ? {} : { edit }),
+  });
+
+  const saved = (data: string) => readThread(data, L5_WS).pipe(Effect.provide(NodeServices.layer));
+
+  it.live("closes the dead terminal and resumes the newest session in a new one, typing nothing", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          snap("snapshot-local-killed"),
+          killed,
+          { argv: closeArgv, fixture: "terminals-close-local-killed" },
+          { argv: resumeArgv, fixture: "agents-create-local-resume" },
+        ],
+        { agentRunning: false, config: { claudeProjectsDir: claudeProjects() } },
+      );
+      yield* seed(t.data, deadRecord());
+      yield* t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, RESUME_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some(argvIs("terminals", "send")));
+      assert.deepStrictEqual(t.lookups, [["claude", WORKTREE]]);
+      const after = yield* saved(t.data);
+      assert.deepStrictEqual(after!.terminals, [L5_DEAD, L5_RESUMED]);
+      assert.deepStrictEqual(after!.turns.at(-1)!.commandId, SEND_ID);
+      assert.strictEqual(after!.turns.at(-1)!.kind, "resume");
+      assert.isNull(after!.pendingResume);
+    }),
+  );
+
+  it.live("finds the session of a worktree path with `_` in it, which Claude's folder name turns into `-`", () =>
+    Effect.gen(function* () {
+      // Claude names the folder with every character other than a letter or digit as `-`.
+      const underscored = "/Users/me/.paradev/worktrees/factory_paradev-spike/fac/2-1";
+      const t = rig(
+        [
+          snap("snapshot-local-killed"),
+          killed,
+          { argv: closeArgv, fixture: "terminals-close-local-killed" },
+          { argv: resumeArgv, fixture: "agents-create-local-resume" },
+        ],
+        { agentRunning: false, config: { claudeProjectsDir: claudeProjects() } },
+      );
+      yield* seed(t.data, deadRecord({ worktreePath: underscored }));
+      yield* t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, RESUME_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual((yield* saved(t.data))!.terminals, [L5_DEAD, L5_RESUMED]);
+    }),
+  );
+
+  it.live("resumes even when explain still says working with a recent hook, since the process is gone", () =>
+    Effect.gen(function* () {
+      // A killed agent's state never changes, so its recency says nothing: only the process does.
+      const t = rig(
+        [
+          snap("snapshot-local-killed"),
+          { ...killed, edit: (answer) => ({ ...(answer as object), lastEventAt: Date.now() }) },
+          { argv: closeArgv, fixture: "terminals-close-local-killed" },
+          { argv: resumeArgv, fixture: "agents-create-local-resume" },
+        ],
+        { agentRunning: false, config: { claudeProjectsDir: claudeProjects() } },
+      );
+      yield* seed(t.data, deadRecord());
+      yield* t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, RESUME_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("a terminal the snapshot no longer lists is not closed again, nor asked about", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [snap("snapshot-local-killed", snapshotOf(L5_WS, [])), { argv: resumeArgv, fixture: "agents-create-local-resume" }],
+        { agentRunning: false, config: { claudeProjectsDir: claudeProjects() } },
+      );
+      yield* seed(t.data, deadRecord());
+      yield* t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, RESUME_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some((argv) => argvIs("terminals", "close")(argv) || argvIs("agents", "explain")(argv)));
+    }),
+  );
+
+  it.live("after a crash between agents create and the record, adopts the resumed agent and starts nothing", () =>
+    Effect.gen(function* () {
+      // The resumed agent lives in the worktree, so the process lookup would find it.
+      const t = rig([snap("snapshot-local-after-resume")], {
+        agentRunning: true,
+        config: { claudeProjectsDir: claudeProjects() },
+      });
+      yield* seed(t.data, deadRecord({ pendingResume: SEND_ID }));
+      yield* t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, RESUME_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.length, 1);
+      const after = yield* saved(t.data);
+      assert.deepStrictEqual(after!.terminals, [L5_DEAD, L5_RESUMED]);
+      assert.deepStrictEqual([after!.turns.at(-1)!.commandId, after!.turns.at(-1)!.kind], [SEND_ID, "resume"]);
+      assert.isNull(after!.pendingResume);
+    }),
+  );
+
+  it.live("an adopted resume of another command id is recorded under that id, and this text is then typed", () =>
+    Effect.gen(function* () {
+      const RESUME_ID = "softfac:original-solutions__factory-paradev-spike__2__1:resume-1";
+      const toResumed = ["terminals", "send", "--local", "--workspace", L5_WS, "--terminal", L5_RESUMED, "--text", GATE_TEXT];
+      const t = rig(
+        [
+          snap("snapshot-local-after-resume"),
+          snap("snapshot-local-after-resume"),
+          { ...explainAt("agents-explain-local-after-gate", L5_WS, L5_RESUMED) },
+          { argv: toResumed, fixture: "terminals-send-local" },
+          { ...explainAt("agents-explain-local-after-gate", L5_WS, L5_RESUMED), edit: hookedAt(1) },
+        ],
+        { agentRunning: true, config: { ...FAST_POLL, claudeProjectsDir: claudeProjects() } },
+      );
+      yield* seed(t.data, deadRecord({ pendingResume: RESUME_ID }));
+      yield* t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, GATE_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      const after = yield* saved(t.data);
+      assert.deepStrictEqual(after!.turns.slice(-2).map((turn) => [turn.commandId, turn.kind]), [
+        [RESUME_ID, "resume"],
+        [SEND_ID, "send"],
+      ]);
+    }),
+  );
+
+  it.live("an agent of the preset in a terminal the thread did not start, with no resume pending, stops the send with nothing typed", () =>
+    Effect.gen(function* () {
+      const t = rig([snap("snapshot-local-after-resume")], {
+        agentRunning: true,
+        config: { claudeProjectsDir: claudeProjects() },
+      });
+      yield* seed(t.data, deadRecord());
+      const error = yield* Effect.flip(t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, GATE_TEXT)));
+      assert.deepInclude(error, { _tag: "FactorySessionsError", operation: "send" });
+      assert.strictEqual(t.calls.length, 1);
+      assert.deepStrictEqual(yield* saved(t.data), deadRecord());
+    }),
+  );
+
+  it.live("a pending resume beside a terminal with no agent yet, and an agent process, starts nothing", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [snap("snapshot-local-after-resume", (answer) => {
+          const ws = (answer as { workspaces: ReadonlyArray<{ terminals: ReadonlyArray<Record<string, unknown>> }> }).workspaces[0]!;
+          return snapshotOf(L5_WS, ws.terminals.map((term) => (term.id === L5_RESUMED ? { ...term, agent: null } : term)))(answer);
+        })],
+        { agentRunning: true, config: { claudeProjectsDir: claudeProjects() } },
+      );
+      const pending = deadRecord({ pendingResume: SEND_ID });
+      yield* seed(t.data, pending);
+      const error = yield* Effect.flip(t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, RESUME_TEXT)));
+      assert.deepInclude(error, { _tag: "FactorySessionsError", operation: "send" });
+      assert.strictEqual(t.calls.length, 1);
+      assert.deepStrictEqual(yield* saved(t.data), pending);
+    }),
+  );
+
+  it.live("a pending resume beside a terminal with no agent and no agent process started nothing, so it resumes again", () =>
+    Effect.gen(function* () {
+      // The dead terminal was closed before the resume went pending; a create that failed left a bare terminal.
+      const t = rig(
+        [
+          snap("snapshot-local-killed", snapshotOf(L5_WS, [{ id: L5_RESUMED, title: "zsh", agent: null }])),
+          { argv: resumeArgv, fixture: "agents-create-local-resume" },
+        ],
+        { agentRunning: false, config: { claudeProjectsDir: claudeProjects() } },
+      );
+      yield* seed(t.data, deadRecord({ pendingResume: SEND_ID }));
+      yield* t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, RESUME_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      const after = yield* saved(t.data);
+      assert.deepStrictEqual(after!.terminals, [L5_DEAD, L5_RESUMED]);
+      assert.isNull(after!.pendingResume);
+    }),
+  );
+
+  it.live("a pending resume whose create started nothing resumes again on the next send", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          snap("snapshot-local-killed"),
+          killed,
+          { argv: closeArgv, fixture: "terminals-close-local-killed" },
+          { argv: resumeArgv, fixture: "agents-create-local-resume" },
+        ],
+        { agentRunning: false, config: { claudeProjectsDir: claudeProjects() } },
+      );
+      yield* seed(t.data, deadRecord({ pendingResume: SEND_ID }));
+      yield* t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, RESUME_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.filter(argvIs("agents", "create")).length, 1);
+      const after = yield* saved(t.data);
+      assert.deepStrictEqual(after!.terminals, [L5_DEAD, L5_RESUMED]);
+      assert.isNull(after!.pendingResume);
+    }),
+  );
+
+  it.live("a resume whose agents create cannot connect is not retried, and stays pending", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          snap("snapshot-local-killed"),
+          killed,
+          { argv: closeArgv, fixture: "terminals-close-local-killed" },
+          { argv: resumeArgv, fail: "Could not connect to API" },
+        ],
+        { agentRunning: false, config: { claudeProjectsDir: claudeProjects() } },
+      );
+      yield* seed(t.data, deadRecord());
+      const error = yield* Effect.flip(t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, RESUME_TEXT)));
+      assert.deepInclude(error, { _tag: "FactorySessionsError", operation: "send" });
+      assert.strictEqual(t.calls.filter(argvIs("agents", "create")).length, 1);
+      const after = yield* saved(t.data);
+      assert.deepStrictEqual(after!.terminals, [L5_DEAD]);
+      assert.strictEqual(after!.pendingResume, SEND_ID);
+    }),
+  );
+
+  it.live("no session file is ThreadNotFoundError, and nothing is created", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [snap("snapshot-local-killed"), killed, { argv: closeArgv, fixture: "terminals-close-local-killed" }],
+        { agentRunning: false, config: { claudeProjectsDir: claudeProjects(false) } },
+      );
+      yield* seed(t.data, deadRecord());
+      const error = yield* Effect.flip(t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, RESUME_TEXT)));
+      assert.instanceOf(error, ThreadNotFoundError);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual((yield* saved(t.data))!.terminals, [L5_DEAD]);
+    }),
+  );
+
+  it.live("an agent that exited resumes too", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          snap("snapshot-local-killed"),
+          { argv: killed.argv, fail: `No agent is running in terminal ${L5_DEAD}` },
+          { argv: closeArgv, fixture: "terminals-close-local-killed" },
+          { argv: resumeArgv, fixture: "agents-create-local-resume" },
+        ],
+        { agentRunning: true, config: { claudeProjectsDir: claudeProjects() } },
+      );
+      yield* seed(t.data, deadRecord());
+      yield* t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, RESUME_TEXT));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some(argvIs("terminals", "send")));
+    }),
+  );
+});
+
+// ---- archive, removeWorktree ------------------------------------------------------------------
+
+describe("archive", () => {
+  const archived = () => record({ threadId: `local:${L5_WS}`, workspaceId: L5_WS, branch: "fac/2-1", worktreePath: "/w/p/fac/2-1", terminals: [L5_DEAD, L5_RESUMED] });
+  const archiveArgv = ["workspaces", "archive", L5_WS, "--local"];
+  const saved = (data: string) => readThread(data, L5_WS).pipe(Effect.provide(NodeServices.layer));
+
+  it.live("archives the workspace and sets archivedAt; status and thread then answer archived, and again is fine", () =>
+    Effect.gen(function* () {
+      const t = rig([
+        { argv: archiveArgv, fixture: "ws-archive-local-2" },
+        { argv: archiveArgv, fixture: "ws-archive-local-again" },
+      ]);
+      yield* seed(t.data, archived());
+      yield* t.run((s) => s.archive(`local:${L5_WS}`));
+      const at = (yield* saved(t.data))!.archivedAt;
+      assert.isNumber(at);
+      const status = yield* t.run((s) => s.status(`local:${L5_WS}`));
+      assert.deepInclude(status, { archived: true, run: null });
+      const thread = yield* t.run((s) => s.thread(`local:${L5_WS}`));
+      assert.deepStrictEqual(thread, { worktreePath: "/w/p/fac/2-1", branch: "fac/2-1", archived: true });
+      yield* t.run((s) => s.archive(`local:${L5_WS}`));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual((yield* saved(t.data))!.archivedAt, at);
+    }),
+  );
+
+  it.live("a workspace archived in Paradev is gone to status and archived to thread", () =>
+    Effect.gen(function* () {
+      const t = rig([
+        explainAt("agents-explain-local-archived", L5_WS, L5_RESUMED),
+        { argv: ["workspaces", "get", L5_WS, "--local"], fixture: "ws-get-local-archived" },
+        { argv: archiveArgv, fixture: "ws-archive-local-again", edit: () => ({ deleted: [], notFound: [L5_WS], failed: [], warnings: [] }) },
+      ]);
+      yield* seed(t.data, archived());
+      assert.instanceOf(yield* Effect.flip(t.run((s) => s.status(`local:${L5_WS}`))), ThreadNotFoundError);
+      assert.deepInclude(yield* t.run((s) => s.thread(`local:${L5_WS}`)), { archived: true });
+      yield* t.run((s) => s.archive(`local:${L5_WS}`));
+      assert.isNumber((yield* saved(t.data))!.archivedAt);
+    }),
+  );
+
+  it.live("Workspace not found on archive counts as archived", () =>
+    Effect.gen(function* () {
+      const t = rig([{ argv: archiveArgv, fail: `Workspace not found on host abc: ${L5_WS}` }]);
+      yield* seed(t.data, archived());
+      yield* t.run((s) => s.archive(`local:${L5_WS}`));
+      assert.isNumber((yield* saved(t.data))!.archivedAt);
+    }),
+  );
+
+  it.live("an id under failed is a SessionsError, and archivedAt stays unset", () =>
+    Effect.gen(function* () {
+      const t = rig([
+        {
+          argv: archiveArgv,
+          fixture: "ws-archive-local-2",
+          edit: () => ({ deleted: [], notFound: [], failed: [{ id: L5_WS, error: "busy" }], warnings: [] }),
+        },
+      ]);
+      yield* seed(t.data, archived());
+      const error = yield* Effect.flip(t.run((s) => s.archive(`local:${L5_WS}`)));
+      assert.deepInclude(error, { _tag: "FactorySessionsError", operation: "archive" });
+      assert.isNull((yield* saved(t.data))!.archivedAt);
+    }),
+  );
+
+  it.live("a thread the adapter has no record of changes nothing", () =>
+    Effect.gen(function* () {
+      const t = rig([]);
+      yield* t.run((s) => s.archive(`local:${X8_WS}`));
+      yield* t.run((s) => s.archive("t3-thread-1"));
+      assert.deepStrictEqual(t.calls, []);
+    }),
+  );
+});
+
+describe("removeWorktree", () => {
+  it.live("does nothing when the path is gone", () =>
+    Effect.gen(function* () {
+      const t = rig([]);
+      yield* t.run((s) => s.removeWorktree(NodePath.join(tempDir("gone"), "fac", "1-1")));
+      assert.deepStrictEqual(t.gitCalls, []);
+    }),
+  );
+
+  it.live("removes a worktree holding changes with git in the repo clone, and keeps its branch", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/1-1", r.main);
+      const work = commit(r.worktree, "work.txt");
+      NodeFS.writeFileSync(NodePath.join(r.worktree, "untracked.txt"), "x");
+      NodeFS.writeFileSync(NodePath.join(r.worktree, "a.txt"), "edited");
+      const t = rig([]);
+      yield* t.run((s) => s.removeWorktree(r.worktree));
+      assert.isFalse(NodeFS.existsSync(r.worktree));
+      assert.notInclude(git(r.clone, "worktree", "list"), r.worktree);
+      assert.strictEqual(git(r.clone, "rev-parse", "--verify", "refs/heads/fac/1-1"), work);
+      const removal = t.gitCalls.find((c) => c.args.includes("remove"));
+      assert.include(removal!.args.join(" "), `-C ${NodeFS.realpathSync(r.clone)} worktree remove --force ${r.worktree}`);
+    }),
   );
 });

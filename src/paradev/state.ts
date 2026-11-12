@@ -37,6 +37,11 @@ const ThreadRecordSchema = Schema.Struct({
   terminals: Schema.Array(Schema.String),
   turns: Schema.Array(Turn),
   archivedAt: Schema.NullOr(Schema.Number),
+  /**
+   * The command id of a resume about to run, or that ran, `agents create`, whose agent is not recorded yet:
+   * the next send adopts the agent it started. Absent in records written before it existed.
+   */
+  pendingResume: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type ThreadRecord = typeof ThreadRecordSchema.Type;
 
