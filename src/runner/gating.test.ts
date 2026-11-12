@@ -5649,7 +5649,6 @@ describe("regate: a failed re-gate of a ready pull request", () => {
       assert.strictEqual(rig.t3.launches.length, 1);
       const req = rig.t3.launches[0]!;
       assert.strictEqual(req.baseRef, "t3code/abc");
-      assert.isTrue(req.startFromOrigin);
       assert.strictEqual(req.commandId, `softfac:${RUN}:regate:2`);
       assert.strictEqual(req.projectId, "proj-1");
       assert.strictEqual(req.title, "rawphp/softfac#10 Build step");
@@ -5705,7 +5704,6 @@ describe("regate: a failed re-gate of a ready pull request", () => {
       assert.deepStrictEqual(yield* regateStep(rig), { kind: "sent-back", attempt: 2 });
       assert.strictEqual(rig.t3.launches.length, 1);
       assert.strictEqual(rig.t3.launches[0]!.baseRef, "t3code/abc");
-      assert.isTrue(rig.t3.launches[0]!.startFromOrigin);
       assert.ok(rig.t3.launches[0]!.message.includes("src/a.rs"), rig.t3.launches[0]!.message);
       assertRelaunched(rig);
     }),

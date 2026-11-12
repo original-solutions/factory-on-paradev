@@ -104,7 +104,6 @@ const request = (over: Partial<LaunchRequest> = {}): LaunchRequest => ({
   projectId: SPIKE_PROJECT,
   title: "fac #1 multiply",
   baseRef: "main",
-  startFromOrigin: true,
   message: "/factory original-solutions/factory-paradev-spike#1",
   model: MODEL,
   ...over,
@@ -395,7 +394,7 @@ describe("launch", () => {
       // Paradev builds the worktree from the clone's local, stale main.
       r.addWorktree("fac/x8", "main");
       const t = rig(launchScript(r), { config: { remoteBase: r.remoteBase } });
-      yield* t.run((s) => s.launch(request({ baseRef: "main", startFromOrigin: false })));
+      yield* t.run((s) => s.launch(request({ baseRef: "main" })));
       assert.strictEqual(git(r.worktree, "rev-parse", "HEAD"), ahead);
     }),
   );
