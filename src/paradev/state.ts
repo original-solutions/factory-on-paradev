@@ -38,7 +38,7 @@ const ThreadRecordSchema = Schema.Struct({
   turns: Schema.Array(Turn),
   archivedAt: Schema.NullOr(Schema.Number),
   /**
-   * The command id of a resume whose `agents create` was run and whose agent is not recorded yet:
+   * The command id of a resume about to run, or that ran, `agents create`, whose agent is not recorded yet:
    * the next send adopts the agent it started. Absent in records written before it existed.
    */
   pendingResume: Schema.optional(Schema.NullOr(Schema.String)),

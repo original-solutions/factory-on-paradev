@@ -244,7 +244,7 @@ interface ThreadRecord {
   readonly terminals: ReadonlyArray<string>;   // oldest first; the last is current
   readonly turns: ReadonlyArray<{ readonly commandId: string; readonly at: number; readonly kind: "launch" | "send" | "resume" }>;
   readonly archivedAt: number | null;
-  // The command id of a resume whose `agents create` was run and whose agent is not recorded yet (#23):
+  // The command id of a resume about to run, or that ran, `agents create`, whose agent is not recorded yet (#23):
   // the next send adopts the agent it started instead of starting a second one.
   readonly pendingResume?: string | null;
 }
@@ -288,7 +288,7 @@ Every call but `snapshot` passes `--local`, and the runner adds `--json`. Timeou
 
 **The liveness check.** Paradev's agent state comes only from the agent's hooks. When P0 killed a working `claude` with `kill -9`, `agents explain` kept saying `working` with the last `Start` hook, the terminal stayed alive with `exited: false`, and its screen showed the shell prompt after `killed 'claude'` (`agents-explain-local-killed.json`, `terminals-list-local-killed.json`, `terminals-read-local-killed.json`). So when a run has been `working` with no hook for 10 minutes, the adapter looks for a process named after the preset's `command` (`claude`) whose working directory is `worktreePath` (`pgrep -x` then `lsof -a -d cwd -p <pid>`). None found: `interrupted`. Found: still `running`, since a long tool call sends no hook. This works only for local runs; hosts and cloud need Paradev to report the exit `[P2: H5]`.
 
-The lookup cannot tell the thread's agent from a `claude` a person starts in the worktree outside Paradev, and `send` then types into the dead terminal: the residual risk accepted for P1. One started inside Paradev shows in the snapshot, and `send` refuses (its step 2).
+The lookup cannot tell the thread's agent from a `claude` a person starts in the worktree outside Paradev, and `send` then types into the dead terminal: the residual risk accepted for P1. An agent of the thread's preset started inside Paradev shows in the snapshot, and `send` refuses (its step 2); any other `claude`, inside Paradev or outside it, is that same residual risk.
 
 ### Status mapping
 
