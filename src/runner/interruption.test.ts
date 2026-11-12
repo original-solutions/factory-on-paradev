@@ -72,7 +72,7 @@ const T3_ERROR = "T3 Code is not reachable: the request timed out";
 
 /** The one message a resume sends, written out independently of the code under test. */
 const RESUME_MESSAGE =
-  "The session was interrupted: your last turn was cut off, probably because T3 Code was unreachable or restarting, so the factory is not treating it as your decision. Continue from where you were. End your reply with a result line as before: FACTORY-DONE: <PR URL>, FACTORY-STOP: needs-info (after your numbered questions) or FACTORY-STOP: stuck.";
+  "The session was interrupted: your last turn was cut off, probably because Paradev was unreachable or restarting, so the factory is not treating it as your decision. Continue from where you were. End your reply with a result line as before: FACTORY-DONE: <PR URL>, FACTORY-STOP: needs-info (after your numbered questions) or FACTORY-STOP: stuck.";
 
 /** The paragraph a relaunch adds to the first message of the next attempt. */
 /** The interruption paragraph of a relaunch from `branch`, in the factory's fixed words. */

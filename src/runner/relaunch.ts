@@ -93,7 +93,7 @@ export const relaunchSession = Effect.fn("RunnerRelaunch.relaunchSession")(funct
     prUrl: from.prUrl,
     after: relaunch.fixes.kind === "feedback" ? "feedback" : "failed-regate",
   };
-  const message = `${launchMessage(ctx.repo, issue, ctx.trackerUser, ctx.ghConfigDir, resumed)}\n\n${END_WITH_DONE}\n\n${relaunch.message}`;
+  const message = `${launchMessage(ctx.repo, issue, ctx.trackerUser, resumed)}\n\n${END_WITH_DONE}\n\n${relaunch.message}`;
   const launched = yield* Effect.result(
     ctx.sessions.launch({
       commandId,

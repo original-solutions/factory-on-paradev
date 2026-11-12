@@ -206,17 +206,17 @@ const STAY_ON_BRANCH =
  * The first message of a session for a GitHub issue: invokes `/factory`, says nobody is in the
  * chat, tells it to stay on its branch, names the base branch when the issue's `## Base` differs from the repo's (`base`), adds the
  * resume paragraph for a continued branch, and names the GitHub identity the session acts as
- * (`login`, `ghConfigDir`) with what to do when `gh` says otherwise.
+ * (`login`) with what to do when `gh` says otherwise. Paradev starts the session with this Mac's
+ * own `gh` login, so the runner cannot hand it a `GH_CONFIG_DIR`.
  */
 export const launchMessage = (
   repo: string,
   issue: number,
   login: string,
-  ghConfigDir: string,
   resumed?: ResumeFrom,
   base?: string,
 ): string =>
-  `/factory ${repo}#${issue}\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${STAY_ON_BRANCH}${base === undefined ? "" : ` Open the pull request against ${base}, not the repo's default base.`}${resumed === undefined ? "" : `\n\n${resumeParagraph(resumed)}`}\n\nYou act on GitHub as ${login}. Your T3 server should have been started with GH_CONFIG_DIR=${ghConfigDir}. Before anything else run gh api user --jq .login exactly as written, in the environment you were started with. Never set GH_CONFIG_DIR, GH_TOKEN or GH_HOST, and never use gh auth token or gh auth switch, on any command. If it prints any other login, end with FACTORY-STOP: stuck and make the first line of your message "${WRONG_ACCOUNT_PREFIX}<x>, not ${login}".`;
+  `/factory ${repo}#${issue}\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${STAY_ON_BRANCH}${base === undefined ? "" : ` Open the pull request against ${base}, not the repo's default base.`}${resumed === undefined ? "" : `\n\n${resumeParagraph(resumed)}`}\n\nYou act on GitHub as ${login}. Paradev started this session with this Mac's gh login. Before anything else run gh api user --jq .login exactly as written, in the environment you were started with. Never set GH_CONFIG_DIR, GH_TOKEN or GH_HOST, and never use gh auth token or gh auth switch, on any command. If it prints any other login, end with FACTORY-STOP: stuck and make the first line of your message "${WRONG_ACCOUNT_PREFIX}<x>, not ${login}".`;
 
 /** The issue's single status comment. */
 export const statusBody = (
@@ -237,10 +237,10 @@ const CONTINUE =
 
 /**
  * The one message the factory sends into a session whose last run ended `failed` or `cancelled`
- * while T3 Code was in trouble. Its own fixed words, with no session or issue text in it, and the
+ * while Paradev was in trouble. Its own fixed words, with no session or issue text in it, and the
  * same for every resume, so a send repeated after a crash is the same message.
  */
-export const INTERRUPTION_MESSAGE = `The session was interrupted: your last turn was cut off, probably because T3 Code was unreachable or restarting, so the factory is not treating it as your decision. ${CONTINUE}`;
+export const INTERRUPTION_MESSAGE = `The session was interrupted: your last turn was cut off, probably because Paradev was unreachable or restarting, so the factory is not treating it as your decision. ${CONTINUE}`;
 
 const RATE_LIMITED =
   "The provider's rate limit cut your last turn off, so the factory is not treating it as your decision.";

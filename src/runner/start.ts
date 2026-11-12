@@ -794,7 +794,6 @@ const launchSession = Effect.fn("RunnerStart.launchSession")(function* (
         ctx.repo,
         issue,
         ctx.trackerUser,
-        ctx.ghConfigDir,
         resumed ?? undefined,
         named ? base : undefined,
       ),
