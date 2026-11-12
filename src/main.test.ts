@@ -24,6 +24,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe, vi } from "vitest";
 
 import { Attention, type NewItem } from "./attention.ts";
+import { pauseClaims } from "./claims.ts";
 import {
   timeLimitOnlyProjectConfig,
   type MachineConfig,
@@ -260,6 +261,10 @@ interface FakeParadev {
   listDown?: string;
   /** Rewrites the recorded `schema` answer. */
   schema: (answer: unknown) => unknown;
+  /** Answers the `pages` commands; absent, they are unexpected. */
+  pages?: (argv: ReadonlyArray<string>) => RunResult;
+  /** A call this is true for is recorded and never answers, as against a hung Paradev. */
+  hangs?: (argv: ReadonlyArray<string>) => boolean;
   readonly calls: Array<ReadonlyArray<string>>;
 }
 
@@ -304,6 +309,7 @@ const paradevAnswer = (paradev: FakeParadev, argv: ReadonlyArray<string>): RunRe
         ? reply(0, JSON.stringify(paradev.projects))
         : reply(1, "", `Error: ${paradev.listDown}\n`);
     default:
+      if (argv[0] === "pages" && paradev.pages !== undefined) return paradev.pages(argv);
       throw new Error(`the scripted superset got an unexpected call: ${argv.join(" ")}`);
   }
 };
@@ -314,18 +320,22 @@ const withParadev = (
   other: FactoryProcess["Service"] = noGhProcess,
 ): FactoryProcess["Service"] =>
   FactoryProcess.of({
-    run: (input) =>
-      input.command === CLI
-        ? Effect.sync(() => {
-            const args = input.args ?? [];
-            return paradevAnswer(paradev, args.at(-1) === "--json" ? args.slice(0, -1) : args);
-          })
-        : other.run(input),
+    run: (input) => {
+      if (input.command !== CLI) return other.run(input);
+      const args = input.args ?? [];
+      const argv = args.at(-1) === "--json" ? args.slice(0, -1) : args;
+      if (paradev.hangs?.(argv) === true) {
+        paradev.calls.push(argv);
+        return Effect.never;
+      }
+      return Effect.sync(() => paradevAnswer(paradev, argv));
+    },
   });
 
 // ---- the machine config ---------------------------------------------------------------------
 
-const PARADEV_BLOCK = `paradev:\n  agent: claude\n  cli: ${CLI}\n`;
+// The belt is off, so a pass makes no `pages` call; `the belt page` turns it on.
+const PARADEV_BLOCK = `paradev:\n  belt:\n    enabled: false\n  agent: claude\n  cli: ${CLI}\n`;
 
 const configFor = (
   repos: ReadonlyArray<readonly [string, string]> = [["a/b", "/b"]],
@@ -801,6 +811,229 @@ describe("on the Paradev CLI", () => {
         assert.strictEqual(finishedPasses(factoryDir), 3);
         assert.ok(logs.includes("factory config reloaded"), logs.join("\n"));
         assert.strictEqual(startedLines(), 1);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("the belt page: the first pass publishes it, and each pass hands the belt to the writer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        const pages: Array<ReadonlyArray<string>> = [];
+        paradev.pages = (argv) => {
+          pages.push(argv);
+          // Paradev answers with the visibility it gave the page: the one asked for.
+          return argv[1] === "publish"
+            ? reply(0, JSON.stringify({ ...JSON.parse(readFixture("pages-publish-probe-ws").stdout), visibility: "org" }))
+            : reply(0, readFixture("pages-storage-set-belt").stdout);
+        };
+        const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    visibility: org\n`;
+        const { loop, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", belt), noGhProcess, {}, paradev);
+        yield* waitUntil("the belt write", () => pages.some((argv) => argv[1] === "storage"));
+        const publish = pages[0]!;
+        assert.deepStrictEqual(publish.slice(0, 2), ["pages", "publish"]);
+        assert.strictEqual(publish[2], NodePath.join(factoryDir, "belt-page", "index.html"));
+        assert.notInclude(publish, "--workspace");
+        // The visibility the config names.
+        assert.deepStrictEqual(publish.slice(publish.indexOf("--visibility"), publish.indexOf("--visibility") + 2), [
+          "--visibility",
+          "org",
+        ]);
+        const set = pages.find((argv) => argv[1] === "storage")!;
+        assert.deepStrictEqual(set.slice(0, 8), [
+          "pages",
+          "storage",
+          "30c684ae-67ab-41c9-b673-cdacc8d5254e",
+          "--key",
+          "belt",
+          "--scope",
+          "shared",
+          "--set",
+        ]);
+        const written = JSON.parse(set[8]!) as {
+          v: number;
+          runner: { version: string; paradevCli: string; paradevOnline: boolean; claimsPaused: boolean };
+        };
+        assert.strictEqual(written.v, 1);
+        assert.strictEqual(written.runner.paradevCli, "2.0.8");
+        assert.isTrue(written.runner.paradevOnline);
+        assert.isFalse(written.runner.claimsPaused);
+        // A later pass publishes nothing and hands its own belt over: its pass time is new.
+        yield* idleAfter(loop, factoryDir, 1);
+        const writes = () => pages.filter((argv) => argv[1] === "storage");
+        const before = writes().length;
+        yield* onePassMore(loop, factoryDir);
+        yield* waitUntil("the second belt write", () => writes().length > before);
+        assert.strictEqual(pages.filter((argv) => argv[1] === "publish").length, 1);
+        const second = JSON.parse(writes().at(-1)![8]!) as { runner: { lastPassAt: string } };
+        assert.notStrictEqual(second.runner.lastPassAt, (JSON.parse(set[8]!) as { runner: { lastPassAt: string } }).runner.lastPassAt);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("the belt says when Paradev is offline and when claims are paused by hand", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        const writes: Array<{ runner: { paradevOnline: boolean; claimsPaused: boolean } }> = [];
+        paradev.pages = (argv) => {
+          if (argv[1] === "publish") return reply(0, readFixture("pages-publish-probe-ws").stdout);
+          writes.push(JSON.parse(argv[8]!) as (typeof writes)[number]);
+          return reply(0, readFixture("pages-storage-set-belt").stdout);
+        };
+        const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n`;
+        const { loop, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", belt), noGhProcess, {}, paradev);
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* waitUntil("the first belt write", () => writes.length > 0);
+        assert.deepStrictEqual(
+          { online: writes[0]!.runner.paradevOnline, paused: writes[0]!.runner.claimsPaused },
+          { online: true, paused: false },
+        );
+        paradev.down = "Host service for this machine isn't running";
+        pauseClaims(factoryDir, Date.now());
+        const before = writes.length;
+        yield* onePassMore(loop, factoryDir);
+        yield* waitUntil("the next belt write", () => writes.length > before);
+        assert.deepStrictEqual(
+          { online: writes.at(-1)!.runner.paradevOnline, paused: writes.at(-1)!.runner.claimsPaused },
+          { online: false, paused: true },
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a reload that narrows the belt's visibility moves the page before any belt goes to it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        const pages: Array<ReadonlyArray<string>> = [];
+        paradev.pages = (argv) => {
+          pages.push(argv);
+          // Paradev keeps the page at org, whatever a later publish asks for.
+          return argv[1] === "publish"
+            ? reply(0, JSON.stringify({ ...JSON.parse(readFixture("pages-publish-probe-ws").stdout), visibility: "org" }))
+            : reply(0, readFixture("pages-storage-set-belt").stdout);
+        };
+        const beltAt = (visibility: string) =>
+          configFor([["a/b", "/b"]], "/gh", "", `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    visibility: ${visibility}\n`);
+        const { loop, factoryDir, write, logLayer } = yield* started(beltAt("org"), noGhProcess, {}, paradev);
+        yield* waitUntil("the first belt write", () => pages.some((argv) => argv[1] === "storage"));
+        yield* idleAfter(loop, factoryDir, 1);
+        const before = pages.length;
+        yield* write(beltAt("just_me"));
+        yield* loop.reload.pipe(Effect.provide(logLayer));
+        yield* waitUntil("the publish after the reload", () => pages.length > before);
+        yield* idleAfter(loop, factoryDir, 2);
+        const after = pages.slice(before);
+        const publish = after[0]!;
+        assert.deepStrictEqual(publish.slice(0, 2), ["pages", "publish"]);
+        assert.deepStrictEqual(publish.slice(publish.indexOf("--page"), publish.indexOf("--page") + 2), [
+          "--page",
+          "30c684ae-67ab-41c9-b673-cdacc8d5254e",
+        ]);
+        assert.deepStrictEqual(publish.slice(publish.indexOf("--visibility"), publish.indexOf("--visibility") + 2), [
+          "--visibility",
+          "just_me",
+        ]);
+        // Paradev answered org: the page gets no belt meant for just_me.
+        assert.deepStrictEqual(
+          after.filter((argv) => argv[1] === "storage"),
+          [],
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a belt write that hangs holds up no pass, starts no second write, and does not hold the shutdown", () =>
+    Effect.gen(function* () {
+      const paradev = newParadev();
+      paradev.pages = () => reply(0, readFixture("pages-publish-probe-ws").stdout);
+      paradev.hangs = (argv) => argv[0] === "pages" && argv[1] === "storage";
+      const sets = () => paradev.calls.filter((argv) => argv[0] === "pages" && argv[1] === "storage").length;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n`;
+          const { loop, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", belt), noGhProcess, {}, paradev);
+          yield* waitUntil("the belt write", () => sets() === 1);
+          yield* idleAfter(loop, factoryDir, 1);
+          yield* onePassMore(loop, factoryDir);
+          yield* onePassMore(loop, factoryDir);
+          assert.strictEqual(sets(), 1);
+        }),
+      );
+      // The scope closed with the write still hanging: the shutdown did not wait for it.
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a pass that dies still hands the belt over, and three in a row put pass-errors on it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        // The CLI check throws inside the process call, so every pass dies.
+        paradev.schema = () => {
+          throw new Error("the scripted schema broke");
+        };
+        const writes: Array<{ attention: Array<{ id: string; text: string }> }> = [];
+        paradev.pages = (argv) => {
+          if (argv[1] === "publish") return reply(0, readFixture("pages-publish-probe-ws").stdout);
+          writes.push(JSON.parse(argv[8]!) as (typeof writes)[number]);
+          return reply(0, readFixture("pages-storage-set-belt").stdout);
+        };
+        const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n`;
+        const { loop, logs } = yield* started(configFor([["a/b", "/b"]], "/gh", "", belt), noGhProcess, {}, paradev);
+        for (let n = 1; n <= 3; n++) {
+          yield* waitUntil(`belt write ${n}`, () => writes.length >= n);
+          if (n < 3) yield* loop.wake;
+        }
+        // The passes died: none got as far as its last line.
+        assert.ok(logs.includes("factory pass failed"), logs.join("\n"));
+        assert.notOk(logs.some((line) => line.startsWith("pass done:")), logs.join("\n"));
+        assert.deepInclude(writes.at(-1)!.attention.map((item) => [item.id, item.text]), [
+          "pass-errors",
+          "The last passes failed; the runner log says why.",
+        ]);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a belt write that fails is a warning in the log and no pass error", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        paradev.pages = (argv) =>
+          argv[1] === "publish"
+            ? reply(0, readFixture("pages-publish-probe-ws").stdout)
+            : reply(1, "", "Error: A stored value is at most 65536 bytes\n");
+        const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n`;
+        const { loop, logs, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", belt), noGhProcess, {}, paradev);
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* waitUntil("the belt warning", () => logs.some((line) => line.includes("65536 bytes")));
+        assert.deepStrictEqual(eventsOf(factoryDir, "error"), []);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("with the belt off, no pass publishes or writes a belt", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        // Answered, so a call made despite the flag is recorded rather than dying unseen in the belt's fiber.
+        paradev.pages = (argv) =>
+          argv[1] === "publish"
+            ? reply(0, readFixture("pages-publish-probe-ws").stdout)
+            : reply(0, readFixture("pages-storage-set-belt").stdout);
+        const off = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    enabled: false\n`;
+        const { loop, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", off), noGhProcess, {}, paradev);
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* onePassMore(loop, factoryDir);
+        // Long enough for a forked write to have been made.
+        yield* realDelay(200);
+        assert.deepStrictEqual(
+          paradev.calls.filter((argv) => argv[0] === "pages"),
+          [],
+        );
+        assert.isFalse(NodeFS.existsSync(NodePath.join(factoryDir, "belt.json")));
+        assert.isFalse(NodeFS.existsSync(NodePath.join(factoryDir, "belt-page")));
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
