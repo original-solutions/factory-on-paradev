@@ -244,6 +244,10 @@ interface ThreadRecord {
   readonly terminals: ReadonlyArray<string>;   // oldest first; the last is current
   readonly turns: ReadonlyArray<{ readonly commandId: string; readonly at: number; readonly kind: "launch" | "send" | "resume" }>;
   readonly archivedAt: number | null;
+  // A delivery begun and not yet seen (#23): a `send` whose text went in, with explain's `lastEventAt`
+  // before it, or a `resume` about to run `agents create`. The same command id again finishes it
+  // instead of typing the text twice or starting a second agent.
+  readonly pending?: { readonly commandId: string; readonly kind: "send" | "resume"; readonly before: number | null } | null;
 }
 ```
 
@@ -284,6 +288,8 @@ Every call but `snapshot` passes `--local`, and the runner adds `--json`. Timeou
 **The base check.** Paradev does not fetch the base ref. When `--base-branch` names a branch the clone does not have, create still exits 0 with empty stderr and builds the worktree from the project's default branch (X8). So `launch` fetches first, and after create compares `git -C <worktreePath> rev-parse HEAD` with the commit it fetched, whatever `req.startFromOrigin` says: nothing moves the clone's local branches, so a local `<baseRef>` is stale. A worktree holding work is never reset: an edit, an untracked file, or a commit no other branch has (the branch's own `origin/` copy does not count as another branch, since an agent pushes there). That is an earlier attempt's agent, and with no agent of the preset there `launch` fails and leaves the worktree as it is. Otherwise, on a mismatch and only after step 7's snapshot shows no terminal, it runs `git reset --hard <fetched commit>` in the worktree, so an agent an earlier attempt started is never reset under. Every git call in the clone or a worktree runs with no credential, and with each filter driver and config hook turned off that one listing of the clone's config named before the calls run. A driver or hook a session writes into the shared `.git/config` after that listing, before the reset (the snapshot looks take up to 30 s), can still run as the runner: the residual risk accepted for P1 (#22, answer 2). Those git processes hold no credential.
 
 **The liveness check.** Paradev's agent state comes only from the agent's hooks. When P0 killed a working `claude` with `kill -9`, `agents explain` kept saying `working` with the last `Start` hook, the terminal stayed alive with `exited: false`, and its screen showed the shell prompt after `killed 'claude'` (`agents-explain-local-killed.json`, `terminals-list-local-killed.json`, `terminals-read-local-killed.json`). So when a run has been `working` with no hook for 10 minutes, the adapter looks for a process named after the preset's `command` (`claude`) whose working directory is `worktreePath` (`pgrep -x` then `lsof -a -d cwd -p <pid>`). None found: `interrupted`. Found: still `running`, since a long tool call sends no hook. This works only for local runs; hosts and cloud need Paradev to report the exit `[P2: H5]`.
+
+`send` (#23) reads `snapshot --workspace <w>` before it decides. An agent of the preset in a terminal the record lacks is taken as the one a pending resume started, and adopted under that resume's command id; with no resume pending, it makes the process lookup ambiguous, so `send` fails and types nothing. A current terminal the snapshot no longer lists is gone, and `send` resumes. The lookup still cannot tell the thread's agent from a `claude` a person starts in the worktree outside Paradev: the residual risk accepted for P1.
 
 ### Status mapping
 

@@ -20,6 +20,19 @@ const Turn = Schema.Struct({
 });
 export type Turn = typeof Turn.Type;
 
+/**
+ * A delivery begun and not yet seen: a `send` whose text went in before its reaction was seen,
+ * or a `resume` about to run `agents create`. A repeat of the same command id finishes it
+ * rather than typing the text again or starting a second agent.
+ */
+const Pending = Schema.Struct({
+  commandId: Schema.String,
+  kind: Schema.Literals(["send", "resume"]),
+  /** For a `send`: explain's `lastEventAt` before the text went in. */
+  before: Schema.NullOr(Schema.Number),
+});
+export type Pending = typeof Pending.Type;
+
 const ThreadRecordSchema = Schema.Struct({
   v: Schema.Literal(1),
   /** `local:<workspaceId>`. */
@@ -37,6 +50,8 @@ const ThreadRecordSchema = Schema.Struct({
   terminals: Schema.Array(Schema.String),
   turns: Schema.Array(Turn),
   archivedAt: Schema.NullOr(Schema.Number),
+  /** Absent in records written before it existed. */
+  pending: Schema.optional(Schema.NullOr(Pending)),
 });
 export type ThreadRecord = typeof ThreadRecordSchema.Type;
 
