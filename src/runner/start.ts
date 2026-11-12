@@ -790,7 +790,6 @@ const launchSession = Effect.fn("RunnerStart.launchSession")(function* (
       projectId: project.id,
       title: `${ctx.repo}#${issue} ${detail.title}`,
       baseRef: resumed === null ? base : resumed.branch,
-      startFromOrigin: resumed !== null || named,
       message: launchMessage(
         ctx.repo,
         issue,

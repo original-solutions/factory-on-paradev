@@ -482,7 +482,6 @@ describe("start: a fresh ready issue", () => {
           projectId: "proj-1",
           title: "rawphp/softfac#7 Build step",
           baseRef: "main",
-          startFromOrigin: false,
           message: launchMessage(REPO, 7, USER, "/gh/rawphp"),
           model: MODEL,
         },
@@ -1979,7 +1978,6 @@ const launchLineOf = (dataDir: string) => {
 const assertPlainStart = (dataDir: string, t3: ReturnType<typeof fakeSessions>) => {
   const request = t3.launchRequests.at(-1)!;
   assert.strictEqual(request.baseRef, "main");
-  assert.strictEqual(request.startFromOrigin, false);
   assert.strictEqual(request.pullRequestUrl, undefined);
   assert.strictEqual(request.message, launchMessage(REPO, 7, USER, "/gh/rawphp"));
   const line = launchLineOf(dataDir);
@@ -2094,7 +2092,6 @@ describe("start: the resume after a time limit", () => {
       const request = t3.launchRequests[0]!;
       assert.strictEqual(request.commandId, "softfac:rawphp__softfac__7__2:launch");
       assert.strictEqual(request.baseRef, "t3code/abc");
-      assert.strictEqual(request.startFromOrigin, true);
       assert.strictEqual(
         request.message,
         launchMessage(REPO, 7, USER, "/gh/rawphp", {
@@ -2150,7 +2147,6 @@ describe("start: the resume after a time limit", () => {
       yield* startIn(dataDir, tracker, t3.sessions);
       const request = t3.launchRequests[0]!;
       assert.strictEqual(request.baseRef, "t3code/abc");
-      assert.strictEqual(request.startFromOrigin, true);
       assert.ok(request.message.includes(INTERRUPTED_WORDS), request.message);
       assert.strictEqual(launchLineOf(dataDir).cause?.reason, "resumed-from-branch");
     }),
@@ -2201,7 +2197,6 @@ describe("start: the resume after a time limit", () => {
       const t3 = fakeSessions(dataDir, {});
       yield* startIn(dataDir, fakeTracker({}).tracker, t3.sessions);
       assert.strictEqual(t3.launchRequests[0]!.baseRef, "t3code/abc");
-      assert.strictEqual(t3.launchRequests[0]!.startFromOrigin, true);
     }),
   );
 
@@ -2305,7 +2300,6 @@ describe("start: the resume after a time limit", () => {
       script.editedSince = false;
       yield* startIn(dataDir, tracker, t3.sessions);
       assert.strictEqual(t3.launchRequests.at(-1)!.baseRef, "t3code/abc");
-      assert.strictEqual(t3.launchRequests.at(-1)!.startFromOrigin, true);
     }),
   );
 
@@ -2408,7 +2402,6 @@ describe("start: the resume after a time limit", () => {
       yield* startIn(dataDir, tracker, t3.sessions);
       const request = t3.launchRequests[0]!;
       assert.strictEqual(request.baseRef, "t3code/abc");
-      assert.strictEqual(request.startFromOrigin, true);
       assert.ok(request.message.includes(RESUME_WORDS), request.message);
       assert.deepStrictEqual(lookups(calls), []);
       const line = launchLineOf(dataDir);
@@ -2442,7 +2435,6 @@ describe("start: the resume after a time limit", () => {
       assert.deepStrictEqual(lookups(calls), []);
       const request = t3.launchRequests[0]!;
       assert.strictEqual(request.baseRef, "main");
-      assert.strictEqual(request.startFromOrigin, false);
       assert.strictEqual(request.pullRequestUrl, undefined);
     }),
   );
@@ -2534,7 +2526,6 @@ const prLookups = (calls: ReadonlyArray<string>) =>
 const assertResumedOntoPr = (dataDir: string, t3: ReturnType<typeof fakeSessions>) => {
   const request = t3.launchRequests.at(-1)!;
   assert.strictEqual(request.baseRef, "t3code/abc");
-  assert.strictEqual(request.startFromOrigin, true);
   assert.strictEqual(request.pullRequestUrl, URL12);
   assert.strictEqual(
     request.message,
@@ -2659,7 +2650,6 @@ describe("start: the resume onto an open pull request of an earlier attempt", ()
         assert.strictEqual(request.commandId, "softfac:rawphp__softfac__7__1:launch");
         assert.strictEqual(request.pullRequestUrl, URL12);
         assert.strictEqual(request.baseRef, "t3code/abc");
-        assert.strictEqual(request.startFromOrigin, true);
         assert.strictEqual(
           request.message,
           launchMessage(REPO, 7, USER, "/gh/rawphp", {
@@ -2912,7 +2902,6 @@ describe("start: an issue that names its base", () => {
       assert.ok(calls.includes("branchTip feature/x"), calls.join("\n"));
       const request = t3.launchRequests[0]!;
       assert.strictEqual(request.baseRef, "feature/x");
-      assert.strictEqual(request.startFromOrigin, true);
       assert.strictEqual(
         request.message,
         launchMessage(REPO, 7, USER, "/gh/rawphp", undefined, "feature/x"),
@@ -3030,7 +3019,6 @@ describe("start: an issue that names its base", () => {
         assert.deepStrictEqual(lookups(calls), []);
         const request = t3.launchRequests[0]!;
         assert.strictEqual(request.baseRef, "feature/x");
-        assert.strictEqual(request.startFromOrigin, true);
         assert.strictEqual(baseOf(dataDir), "feature/x");
       }),
   );

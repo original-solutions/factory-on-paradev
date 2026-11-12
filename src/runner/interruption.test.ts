@@ -1434,7 +1434,6 @@ const plainLaunchMessage = () => launchMessage(REPO, 10, "rawphp", "/gh/rawphp")
 const assertPlainStart = (rig: Rig) => {
   const request = rig.launches.at(-1)!;
   assert.strictEqual(request.baseRef, "main");
-  assert.strictEqual(request.startFromOrigin, false);
   assert.strictEqual(request.message, plainLaunchMessage());
 };
 
@@ -1470,7 +1469,6 @@ describe("interrupted: a thread that is gone", () => {
       const request = rig.launches.at(-1)!;
       assert.strictEqual(request.commandId, "softfac:rawphp__softfac__10__2:launch");
       assert.strictEqual(request.baseRef, "t3code/abc");
-      assert.strictEqual(request.startFromOrigin, true);
       assert.ok(request.message.includes(INTERRUPTED_WORDS), request.message);
       assert.strictEqual(
         request.message,
@@ -1597,7 +1595,6 @@ describe("interrupted: a thread that is gone", () => {
       assert.strictEqual((yield* decide(rig, afterOutage())).kind, "relaunched");
       const request = rig.launches.at(-1)!;
       assert.strictEqual(request.baseRef, "feature/x");
-      assert.strictEqual(request.startFromOrigin, true);
       assert.strictEqual(
         request.message,
         launchMessage(REPO, 10, "rawphp", "/gh/rawphp", undefined, "feature/x"),
@@ -1662,7 +1659,6 @@ describe("interrupted: a thread that is gone", () => {
       yield* resumeIn(rig);
       const request = rig.launches.at(-1)!;
       assert.strictEqual(request.baseRef, "t3code/abc");
-      assert.strictEqual(request.startFromOrigin, true);
       assert.ok(request.message.includes(INTERRUPTED_WORDS), request.message);
       assert.ok(!request.message.includes("time limit"), request.message);
     }),
@@ -1944,7 +1940,6 @@ describe("a relaunch finds the branch", () => {
       assert.strictEqual(relaunchBranchIn(rig), "t3code/from-thread");
       const request = rig.launches.at(-1)!;
       assert.strictEqual(request.baseRef, "t3code/from-thread");
-      assert.strictEqual(request.startFromOrigin, true);
       assert.ok(request.message.includes(interruptedWords("t3code/from-thread")), request.message);
     }),
   );
@@ -1962,7 +1957,6 @@ describe("a relaunch finds the branch", () => {
       assert.strictEqual(relaunchBranchIn(rig), "feat/pr-12");
       const request = rig.launches.at(-1)!;
       assert.strictEqual(request.baseRef, "feat/pr-12");
-      assert.strictEqual(request.startFromOrigin, true);
       assert.deepStrictEqual(
         rig.reads.filter((read) => read.startsWith("branchTip ")),
         ["branchTip feat/pr-12"],
@@ -2053,7 +2047,6 @@ describe("a relaunch finds the branch", () => {
       assert.strictEqual(relaunchBranchIn(rig), "t3code/pr-head");
       const request = rig.launches.at(-1)!;
       assert.strictEqual(request.baseRef, "t3code/pr-head");
-      assert.strictEqual(request.startFromOrigin, true);
     }),
   );
 
@@ -2214,7 +2207,6 @@ describe("the time limit", () => {
         const request = rig.launches.at(-1)!;
         assert.strictEqual(request.commandId, "softfac:rawphp__softfac__10__2:launch");
         assert.strictEqual(request.baseRef, "t3code/abc");
-        assert.strictEqual(request.startFromOrigin, true);
         assert.strictEqual(
           request.message,
           launchMessage(REPO, 10, "rawphp", "/gh/rawphp", {

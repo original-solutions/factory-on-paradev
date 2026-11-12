@@ -100,7 +100,6 @@ export const relaunchSession = Effect.fn("RunnerRelaunch.relaunchSession")(funct
       projectId: project.id,
       title: `${ctx.repo}#${issue} ${detail.title}`,
       baseRef: relaunch.branch,
-      startFromOrigin: true,
       message,
       model: project.model,
       pullRequestUrl: from.prUrl,
