@@ -65,6 +65,8 @@ const makeFixture = (
     readonly startsOnSleep?: number;
     /** This launchctl verb exits 1. */
     readonly failVerb?: string;
+    /** After a bootout, `print` still finds the label this many times, as launchd finishes late. */
+    readonly bootoutLingers?: number;
   } = {},
 ): Fixture => {
   const home = options.home ?? NodeFS.mkdtempSync(NodePath.join(tmp, "home-"));
@@ -73,6 +75,7 @@ const makeFixture = (
   const dataDir = NodePath.join(home, ".config", "factory-runner");
   const calls: Array<ReadonlyArray<string>> = [];
   const loaded = new Set<string>();
+  const lingering = new Map<string, number>();
   const start = 1_000_000;
   let clock = start;
   let sleeps = 0;
@@ -98,10 +101,18 @@ const makeFixture = (
       const [verb, target = ""] = args;
       if (verb === options.failVerb) return { status: 1, stdout: "", stderr: "boom\n" };
       if (verb === "print") {
-        return loaded.has(labelOf(target)) ? ok : { status: 113, stdout: "", stderr: "not found" };
+        const label = labelOf(target);
+        const left = lingering.get(label) ?? 0;
+        if (left > 0) {
+          lingering.set(label, left - 1);
+          return ok;
+        }
+        return loaded.has(label) ? ok : { status: 113, stdout: "", stderr: "not found" };
       }
       if (verb === "bootout") {
-        loaded.delete(labelOf(target));
+        const label = labelOf(target);
+        loaded.delete(label);
+        lingering.set(label, options.bootoutLingers ?? 0);
         return ok;
       }
       if (verb === "bootstrap" || verb === "kickstart") {
@@ -241,7 +252,7 @@ describe("install", () => {
     }
   });
 
-  it("leaves an edited config alone and kickstarts the agents a second run finds loaded", async () => {
+  it("leaves an edited config alone, and boots out then bootstraps each agent a second run finds loaded", async () => {
     const f = makeFixture();
     expect(await install(f.env)).toBe(0);
     const config = NodePath.join(f.dataDir, "config.yml");
@@ -249,23 +260,66 @@ describe("install", () => {
     f.calls.length = 0;
     expect(await install(f.env)).toBe(0);
     expect(NodeFS.readFileSync(config, "utf8")).toBe("edited: true\n");
+    // Same plists as before, and still a full reload: no kickstart, no check of the file on disk.
     expect(verbs(f)).toEqual([
-      ["kickstart", "-k", `gui/${UID}/${LOGROTATE_LABEL}`],
-      ["kickstart", "-k", `gui/${UID}/${LABEL}`],
+      ["bootout", `gui/${UID}/${LOGROTATE_LABEL}`],
+      ["bootstrap", `gui/${UID}`, logrotatePlist(f.home)],
+      ["bootout", `gui/${UID}/${LABEL}`],
+      ["bootstrap", `gui/${UID}`, runnerPlist(f.home)],
     ]);
+    expect(verbs(f).some((call) => call[0] === "kickstart")).toBe(false);
   });
 
-  it("boots a loaded agent out and in again when its plist changed, since kickstart never rereads it", async () => {
+  it("bootstraps the plist just written when a loaded agent's plist changed", async () => {
     const f = makeFixture();
     expect(await install(f.env)).toBe(0);
     f.calls.length = 0;
     expect(await install({ ...f.env, execPath: "/other/node/bin/node" })).toBe(0);
     expect(verbs(f)).toEqual([
-      ["kickstart", "-k", `gui/${UID}/${LOGROTATE_LABEL}`],
+      ["bootout", `gui/${UID}/${LOGROTATE_LABEL}`],
+      ["bootstrap", `gui/${UID}`, logrotatePlist(f.home)],
       ["bootout", `gui/${UID}/${LABEL}`],
       ["bootstrap", `gui/${UID}`, runnerPlist(f.home)],
     ]);
     expect(NodeFS.readFileSync(runnerPlist(f.home), "utf8")).toContain("/other/node/bin/node");
+  });
+
+  it("waits after a bootout until launchctl print no longer finds the label, then bootstraps", async () => {
+    const f = makeFixture({ bootoutLingers: 2 });
+    expect(await install(f.env)).toBe(0);
+    f.calls.length = 0;
+    const before = f.elapsed();
+    expect(await install(f.env)).toBe(0);
+    const rotate = `gui/${UID}/${LOGROTATE_LABEL}`;
+    const runner = `gui/${UID}/${LABEL}`;
+    expect(launchctl(f)).toEqual([
+      ["print", rotate],
+      ["bootout", rotate],
+      ["print", rotate],
+      ["print", rotate],
+      ["print", rotate],
+      ["bootstrap", `gui/${UID}`, logrotatePlist(f.home)],
+      ["print", runner],
+      ["bootout", runner],
+      ["print", runner],
+      ["print", runner],
+      ["print", runner],
+      ["bootstrap", `gui/${UID}`, runnerPlist(f.home)],
+    ]);
+    // Two polls per agent while the label lingers.
+    expect(f.elapsed() - before).toBe(4_000);
+  });
+
+  it("exits 1 without bootstrapping when a booted-out label is still loaded after 60 s", async () => {
+    const f = makeFixture({ bootoutLingers: Number.POSITIVE_INFINITY });
+    expect(await install(f.env)).toBe(0);
+    f.calls.length = 0;
+    const before = f.elapsed();
+    expect(await install(f.env)).toBe(1);
+    expect(f.errs.join("\n")).toContain(`gui/${UID}/${LOGROTATE_LABEL}`);
+    expect(f.errs.join("\n")).toContain("still loaded");
+    expect(verbs(f)).toEqual([["bootout", `gui/${UID}/${LOGROTATE_LABEL}`]]);
+    expect(f.elapsed() - before).toBe(60_000);
   });
 
   it("writes the resolved data dir into the runner agent when FACTORY_RUNNER_HOME is set", async () => {
