@@ -85,7 +85,7 @@ const REPOS = ["rawphp/softfac", "rawphp/broken", "original-solutions/answer-bot
 
 const running = (pollSeconds = 60, repos: ReadonlyArray<string> = REPOS): FactoryStatus => ({
   state: "running",
-  settings: { pollSeconds, maxConcurrentRuns: 5, deployWaitMinutes: 120, repos },
+  settings: { pollSeconds, maxConcurrentRuns: 5, repos },
 });
 
 const input = (dir: string, over: Partial<Parameters<typeof buildStatus>[0]> = {}) => ({
@@ -177,7 +177,6 @@ describe("buildStatus: nothing recorded", () => {
       slots: { used: 0, max: 5 },
       threads: { running: 0 },
       paused_by_hand: null,
-      deploy_pending: null,
       runs: [],
       left_out: [],
       problems: [],
@@ -236,7 +235,6 @@ describe("buildStatus: nothing recorded", () => {
       "slots",
       "threads",
       "paused_by_hand",
-      "deploy_pending",
       "runs",
       "left_out",
       "problems",
@@ -732,7 +730,6 @@ describe("buildStatus: the rest of the report", () => {
       slots: { used: 1, max: 5 },
       threads: { running: 0 },
       paused_by_hand: null,
-      deploy_pending: null,
       runs: [
         {
           id: "rawphp__softfac__59__1",
@@ -848,107 +845,6 @@ describe("buildStatus: claims paused by hand", () => {
     const dir = tempDir();
     NodeFS.writeFileSync(NodePath.join(dir, "claims-paused"), "away\n");
     expect(report(dir).paused_by_hand).not.toBeNull();
-  });
-});
-
-describe("buildStatus: a build autodeploy has waiting", () => {
-  const SHA = "7a70dadf1e2f3a4b5c6d7e8f901234567890abcd";
-  /** `deploy-pending` as autodeploy writes it, last written `writtenAgo` before NOW. */
-  const writePending = (dir: string, sinceMs: number, writtenAgo = MIN) => {
-    const path = NodePath.join(dir, "deploy-pending");
-    NodeFS.writeFileSync(path, `${Math.floor(sinceMs / SEC)} ${SHA}\n`);
-    const written = ago(writtenAgo) / SEC;
-    NodeFS.utimesSync(path, written, written);
-  };
-  const writeSnooze = (dir: string, untilMs: number) =>
-    NodeFS.writeFileSync(NodePath.join(dir, "deploy-snoozed"), `${Math.floor(untilMs / SEC)}\n`);
-  /** Whole seconds, as the markers hold them. */
-  const secs = (ms: number) => Math.floor(ms / SEC) * SEC;
-
-  it("is null without the marker", () => {
-    expect(report(tempDir()).deploy_pending).toBeNull();
-  });
-
-  it("is null when the marker is older than autodeploy rewrites it", () => {
-    const dir = tempDir();
-    writePending(dir, ago(3 * HOUR), 31 * MIN);
-    expect(report(dir).deploy_pending).toBeNull();
-  });
-
-  it("shows the build, how long it has waited and when autodeploy installs it anyway", () => {
-    const dir = tempDir();
-    const since = secs(ago(50 * MIN));
-    writePending(dir, since);
-    expect(report(dir).deploy_pending).toEqual({
-      commit: SHA,
-      since: formatTs(since),
-      waited_ms: NOW - since,
-      deploy_by: formatTs(since + 120 * MIN),
-      snoozed_until: null,
-    });
-  });
-
-  it("deploy_by follows deploy_wait_minutes", () => {
-    const dir = tempDir();
-    const since = secs(ago(50 * MIN));
-    writePending(dir, since);
-    const status = report(dir, {
-      status: {
-        state: "running",
-        settings: { pollSeconds: 60, maxConcurrentRuns: 5, deployWaitMinutes: 30, repos: REPOS },
-      },
-    });
-    expect(status.deploy_pending?.deploy_by).toBe(formatTs(since + 30 * MIN));
-  });
-
-  it("a build stamped in the future has waited no time", () => {
-    const dir = tempDir();
-    writePending(dir, secs(NOW + HOUR));
-    expect(report(dir).deploy_pending?.waited_ms).toBe(0);
-  });
-
-  it("while snoozed it shows the snooze's end and no deploy_by", () => {
-    const dir = tempDir();
-    const since = secs(ago(110 * MIN));
-    const until = secs(NOW + 40 * MIN);
-    writePending(dir, since);
-    writeSnooze(dir, until);
-    expect(report(dir).deploy_pending).toEqual({
-      commit: SHA,
-      since: formatTs(since),
-      waited_ms: NOW - since,
-      deploy_by: null,
-      snoozed_until: formatTs(until),
-    });
-  });
-
-  it("after a snooze has ended deploy_by is measured from the snooze's end", () => {
-    const dir = tempDir();
-    const since = secs(ago(110 * MIN));
-    const ended = secs(ago(5 * MIN));
-    writePending(dir, since);
-    writeSnooze(dir, ended);
-    expect(report(dir).deploy_pending).toEqual({
-      commit: SHA,
-      since: formatTs(since),
-      waited_ms: NOW - since,
-      deploy_by: formatTs(ended + 120 * MIN),
-      snoozed_until: null,
-    });
-  });
-
-  it("a snooze that ended before the first wait leaves deploy_by on the first wait", () => {
-    const dir = tempDir();
-    const since = secs(ago(10 * MIN));
-    writePending(dir, since);
-    writeSnooze(dir, secs(ago(3 * HOUR)));
-    expect(report(dir).deploy_pending?.deploy_by).toBe(formatTs(since + 120 * MIN));
-  });
-
-  it("a snooze with no build waiting shows nothing", () => {
-    const dir = tempDir();
-    writeSnooze(dir, secs(NOW + 40 * MIN));
-    expect(report(dir).deploy_pending).toBeNull();
   });
 });
 

@@ -16,6 +16,7 @@ import {
   loadMachineConfig,
   loadProjectConfig,
   parseMachineConfig,
+  paradevModel,
   parseProjectConfig,
   timeLimitOnlyProjectConfig,
 } from "./config.ts";
@@ -37,6 +38,11 @@ factory:
 const MACHINE = `
 gh_config_dir: /Users/me/.config/softfac/gh
 max_concurrent_runs: 1
+repos:
+  - repo: rawphp/softfac
+    path: /Users/me/factory-runner/rawphp/softfac
+paradev:
+  agent: claude
 `;
 
 const PFILE = "/r/.dw/config.yml";
@@ -462,78 +468,167 @@ describe("machine config", () => {
       notify: true,
       minFreeGib: 10,
       maxLoadPerCore: 1,
-      deployWaitMinutes: 120,
       modelFallbacks: {},
-      pruneBranchesAfterDays: 14,
-      pruneBranchesDryRun: false,
+      repos: [{ repo: "rawphp/softfac", path: "/Users/me/factory-runner/rawphp/softfac" }],
+      paradev: {
+        cli: "/Applications/Superset.app/Contents/Resources/resources/bin/superset",
+        agent: "claude",
+        belt: { enabled: true, visibility: "just_me" },
+      },
     });
     expect(machineLoaded(MACHINE).warnings).toEqual([]);
   });
 
-  // The key is retired: the factory watches the T3 projects of its environment instead.
-  it("machine repos is no longer read, and is one warning naming repos", () => {
-    const t = edit(MACHINE, (tree) => {
-      tree.repos = [{ repo: "rawphp/softfac", path: "/Users/me/EA/projects/softfac" }];
+  describe("repos", () => {
+    it("is read in file order, and may be empty", () => {
+      const t = edit(MACHINE, (tree) => {
+        tree.repos = [
+          { repo: "a/b", path: "/c/a-b" },
+          { repo: "c/d", path: "/c/c-d" },
+        ];
+      });
+      expect(machine(t).repos).toEqual([
+        { repo: "a/b", path: "/c/a-b" },
+        { repo: "c/d", path: "/c/c-d" },
+      ]);
+      expect(machine(edit(MACHINE, (tree) => set(tree, "repos", "[]"))).repos).toEqual([]);
     });
-    const loaded = machineLoaded(t);
-    expect(loaded.config).not.toHaveProperty("repos");
-    expect(loaded.warnings).toEqual([
-      {
-        file: MFILE,
-        field: "repos",
-        message:
-          "is no longer used: the factory watches the T3 projects of this environment whose checkout has a .dw/config.yml with a factory block",
-      },
-    ]);
+
+    it("is required", () => {
+      assertOne(
+        machineErr(edit(MACHINE, (tree) => remove(tree, "repos"))),
+        "repos",
+        MFILE,
+      );
+    });
+
+    it("must be a list of entries with an owner/name repo and an absolute path", () => {
+      for (const [yaml, field] of [
+        ["nope", "repos"],
+        ["{a: 1}", "repos"],
+        ["[x]", "repos[0]"],
+        ["[{path: /c/x}]", "repos[0].repo"],
+        ["[{repo: a/b}]", "repos[0].path"],
+        ["[{repo: ab, path: /c/x}]", "repos[0].repo"],
+        ["[{repo: a/b, path: c/x}]", "repos[0].path"],
+        ["[{repo: a/b, path: /c/x, pathh: y}]", "repos[0].pathh"],
+        ["[{repo: a/b, path: /c/x}, {repo: A/B, path: /c/y}]", "repos[1].repo"],
+      ] as const) {
+        assertOne(machineErr(edit(MACHINE, (tree) => set(tree, "repos", yaml))), field, MFILE);
+      }
+    });
   });
 
-  it("machine repos of any type is a warning, never an error", () => {
-    for (const yaml of ["nope", "[]", "5", "{a: 1}", "[{repo: a/b, pathh: x}]"]) {
-      const loaded = machineLoaded(edit(MACHINE, (tree) => set(tree, "repos", yaml)));
-      expect(loaded.warnings.map((w) => w.field)).toEqual(["repos"]);
-    }
+  describe("paradev", () => {
+    it("reads cli, agent, model, effort and the belt", () => {
+      const t = edit(MACHINE, (tree) =>
+        set(
+          tree,
+          "paradev",
+          "{cli: /opt/superset, agent: claude, model: opus, effort: high, belt: {enabled: false, visibility: just_me}}",
+        ),
+      );
+      expect(machine(t).paradev).toEqual({
+        cli: "/opt/superset",
+        agent: "claude",
+        model: "opus",
+        effort: "high",
+        belt: { enabled: false, visibility: "just_me" },
+      });
+    });
+
+    it("is required, and so is its agent", () => {
+      assertOne(machineErr(edit(MACHINE, (tree) => remove(tree, "paradev"))), "paradev", MFILE);
+      assertOne(
+        machineErr(edit(MACHINE, (tree) => set(tree, "paradev", "{cli: /opt/superset}"))),
+        "paradev.agent",
+        MFILE,
+      );
+    });
+
+    it("refuses an unknown key, naming its path", () => {
+      assertOne(
+        machineErr(edit(MACHINE, (tree) => set(tree, "paradev.belt", "{visibilty: org}"))),
+        "paradev.belt.visibilty",
+        MFILE,
+      );
+      assertOne(
+        machineErr(edit(MACHINE, (tree) => set(tree, "paradev.location", "cloud"))),
+        "paradev.location",
+        MFILE,
+      );
+    });
+
+    it("refuses belt.visibility everyone, naming the key's path", () => {
+      const errs = machineErr(
+        edit(MACHINE, (tree) => set(tree, "paradev.belt", "{visibility: everyone}")),
+      );
+      assertOne(errs, "paradev.belt.visibility", MFILE);
+      expect(errs[0]!.message).toContain("everyone is refused");
+    });
+
+    it("loads belt.visibility org with one warning naming the key's path", () => {
+      const loaded = machineLoaded(
+        edit(MACHINE, (tree) => set(tree, "paradev.belt", "{visibility: org}")),
+      );
+      expect(loaded.config.paradev.belt.visibility).toBe("org");
+      expect(loaded.warnings.map((w) => w.field)).toEqual(["paradev.belt.visibility"]);
+    });
+
+    it("refuses any other belt.visibility", () => {
+      assertOne(
+        machineErr(edit(MACHINE, (tree) => set(tree, "paradev.belt", "{visibility: public}"))),
+        "paradev.belt.visibility",
+        MFILE,
+      );
+    });
+
+    it("builds the launch model with effort as its one option, and none without effort", () => {
+      const withEffort = machine(
+        edit(MACHINE, (tree) => set(tree, "paradev", "{agent: claude, model: opus, effort: high}")),
+      ).paradev;
+      expect(paradevModel(withEffort)).toEqual({
+        instanceId: "claude",
+        model: "opus",
+        options: [{ id: "effort", value: "high" }],
+      });
+      expect(paradevModel(machine(MACHINE).paradev)).toEqual({ instanceId: "claude", model: "" });
+    });
   });
 
-  it("machine the three retired keys are three warnings, in the order of the retired list", () => {
+  it("machine refuses a control_plane block, naming its path", () => {
+    const errs = machineErr(
+      edit(MACHINE, (tree) => set(tree, "control_plane", "{url: https://example.com}")),
+    );
+    assertOne(errs, "control_plane", MFILE);
+    expect(errs[0]!.message).toBe("the control plane arrives in phase 4");
+  });
+
+  it("machine retired keys are one warning each, in the order of the retired list, never an error", () => {
     const loaded = machineLoaded(
       edit(MACHINE, (tree) => {
-        set(tree, "repos", "[]");
-        set(tree, "model", "x");
+        set(tree, "keep_versions", '"3"');
+        set(tree, "deploy_wait_minutes", "0");
+        set(tree, "prune_branches_dry_run", "maybe");
+        set(tree, "prune_branches_after_days", "14");
+        set(tree, "model", "[x]");
         set(tree, "model_instance", "y");
       }),
     );
-    expect(loaded.warnings.map((w) => w.field)).toEqual(["model_instance", "model", "repos"]);
-  });
-
-  // The keys were retired: the model now comes from the T3 project, then the T3 settings.
-  // A file written before that must keep loading, so the factory that builds the upgrade stays up.
-  it("machine model_instance and model are no longer read, and each is one warning", () => {
-    const t = edit(MACHINE, (tree) => {
-      set(tree, "model_instance", "claudeAgent");
-      set(tree, "model", "claude-sonnet-5-5");
-    });
-    const loaded = machineLoaded(t);
-    expect(loaded.config).not.toHaveProperty("model");
-    expect(loaded.config).not.toHaveProperty("modelInstance");
-    expect(loaded.warnings).toEqual([
-      {
-        file: MFILE,
-        field: "model_instance",
-        message:
-          "is no longer used: the model comes from the T3 project's default model, then the T3 settings default",
-      },
-      {
-        file: MFILE,
-        field: "model",
-        message:
-          "is no longer used: the model comes from the T3 project's default model, then the T3 settings default",
-      },
+    expect(loaded.warnings.map((w) => w.field)).toEqual([
+      "model_instance",
+      "model",
+      "prune_branches_after_days",
+      "prune_branches_dry_run",
+      "deploy_wait_minutes",
+      "keep_versions",
     ]);
-  });
-
-  it("machine a retired key of any type is a warning, never an error", () => {
-    const loaded = machineLoaded(edit(MACHINE, (tree) => set(tree, "model", "[x]")));
-    expect(loaded.warnings.map((w) => w.field)).toEqual(["model"]);
+    expect(loaded.config).not.toHaveProperty("deployWaitMinutes");
+    expect(loaded.warnings[4]).toEqual({
+      file: MFILE,
+      field: "deploy_wait_minutes",
+      message: "is no longer used: the runner has no autodeploy",
+    });
   });
 
   it("machine min_free_gib defaults to 10 and can be zero or more", () => {
@@ -552,66 +647,21 @@ describe("machine config", () => {
     }
   });
 
-  it("machine deploy_wait_minutes defaults to 120 and takes any whole number of at least one", () => {
-    expect(machine(MACHINE).deployWaitMinutes).toBe(120);
-    for (const given of [1, 240]) {
-      expect(
-        machine(edit(MACHINE, (t) => set(t, "deploy_wait_minutes", String(given))))
-          .deployWaitMinutes,
-      ).toBe(given);
-    }
-  });
-
-  it("machine deploy_wait_minutes must be an integer of at least one", () => {
-    for (const bad of ["0", "-1", "1.5", '"two"']) {
-      const errs = machineErr(edit(MACHINE, (t) => set(t, "deploy_wait_minutes", bad)));
-      assertOne(errs, "deploy_wait_minutes", MFILE);
-    }
-  });
-
-  it("machine prune_branches_after_days defaults to 14 and must be a whole number of at least one", () => {
-    expect(
-      machine(edit(MACHINE, (t) => set(t, "prune_branches_after_days", "30")))
-        .pruneBranchesAfterDays,
-    ).toBe(30);
-    for (const bad of ["0", "-1", "1.5", '"two"']) {
-      const errs = machineErr(edit(MACHINE, (t) => set(t, "prune_branches_after_days", bad)));
-      assertOne(errs, "prune_branches_after_days", MFILE);
-    }
-  });
-
-  it("machine prune_branches_dry_run defaults to false and must be a boolean", () => {
-    expect(
-      machine(edit(MACHINE, (t) => set(t, "prune_branches_dry_run", "true"))).pruneBranchesDryRun,
-    ).toBe(true);
-    const errs = machineErr(edit(MACHINE, (t) => set(t, "prune_branches_dry_run", '"yes"')));
-    assertOne(errs, "prune_branches_dry_run", MFILE);
-  });
-
-  it("machine model_fallbacks defaults to none and maps a model to the one its sessions move to", () => {
+  it("machine model_fallbacks may be absent or empty", () => {
     expect(machine(MACHINE).modelFallbacks).toEqual({});
-    expect(
-      machine(
-        edit(MACHINE, (t) =>
-          set(t, "model_fallbacks", "{claude-fable-5-1: claude-opus-5-5, gpt-5.5: gpt-5.4}"),
-        ),
-      ).modelFallbacks,
-    ).toEqual({ "claude-fable-5-1": "claude-opus-5-5", "gpt-5.5": "gpt-5.4" });
-  });
-
-  it("machine model_fallbacks must be a mapping of model ids to other model ids", () => {
-    for (const bad of ["claude-opus-5-5", "[claude-opus-5-5]", "5"]) {
-      assertOne(
-        machineErr(edit(MACHINE, (t) => set(t, "model_fallbacks", bad))),
-        "model_fallbacks",
-        MFILE,
+    for (const empty of ["{}", "null"]) {
+      expect(machine(edit(MACHINE, (t) => set(t, "model_fallbacks", empty))).modelFallbacks).toEqual(
+        {},
       );
     }
-    for (const bad of ["{a: 1}", '{a: ""}', "{a: [b]}", "{a: a}"]) {
-      assertOne(
-        machineErr(edit(MACHINE, (t) => set(t, "model_fallbacks", bad))),
-        "model_fallbacks.a",
-        MFILE,
+  });
+
+  it("machine refuses a non-empty model_fallbacks, naming the key", () => {
+    for (const bad of ["{claude-fable-5-1: claude-opus-5-5}", "claude-opus-5-5", "[a]"]) {
+      const errs = machineErr(edit(MACHINE, (t) => set(t, "model_fallbacks", bad)));
+      assertOne(errs, "model_fallbacks", MFILE);
+      expect(errs[0]!.message).toBe(
+        "must be empty: Paradev cannot move a running session to another model through the CLI",
       );
     }
   });
@@ -657,21 +707,6 @@ describe("machine config", () => {
     const errs = machineErr(edit(MACHINE, (t) => set(t, "notify", '"no"')));
     assertOne(errs, "notify", MFILE);
     expect(errs[0]!.message).toBe("must be true or false");
-  });
-
-  // autodeploy.sh reads keep_versions; the server only checks it, so a typo fails the load.
-  it("machine keep_versions may be zero or more and nothing else", () => {
-    for (const value of ["0", "3", "10"]) {
-      expect(machineLoaded(edit(MACHINE, (t) => set(t, "keep_versions", value))).warnings).toEqual(
-        [],
-      );
-    }
-    expect(machineErr(edit(MACHINE, (t) => set(t, "keep_versions", "-1")))[0]!.message).toBe(
-      "must be an integer of at least 0",
-    );
-    const errs = machineErr(edit(MACHINE, (t) => set(t, "keep_versions", '"3"')));
-    assertOne(errs, "keep_versions", MFILE);
-    expect(errs[0]!.message).toBe("must be an integer");
   });
 
   it("machine every key can be set", () => {
@@ -850,6 +885,46 @@ describe("loaders", () => {
         expect((yield* loadProjectConfig(file)).base).toBe("develop");
       }),
     ),
+  );
+});
+
+describe("the example machine config", () => {
+  // config.example.yml is what `install` copies to ~/.config/factory-runner/config.yml when there
+  // is none, so it must load as it stands.
+  effectIt.effect("the example machine config loads as it stands", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const file = yield* path.fromFileUrl(new URL("../config.example.yml", import.meta.url));
+      expect(yield* loadMachineConfig(file)).toEqual(
+        Option.some({
+          warnings: [],
+          config: {
+            ghConfigDir: "/Users/tomkaczocha/.config/t3fac/gh",
+            pollSeconds: 60,
+            maxConcurrentRuns: 1,
+            maxConcurrentGates: 1,
+            feedbackSeconds: 600,
+            notify: true,
+            minFreeGib: 10,
+            maxLoadPerCore: 1,
+            modelFallbacks: {},
+            repos: [
+              {
+                repo: "original-solutions/factory-paradev-spike",
+                path: "/Users/tomkaczocha/factory-runner/original-solutions/factory-paradev-spike",
+              },
+            ],
+            paradev: {
+              cli: "/Applications/Superset.app/Contents/Resources/resources/bin/superset",
+              agent: "claude",
+              model: "opus",
+              effort: "high",
+              belt: { enabled: true, visibility: "just_me" },
+            },
+          },
+        }),
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
 
