@@ -72,7 +72,7 @@ import {
   ThreadNotFoundError,
   type FactorySessions,
 } from "./sessions.ts";
-import { ClaimMemo, MARKER } from "./tracker/github.ts";
+import { MARKER } from "./tracker/github.ts";
 
 /**
  * The mocks of liveWorldBase.test.ts, hoisted for the whole file: each wrapped function calls
@@ -226,6 +226,21 @@ const PARADEV = {
   cli: CLI,
   agent: "claude",
   belt: { enabled: false, visibility: "just_me" as const },
+};
+
+/** The machine config `liveWorld` is given, with no repo; a test that needs another spreads it. */
+const baseMachine: MachineConfig = {
+  ghConfigDir: "/gh/rawphp",
+  pollSeconds: 60,
+  maxConcurrentRuns: 1,
+  maxConcurrentGates: 1,
+  feedbackSeconds: 600,
+  notify: true,
+  minFreeGib: 0,
+  maxLoadPerCore: 0,
+  modelFallbacks: {},
+  repos: [],
+  paradev: PARADEV,
 };
 
 interface FakeProject {
@@ -1335,19 +1350,7 @@ describe("liveWorld", () => {
     return { process, calls };
   };
 
-  const machine: MachineConfig = {
-    ghConfigDir: "/gh/rawphp",
-    pollSeconds: 60,
-    maxConcurrentRuns: 1,
-    maxConcurrentGates: 1,
-    feedbackSeconds: 600,
-    notify: true,
-    minFreeGib: 0,
-    maxLoadPerCore: 0,
-    modelFallbacks: {},
-    repos: [],
-    paradev: PARADEV,
-  };
+  const machine: MachineConfig = baseMachine;
 
   const worldOf = (process: FactoryProcess["Service"]) =>
     liveWorld(
@@ -1920,17 +1923,10 @@ status: () =>
       undefined,
       (_repo, reading) => readings.push(reading),
       {
-        gating: new Set(),
-        claimMemo: new ClaimMemo(),
-        stuckReads: new Map(),
-        brokenThreads: { notFactory: new Set(), unsettled: new Map() },
-        configSkips: new Map(),
+        ...newShared(),
         lastGood: new Map(
           withLastGood ? [[REPO.toLowerCase(), { project: timeLimitOnlyProjectConfig() }]] : [],
         ),
-        cooldowns: new Map(),
-        prunedAt: new Map(),
-        paradevHold: { passes: 0 },
       },
     );
     return Effect.result(
@@ -2536,19 +2532,7 @@ describe("the gate in the background", () => {
     return run;
   };
 
-  const background = {
-    ghConfigDir: "/gh/rawphp",
-    pollSeconds: 60,
-    maxConcurrentRuns: 1,
-    maxConcurrentGates: 1,
-    feedbackSeconds: 600,
-    notify: true,
-    minFreeGib: 0,
-    maxLoadPerCore: 0,
-    modelFallbacks: {},
-    repos: [],
-    paradev: PARADEV,
-  } satisfies MachineConfig;
+  const background = baseMachine;
   const backgroundRepo: Repo = {
     watched: { repo: REPO, path: "/p" },
     project: { ...timeLimitOnlyProjectConfig(), base: "main" },
@@ -2882,19 +2866,7 @@ archive: () => Effect.void });
   /** A building run whose session reported its pull request: the gate reads the issue, then the thread. */
   const reportedRun = (dataDir: string): RunId => seedReportedRun(dataDir, REPO);
 
-  const gateMachine: MachineConfig = {
-    ghConfigDir: "/gh/rawphp",
-    pollSeconds: 60,
-    maxConcurrentRuns: 1,
-    maxConcurrentGates: 1,
-    feedbackSeconds: 600,
-    notify: true,
-    minFreeGib: 0,
-    maxLoadPerCore: 0,
-    modelFallbacks: {},
-    repos: [],
-    paradev: PARADEV,
-  };
+  const gateMachine: MachineConfig = baseMachine;
   const gateRepo: Repo = {
     watched: { repo: REPO, path: "/p" },
     project: timeLimitOnlyProjectConfig(),
@@ -2969,17 +2941,7 @@ status: () =>
         wake: Effect.void,
         scope: yield* Scope.make(),
       };
-      const shared = {
-        gating: new Set<string>(),
-        claimMemo: new ClaimMemo(),
-        stuckReads: new Map<string, number>(),
-        brokenThreads: { notFactory: new Set<string>(), unsettled: new Map<string, number>() },
-        configSkips: new Map<string, number>(),
-        lastGood: new Map(),
-        cooldowns: new Map(),
-        prunedAt: new Map(),
-        paradevHold: { passes: 0 },
-      };
+      const shared = newShared();
       const build = () =>
         liveWorld(
           gateMachine,
@@ -3228,19 +3190,7 @@ status: () =>
         makeCause("start", "seed"),
       );
       ledger.close();
-      const machine: MachineConfig = {
-        ghConfigDir: "/gh/rawphp",
-        pollSeconds: 60,
-        maxConcurrentRuns: 1,
-        maxConcurrentGates: 1,
-        feedbackSeconds: 600,
-        notify: true,
-        minFreeGib: 0,
-        maxLoadPerCore: 0,
-        modelFallbacks: {},
-        repos: [],
-        paradev: PARADEV,
-      };
+      const machine: MachineConfig = baseMachine;
       const world = liveWorld(
         machine,
         dataDir,
@@ -3288,19 +3238,7 @@ status: () =>
         // Another run with nothing pending: the answer is the asked run's.
         seed(other, []);
         const world = liveWorld(
-          {
-            ghConfigDir: "/gh/rawphp",
-            pollSeconds: 60,
-            maxConcurrentRuns: 1,
-            maxConcurrentGates: 1,
-            feedbackSeconds: 600,
-            notify: true,
-            minFreeGib: 0,
-            maxLoadPerCore: 0,
-            modelFallbacks: {},
-            repos: [],
-            paradev: PARADEV,
-          },
+          baseMachine,
           dataDir,
           { run: () => Effect.die("no gh") },
           NodeServices.layer,
@@ -3582,20 +3520,6 @@ describe("reloading the machine config", () => {
 });
 
 // ---- liveWorldBase.test.ts ------------------------------------------------------------------
-
-const baseMachine: MachineConfig = {
-  ghConfigDir: "/gh/rawphp",
-  pollSeconds: 60,
-  maxConcurrentRuns: 1,
-  maxConcurrentGates: 1,
-  feedbackSeconds: 600,
-  notify: true,
-  minFreeGib: 0,
-  maxLoadPerCore: 0,
-  modelFallbacks: {},
-  repos: [],
-  paradev: PARADEV,
-};
 
 const baseRepo: Repo = {
   watched: { repo: "rawphp/softfac", path: "/p" },
