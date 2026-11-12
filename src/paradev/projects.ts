@@ -43,3 +43,7 @@ export const projectAt = Effect.fn("ParadevProjects.projectAt")(function* (
   }
   return null;
 });
+
+/** The command that adds a runner clone at `path` to Paradev on this Mac, named after its folder. */
+export const addProjectCommand = (path: string): string =>
+  `superset projects create --local --name ${path.split("/").filter(Boolean).at(-1) ?? path} --import ${path}`;

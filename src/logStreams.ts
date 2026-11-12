@@ -76,7 +76,7 @@ export const guardLogStream = (
   }) as NodeStream.Writable["write"];
 };
 
-/** Guards the process's stdout and stderr. `index.ts` calls it when server.ts imports it. */
+/** Guards the process's stdout and stderr. `main.ts` calls it when `bin.ts` imports it. */
 export const guardLogStreams = (): void => {
   guardLogStream(process.stdout, 1);
   guardLogStream(process.stderr, 2);

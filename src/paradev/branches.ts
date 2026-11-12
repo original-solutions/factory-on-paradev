@@ -31,22 +31,8 @@ export const launchBranch = (commandId: string): string => {
   return match![2] === "launch" ? branch : `${branch}-${sha256(commandId).slice(0, 8)}`;
 };
 
-const LAUNCH_BRANCH = /^fac\/(\d+|x)-[0-9a-f-]+$/;
-
-/**
- * Whether `branch` is a branch {@link launchBranch} makes and `worktreePath` is a Paradev worktree
- * on it: the path ends with `/<branch>`.
- */
-export const isLaunchBranch = (branch: string, worktreePath: string | null): boolean =>
-  worktreePath !== null && LAUNCH_BRANCH.test(branch) && worktreePath.endsWith(`/${branch}`);
-
-/** The launch branch read back from a Paradev worktree path (the inverse of `isLaunchBranch`). */
-export const launchBranchOf = (worktreePath: string | null): string | null => {
-  const parts = worktreePath?.split("/") ?? [];
-  if (parts.length < 2 || parts.at(-2) !== "fac") return null;
-  const branch = `fac/${parts.at(-1)}`;
-  return isLaunchBranch(branch, worktreePath) ? branch : null;
-};
+// The core reads launch branches back through `sessions.ts`, which may not import from here.
+export { isLaunchBranch, launchBranchOf } from "../sessions.ts";
 
 /**
  * The folder Paradev makes worktrees under, from one worktree's path: `/<project>/<branch>` cut

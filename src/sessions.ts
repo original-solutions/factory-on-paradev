@@ -111,8 +111,24 @@ export interface ThreadStatus extends Thread {
   readonly lastAssistantMessage: string | null;
 }
 
-/** Launch branch names live with the Paradev adapter, which makes them. */
-export { isLaunchBranch, launchBranchOf } from "./paradev/branches.ts";
+/** The branches `paradev/branches.ts` `launchBranch` makes: `fac/<issue>-<attempt>[-<hex>]`, or `fac/x-<hex>`. */
+const LAUNCH_BRANCH = /^fac\/(\d+|x)-[0-9a-f-]+$/;
+
+/**
+ * Whether `branch` is a launch branch and `worktreePath` is a Paradev worktree on it: the path
+ * ends with `/<branch>`. Defined here, not in `paradev/`, so the core reads it without importing
+ * the adapter; `paradev/branches.ts` re-exports it beside `launchBranch`.
+ */
+export const isLaunchBranch = (branch: string, worktreePath: string | null): boolean =>
+  worktreePath !== null && LAUNCH_BRANCH.test(branch) && worktreePath.endsWith(`/${branch}`);
+
+/** The launch branch read back from a Paradev worktree path (the inverse of `isLaunchBranch`). */
+export const launchBranchOf = (worktreePath: string | null): string | null => {
+  const parts = worktreePath?.split("/") ?? [];
+  if (parts.length < 2 || parts.at(-2) !== "fac") return null;
+  const branch = `fac/${parts.at(-1)}`;
+  return isLaunchBranch(branch, worktreePath) ? branch : null;
+};
 
 export class ThreadNotFoundError extends Schema.TaggedError<ThreadNotFoundError>()(
   "FactoryThreadNotFoundError",
