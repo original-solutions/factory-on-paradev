@@ -233,6 +233,8 @@ interface FakeParadev {
   projects: Array<FakeProject>;
   /** The `Error:` line `status` fails with; null when Paradev answers. */
   down: string | null;
+  /** The `Error:` line `projects list` fails with; absent when it answers. */
+  listDown?: string;
   /** Rewrites the recorded `schema` answer. */
   schema: (answer: unknown) => unknown;
   readonly calls: Array<ReadonlyArray<string>>;
@@ -275,7 +277,9 @@ const paradevAnswer = (paradev: FakeParadev, argv: ReadonlyArray<string>): RunRe
         ? reply(0, '{"running":true}')
         : reply(1, "", `Error: ${paradev.down}\n`);
     case "projects list --local":
-      return reply(0, JSON.stringify(paradev.projects));
+      return paradev.listDown === undefined
+        ? reply(0, JSON.stringify(paradev.projects))
+        : reply(1, "", `Error: ${paradev.listDown}\n`);
     default:
       throw new Error(`the scripted superset got an unexpected call: ${argv.join(" ")}`);
   }
@@ -831,6 +835,104 @@ describe("on the Paradev CLI", () => {
           assert.strictEqual(paradev.calls.filter((argv) => argv[0] === "schema").length, 1);
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  for (const [error, message] of [
+    [
+      "Host service for this machine isn't running",
+      "Paradev is offline: no issue has been claimed for 3 passes; open the Paradev app, or start its host service (superset status fails)",
+    ],
+    [
+      "Not logged in",
+      "Paradev is signed out: no issue has been claimed for 3 passes; run superset auth login",
+    ],
+    [
+      "No active organization",
+      "Paradev is signed out: no issue has been claimed for 3 passes; run superset auth login",
+    ],
+  ] as const) {
+    it.effect(`superset status failing with "${error}" raises the item that says what to do`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const paradev = newParadev();
+          paradev.down = error;
+          const { loop, attention, factoryDir } = yield* started(VALID, noGhProcess, {}, paradev);
+          yield* idleAfter(loop, factoryDir, 1);
+          for (let pass = 2; pass <= PARADEV_HOLD_PASSES; pass++) yield* onePassMore(loop, factoryDir);
+          assert.deepStrictEqual(
+            (yield* attention.list())
+              .filter((open) => open.id === PARADEV_OFFLINE_ITEM_ID)
+              .map((open) => open.message),
+            [message],
+          );
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+  }
+
+  it.effect("a project lookup that fails keeps the repo and its open no-paradev-project item", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev([C_D_PROJECT]);
+        const { loop, attention, factoryDir } = yield* started(VALID, noGhProcess, {}, paradev);
+        const items = () =>
+          attention
+            .list()
+            .pipe(Effect.map((open) => open.filter((item) => item.id === "no-paradev-project:a/b")));
+        yield* idleAfter(loop, factoryDir, 1);
+        const before = yield* items();
+        assert.strictEqual(before.length, 1);
+        paradev.listDown = "Host service for this machine isn't running";
+        yield* onePassMore(loop, factoryDir);
+        assert.deepStrictEqual(yield* items(), before);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a repo taken out of repos: has departed: its items clear, after a reload or a restart", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev([C_D_PROJECT]);
+        const both = configFor([
+          ["a/b", "/b"],
+          ["c/d", "/d"],
+        ]);
+        const { loop, attention, factoryDir, write, logLayer, paths } = yield* started(
+          both,
+          noGhProcess,
+          {},
+          paradev,
+        );
+        const aItems = () =>
+          attention.list().pipe(Effect.map((open) => open.filter((item) => item.repo === "a/b")));
+        yield* idleAfter(loop, factoryDir, 1);
+        assert.strictEqual((yield* aItems()).length, 1);
+        // Taken out and reloaded: the next pass clears a/b's item.
+        yield* write(configFor([["c/d", "/d"]]));
+        yield* loop.reload.pipe(Effect.provide(logLayer));
+        yield* idleAfter(loop, factoryDir, 2);
+        assert.deepStrictEqual(yield* aItems(), []);
+        // A restart with a/b gone from the file finds an item a/b left behind and clears it too.
+        yield* attention.raise({
+          id: "run:a__b__1__1:stuck",
+          kind: "stuck",
+          repo: "A/B",
+          issue: 1,
+          run: "a__b__1__1",
+          message: "a/b#1 stuck",
+        });
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const again = yield* runtimeOver(paths, withParadev(paradev, noGhProcess), {});
+            yield* idleAfter(again.loop, factoryDir, 3);
+            assert.deepStrictEqual(
+              (yield* again.attention.list()).filter((item) => item.repo?.toLowerCase() === "a/b"),
+              [],
+            );
+          }),
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("a schema with no `agents explain` holds the claims, naming the version and the command", () =>

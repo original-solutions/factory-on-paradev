@@ -6,7 +6,7 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { useTempDirs } from "./ledger/testSupport.ts";
-import { isAlive, LOCK_FILE, takeRunnerLock } from "./runnerLock.ts";
+import { isAlive, isRunner, LOCK_FILE, takeRunnerLock } from "./runnerLock.ts";
 
 const tempDir = useTempDirs();
 
@@ -60,22 +60,76 @@ describe("the runner lock", () => {
     expect(NodeFS.readFileSync(NodePath.join(dir, LOCK_FILE), "utf8")).toBe("5151\n");
   });
 
-  it("counts this process as alive", () => {
+  it("counts this process as alive, and as no runner, since it does not run bin.ts", () => {
     expect(isAlive(process.pid)).toBe(true);
+    expect(isRunner(process.pid)).toBe(false);
+  });
+
+  it("is taken over from a live pid that is no runner: the dead runner's pid, reused", () => {
+    const dir = tempDir();
+    NodeFS.writeFileSync(NodePath.join(dir, LOCK_FILE), `${process.pid}\n`);
+    expect(takeRunnerLock(dir, 4242).kind).toBe("taken");
+    expect(NodeFS.readFileSync(NodePath.join(dir, LOCK_FILE), "utf8")).toBe("4242\n");
+  });
+
+  it("is refused to a holder that is a runner", () => {
+    const dir = tempDir();
+    const holder = runnerLike();
+    try {
+      NodeFS.writeFileSync(NodePath.join(dir, LOCK_FILE), `${holder.pid}\n`);
+      expect(isRunner(holder.pid!)).toBe(true);
+      expect(takeRunnerLock(dir, 4242)).toMatchObject({ kind: "held", pid: holder.pid });
+    } finally {
+      holder.kill();
+    }
+  });
+
+  it("puts back a lock another runner took over between the stale read and the takeover", () => {
+    const dir = tempDir();
+    const file = NodePath.join(dir, LOCK_FILE);
+    NodeFS.writeFileSync(file, "1111\n");
+    // While this taker judges 1111 stale, runner 2222 takes the lock over first.
+    const lock = takeRunnerLock(dir, 4242, (pid) => {
+      if (pid === 1111) {
+        NodeFS.writeFileSync(file, "2222\n");
+        return false;
+      }
+      return pid === 2222;
+    });
+    expect(lock).toEqual({ kind: "held", path: file, pid: 2222 });
+    expect(NodeFS.readFileSync(file, "utf8")).toBe("2222\n");
+    expect(NodeFS.readdirSync(dir)).toEqual([LOCK_FILE]);
+  });
+
+  it("leaves no file of its own behind but the lock", () => {
+    const dir = tempDir();
+    takeRunnerLock(dir, 4242, () => false);
+    expect(NodeFS.readdirSync(dir)).toEqual([LOCK_FILE]);
   });
 });
+
+/** A live process whose command line runs `bin.ts run`, as a runner's does. Kill it when done. */
+const runnerLike = () =>
+  NodeChildProcess.spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "/x/src/bin.ts", "run"], {
+    stdio: "ignore",
+  });
 
 describe("factory-runner run", () => {
   it("exits 1 naming the pid when a live runner holds the lock", () => {
     const dir = tempDir();
-    NodeFS.writeFileSync(NodePath.join(dir, LOCK_FILE), `${process.pid}\n`);
-    const child = NodeChildProcess.spawnSync(
-      process.execPath,
-      [NodePath.join(import.meta.dirname, "bin.ts"), "run"],
-      { env: { ...process.env, FACTORY_RUNNER_HOME: dir }, timeout: 30_000 },
-    );
-    expect(child.status).toBe(1);
-    expect(child.stderr.toString()).toContain(`(pid ${process.pid})`);
+    const holder = runnerLike();
+    try {
+      NodeFS.writeFileSync(NodePath.join(dir, LOCK_FILE), `${holder.pid}\n`);
+      const child = NodeChildProcess.spawnSync(
+        process.execPath,
+        [NodePath.join(import.meta.dirname, "bin.ts"), "run"],
+        { env: { ...process.env, FACTORY_RUNNER_HOME: dir }, timeout: 30_000 },
+      );
+      expect(child.status).toBe(1);
+      expect(child.stderr.toString()).toContain(`(pid ${holder.pid})`);
+    } finally {
+      holder.kill();
+    }
   });
 
   it("answers anything but run with the usage and exit 2", () => {
