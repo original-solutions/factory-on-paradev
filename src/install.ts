@@ -7,9 +7,16 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
+import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 
-import { DEFAULT_PARADEV_CLI, formatConfigError, parseMachineConfig } from "./config.ts";
+import {
+  DEFAULT_PARADEV_CLI,
+  formatConfigError,
+  parseMachineConfig,
+  type MachineConfig,
+} from "./config.ts";
+import { checkHost, firstFailure, hostCheckIoFromCommands } from "./paradev/hostsCheck.ts";
 import { lstatOrNull, readTextOrNull, writeFileWhole } from "./syncFiles.ts";
 import { installPathsOf, LABEL, LOGROTATE_LABEL, packageVersion } from "./paths.ts";
 
@@ -147,17 +154,17 @@ const firstLine = (text: string): string => text.trim().split("\n")[0] ?? "";
  */
 const supersetCli = (
   env: InstallEnv,
-): { readonly cli: string } | { readonly problems: ReadonlyArray<string> } => {
+): { readonly cli: string; readonly config: MachineConfig | null } | { readonly problems: ReadonlyArray<string> } => {
   let text: string | null;
   try {
     text = readTextOrNull(env.machineConfigPath);
   } catch (error) {
     return { problems: [`cannot read ${env.machineConfigPath}: ${String(error)}`] };
   }
-  if (text === null) return { cli: DEFAULT_PARADEV_CLI };
+  if (text === null) return { cli: DEFAULT_PARADEV_CLI, config: null };
   const parsed = parseMachineConfig(text, env.machineConfigPath);
   return Result.isSuccess(parsed)
-    ? { cli: parsed.success.config.paradev.cli }
+    ? { cli: parsed.success.config.paradev.cli, config: parsed.success.config }
     : { problems: parsed.failure.map(formatConfigError) };
 };
 
@@ -235,6 +242,24 @@ const waitFor = async (env: InstallEnv, done: () => boolean): Promise<boolean> =
 const WAIT_TEXT = `${WAIT_MS / 1000} s`;
 
 /**
+ * Prints `hosts check` for every configured host. A host that fails does not stop the install:
+ * the runner starts either way and gives that host no run until a reload passes the check.
+ */
+const checkHosts = async (env: InstallEnv, config: MachineConfig, cli: string): Promise<void> => {
+  const io = hostCheckIoFromCommands((command, args) => env.run(command, args), cli);
+  for (const host of config.hosts) {
+    env.out(`${host.name} (${host.ssh})`);
+    const lines = await Effect.runPromise(checkHost(io, config, host));
+    for (const entry of lines) env.out(`  ${entry.check}: ${entry.text}`);
+    if (firstFailure(lines) !== null) {
+      env.out(
+        `host ${host.name} is not ready; the runner gives it no run until a reload passes factory-runner hosts check ${host.name}`,
+      );
+    }
+  }
+};
+
+/**
  * Installs the runner as a LaunchAgent and returns the exit code. It checks the machine config and
  * the Superset login first (a LaunchAgent has no Paradev host login of its own) and writes nothing
  * when either fails. Then it copies this package beside `versions/<version>`, writes both agent
@@ -249,6 +274,7 @@ const WAIT_TEXT = `${WAIT_MS / 1000} s`;
  * runner running behind an exit code of 1. The copy replaces `versions/<version>` and `current`
  * moves to it only once the old runner is gone, so a running runner's code is never removed under
  * it; the log's length is taken at that point too, so only the new runner's `runner started` counts.
+ * Between the login check and the copy it prints `hosts check` for each configured host.
  */
 export const install = async (env: InstallEnv): Promise<number> => {
   const config = supersetCli(env);
@@ -267,6 +293,8 @@ export const install = async (env: InstallEnv): Promise<number> => {
     );
     return 1;
   }
+
+  if (config.config !== null) await checkHosts(env, config.config, cli);
 
   const version = packageVersion(env.packageRoot);
   const staged = stage(env, version);

@@ -48,6 +48,7 @@ import {
 } from "./defaultProject.ts";
 import { readLowestFreeSpace, type FreeSpace } from "./disk.ts";
 import { overload, readLoad, type Load } from "./load.ts";
+import { checkHostsAtReload } from "./paradev/hostsCheck.ts";
 import { liveSshRunner, type SshRunner } from "./paradev/ssh.ts";
 import * as Gate from "./gate.ts";
 import { guardLogStreams } from "./logStreams.ts";
@@ -1231,6 +1232,16 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
           ),
         ),
     };
+    // A host that fails its check is no launch candidate until a reload passes it.
+    yield* checkHostsAtReload(
+      {
+        ssh: world.ssh,
+        superset: (argv) => cli.run(argv, { timeoutMs: 30_000 }).pipe(Effect.mapError((e) => e.text)),
+      },
+      machine,
+      attention,
+      shared.hostsNotReady,
+    );
     options.onWorld?.(world);
     state.current = { machine, world, afterPass };
     state.status = {

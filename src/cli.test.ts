@@ -281,7 +281,16 @@ describe("usage", () => {
 });
 
 describe("hosts check", () => {
-  const CONFIG = `repos:
+  const BASE = `gh_config_dir: /gh
+max_concurrent_runs: 2
+`;
+  const PARADEV = `paradev:
+  cli: /opt/superset
+  agent: claude
+  belt:
+    enabled: false
+`;
+  const CONFIG = `${BASE}repos:
   - repo: acme/app
     path: /Users/tom/app
     hosts:
@@ -296,12 +305,7 @@ hosts:
     name: studio
     ssh: me@studio
     max_runs: 2
-paradev:
-  cli: /opt/superset
-  agent: claude
-  belt:
-    enabled: false
-`;
+${PARADEV}`;
   const SECRET = "sk-secret-value";
   const good = (stdout: string): CommandResult => ({ status: 0, stdout, stderr: "" });
 
@@ -380,7 +384,7 @@ paradev:
 
   it("says there are no hosts, and exits 0, when the config has none", async () => {
     const s = setup();
-    seedConfig(s, CONFIG.replace(/hosts:\n {2}- id: h1\n {4}name[\s\S]*?(?=paradev:)/, "").replace(/ {4}hosts:\n {6}- id: h1\n {8}path: .*\n/, ""));
+    seedConfig(s, `${BASE}repos: []\n${PARADEV}`);
     expect(await runCli(["hosts", "check"], s.io)).toBe(0);
     expect(s.outs).toEqual(["no hosts in the machine config"]);
   });

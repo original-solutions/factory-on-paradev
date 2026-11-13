@@ -561,7 +561,9 @@ describe("install", () => {
 });
 
 describe("install and the hosts", () => {
-  const WITH_HOST = `repos: []
+  const WITH_HOST = `gh_config_dir: /gh
+max_concurrent_runs: 2
+repos: []
 hosts:
   - id: h1
     name: mini
