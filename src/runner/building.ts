@@ -582,7 +582,12 @@ export const checkBinding = (
       detail: `${reported} its base ${prepareSessionText(pull.baseRef)} is not the base branch ${runBase}`,
     };
   }
-  const launched = isLaunchBranch(pull.headRef, worktreePath);
+  // A launch branch is this session's only when its own worktree is on it. A cloud-shaped branch
+  // matches any path, so it binds through `branch`, the cloud thread's own, and never through here.
+  const launched =
+    worktreePath !== null &&
+    worktreePath.endsWith(`/${pull.headRef}`) &&
+    isLaunchBranch(pull.headRef, worktreePath);
   const issues = earlier.prs.includes(pr) || earlier.branches.includes(pull.headRef);
   if (branch === null && resumedFrom === null && !launched && !issues) {
     return { public: `${reported} the session has no branch` };

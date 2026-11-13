@@ -116,6 +116,13 @@ export interface ThreadStatus extends Thread {
   readonly lastAssistantMessage: string | null;
 }
 
+/**
+ * Whether `id` is plain enough to go into a thread id and a file name, and to be passed to a
+ * CLI as an argument: letters, digits and `-`, not starting with `-`. Workspace, machine and
+ * environment ids from Paradev all are.
+ */
+export const isPlainId = (id: string): boolean => /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(id);
+
 /** The branches `paradev/branches.ts` `launchBranch` makes: `fac/<issue>-<attempt>[-<hex>]`, or `fac/x-<hex>`. */
 const LAUNCH_BRANCH = /^fac\/(\d+|x)-[0-9a-f-]+$/;
 

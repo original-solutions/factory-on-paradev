@@ -10,6 +10,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import { writeFileAtomically } from "../files.ts";
+import { isPlainId } from "../sessions.ts";
 import { sha256 } from "../text.ts";
 
 const Turn = Schema.Struct({
@@ -106,9 +107,6 @@ const decodeRecord = (text: string): ThreadRecord | null => {
   return { v: 2, target: { kind: "local" }, ...fields };
 };
 
-/** A workspace or machine id that is safe as a file name and in a thread id: no separator, no dots, no colon. */
-const PLAIN_ID = /^[A-Za-z0-9-]+$/;
-
 /** A target as its thread id names it: the host's name and the cloud environment are not in it. */
 export type ThreadTarget =
   | { readonly kind: "local" }
@@ -124,7 +122,7 @@ export const targetOf = (
   threadId: string,
 ): { readonly target: ThreadTarget; readonly workspaceId: string } | null => {
   const parts = threadId.split(":");
-  if (!parts.every((part) => PLAIN_ID.test(part))) return null;
+  if (!parts.every(isPlainId)) return null;
   const [kind, first, second] = parts;
   if (parts.length === 2 && (kind === "local" || kind === "cloud")) {
     return { target: { kind }, workspaceId: first! };

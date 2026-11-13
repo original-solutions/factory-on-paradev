@@ -6,7 +6,7 @@ import * as Schema from "effect/Schema";
 import { parse } from "yaml";
 
 import type { Defaulted, DefaultProject } from "./defaultProject.ts";
-import type { Model } from "./sessions.ts";
+import { isPlainId, type Model } from "./sessions.ts";
 import { asciiLower } from "./ledger/runId.ts";
 
 export const ConfigErrorSchema = Schema.Struct({
@@ -234,9 +234,9 @@ export interface MachineConfig {
   readonly modelFallbacks: Readonly<Record<string, string>>;
   /** `repos`: the repos this runner builds, each with the runner's own clone, in file order. */
   readonly repos: ReadonlyArray<WatchedRepo>;
-  /** `hosts`: every Paradev host a repo names, in file order; empty when none. */
+  /** `hosts`: every entry of the `hosts` block, in file order; empty when there is none. */
   readonly hosts: ReadonlyArray<HostConfig>;
-  /** `cloud`: absent when Paradev Cloud takes no run. */
+  /** `cloud`: the `cloud` block; absent when there is none. */
   readonly cloud?: CloudConfig;
   /** `local`: this Mac as a target. */
   readonly local: LocalConfig;
@@ -709,6 +709,10 @@ const repoCloudFrom = (
   if (!Object.hasOwn(entry, "cloud")) return null;
   const environment = c.nonEmptyString(entry["cloud"], `${path}.cloud`);
   if (environment === undefined) return undefined;
+  if (!isPlainId(environment)) {
+    c.err(`${path}.cloud`, "must be the environment id from superset environments list");
+    return undefined;
+  }
   if (known.cloud === false) {
     c.err(`${path}.cloud`, "needs the top-level cloud block");
     return undefined;
@@ -777,13 +781,12 @@ const reposFrom = (
 };
 
 const HOST_KEYS = ["id", "name", "ssh", "max_runs", "max_load_per_core"] as const;
-/** A machine id goes into thread ids (`host:<id>:<ws>`), so it holds no `:`, `/` or `.`. */
-const HOST_ID = /^[A-Za-z0-9-]+$/;
 /**
  * `user@host`, nothing else: with no user, ssh under BatchMode guesses one. An ssh config alias
- * keeps its HostName, port and key when written `user@alias`.
+ * keeps its HostName, port and key when written `user@alias`. Neither side starts with `-`, which
+ * ssh would read as an option.
  */
-const SSH_DESTINATION = /^[^@\s]+@[^@\s]+$/;
+const SSH_DESTINATION = /^[^-@\s][^@\s]*@[^-@\s][^@\s]*$/;
 
 /** `hosts`: absent (no hosts), or a list of hosts, no id twice. */
 const hostsFrom = (c: Checker, root: Mapping): ReadonlyArray<HostConfig> | undefined => {
@@ -814,7 +817,8 @@ const hostsFrom = (c: Checker, root: Mapping): ReadonlyArray<HostConfig> | undef
       0,
     );
     c.unknownFields(entry, HOST_KEYS, path);
-    if (id !== undefined && !HOST_ID.test(id)) {
+    // A machine id goes into thread ids (`host:<id>:<ws>`) and onto the superset command line.
+    if (id !== undefined && !isPlainId(id)) {
       c.err(`${path}.id`, "must be the machine id from superset hosts list: letters, digits and -");
       ok = false;
       return;

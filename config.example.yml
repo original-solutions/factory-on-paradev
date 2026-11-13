@@ -51,8 +51,9 @@ notify: true
 #     path: /Users/YOU/factory-runner/original-solutions/factory-paradev-spike
 repos: []
 
-# Where else a repo may run besides this Mac: other Paradev hosts, and Paradev Cloud. Nothing
-# places a run there yet; a launch still runs on this Mac. To use them, move these keys out of
+# Where a repo may run: this Mac, other Paradev hosts, and Paradev Cloud. These keys are read and
+# checked, but nothing acts on them yet: every launch runs on this Mac, up to
+# max_concurrent_runs, and local.max_runs does not limit it. To set them, move these keys out of
 # the comment: the repos entry goes in the list above, the other blocks stay at the top level.
 # Config load makes no CLI call, so check each id yourself with `superset hosts list` and
 # `superset environments list`.
