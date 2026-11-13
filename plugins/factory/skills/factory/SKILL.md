@@ -41,14 +41,17 @@ Several `gh` accounts can be logged in, and the active one is shared with every 
 ```bash
 gh api repos/<owner/repo> --jq .permissions.push
 GH_TOKEN=$(gh auth token --user <login>) gh api repos/<owner/repo> --jq .permissions.push   # each other login in `gh auth status`
+gh api user --jq .login
 ```
 
 - The first login that prints `true` is the run's account. An error, a 404, a 403 or `false` means try the next login. A repo the run only reads (a retro's evidence) takes `.permissions.pull` in place of `.permissions.push`.
 - The active login printed `true` → run every command as written.
 - Another login printed `true` → prefix every `gh` and `git` command that reaches GitHub for the rest of the run with `GH_TOKEN=$(gh auth token --user <login>)`, the ones written bare in the reference files included. Git reads that token only through gh's helper, so those `git` commands also take `-c credential.helper= -c 'credential.helper=!gh auth git-credential'`. An `origin` that is not an `https://github.com/` URL ignores the token → stop `stuck`.
+- No login printed `true` in a build, whose `origin` is `<owner/repo>`: the `permissions` object is not the last word. A GitHub App installation token in `GH_TOKEN` (a Paradev Cloud sandbox) reads all `false` there and gets a 403 from `gh api user`, yet it can push. When `gh api repos/<owner/repo>` answers a `permissions` object with `push: false`, or `gh api user` answers 403, run `git push --dry-run origin HEAD:refs/heads/factory-probe-<run id> --no-verify` and treat success as push access; only a failed dry run stops the run. A retro, or a repo the run only reads, gets no probe.
+- The probe: `<run id>` is any token this run alone uses, such as `$(date +%s)`, so it names no branch that exists. A dry run creates nothing on `origin`, and `--no-verify` keeps a pre-push hook out of it. Every probe, the active login's included, runs as `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push …`, so over https git tests the gh login and not a keychain entry. Probe the active login first, then each other login that answered `push: false`, with its `GH_TOKEN` prefix as well. The first success picks the run's account, as a `true` would, and every `git` command that reaches GitHub for the rest of the run keeps the flags that probe used, the ones written bare in the reference files included, so the run pushes with the credential it tested.
 - Never run `gh auth switch`. Pass the token only inline as `$(gh auth token --user <login>)`: never print, echo or export its value, and never put it in a commit, the receipt, the PR or a log.
-- The receipt names the run's login under `## Gate` (`references/receipt.md`).
-- No login prints `true` → stop `stuck`, naming each login and the orgs it sees: `GH_TOKEN=$(gh auth token --user <login>) gh api user/orgs --jq '.[].login'`, once per login.
+- The receipt names the run's login under `## Gate` (`references/receipt.md`). An account `gh api user` answers 403 has no login there: name the one `gh auth status` shows.
+- No login prints `true` and no dry run succeeds → stop `stuck`, naming each login and the orgs it sees: `GH_TOKEN=$(gh auth token --user <login>) gh api user/orgs --jq '.[].login'`, once per login.
 
 ## Issue
 

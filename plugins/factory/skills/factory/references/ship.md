@@ -18,7 +18,7 @@ git fetch origin <branch>
 git rev-parse HEAD origin/<branch>    # prints the same sha twice
 ```
 
-When Read picked a login other than the active one, every `gh` and `git` command in this file runs as `SKILL.md` § GitHub account says.
+When Read picked a login other than the active one, or picked its account by a push dry run, every `gh` and `git` command in this file runs as `SKILL.md` § GitHub account says.
 
 Anything uncommitted, a tip that `origin/<branch>` does not have, or no such branch on `origin` at all → commit and push it first (`references/commits.md`), then check again.
 
