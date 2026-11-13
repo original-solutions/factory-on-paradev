@@ -78,11 +78,16 @@ if grep -HE '/tmp|\$TMPDIR|temp dir|tempfile' SKILL.md references/reviewers/*.md
   echo "a skill file names /tmp, \$TMPDIR or a temp dir outside a never rule"; exit 1
 fi
 
-# Review: a gate call, an independent blind reader, a finding that states its failure, and a stop on no progress.
-for needle in '## 1. Gate call' '`blind-reader`' '`traceability`' 'scenario:' 'No scenario, no site, no evidence' \
-  'Two consecutive cycles that do not improve' 'A blocker is never settled by a run' 'references/reviewers/mutation.md'; do
+# Review: the review-gate-v2 CLI is the grader. The session runs it, reads verdict.json, never grades or settles itself.
+for needle in 'python3 -P -m review_gate review' '--maker-model' '--full' '--format json' '--out .factory/review/round-' \
+  'REVIEW_GATE_V2_HOME' 'Never fall back to a self-run review' 'nohup' 'for i in 1 2 3 4' \
+  '`verdict.head` must equal' 'the pair (open blockers, open actions)' 'A run never calls `settle` on its own word' \
+  'review_gate settle <id> --reason "instructor' 'references/mutation.md'; do
   grep -qF -- "$needle" references/review.md || { echo "references/review.md: no $needle"; exit 1; }
 done
+if grep -qE 'dispatch|packet|seat|panel|blind-reader|traceability' references/review.md; then
+  echo "references/review.md: still describes the skill's own panel"; exit 1
+fi
 for seat in correctness blind-reader traceability testing security api-contract reliability maintainability docs adversarial mutation; do
   [ -f "references/reviewers/$seat.md" ] || { echo "references/reviewers/$seat.md: missing"; exit 1; }
 done
