@@ -1608,6 +1608,49 @@ describe("showGateLog", () => {
     }),
   );
 
+  it.live("an exit 0 whose stdout is not JSON still counts as created, with no warning", () =>
+    Effect.gen(function* () {
+      const logs: Array<string> = [];
+      const capture = Logger.make(({ logLevel }) => {
+        logs.push(String(logLevel));
+      });
+      const t = rig([{ argv: created("/g/1.log"), stdout: "opened terminal t-9\n" }]);
+      yield* seed(t.data, record());
+      yield* t
+        .run((s) => s.showGateLog(thread, 1, "/g/1.log"))
+        .pipe(Effect.provide(Logger.layer([capture], { mergeWithExisting: false })));
+      assert.deepStrictEqual(logs, []);
+      assert.deepStrictEqual((yield* saved(t.data))!.gateLogAttempts, [1]);
+    }),
+  );
+
+  it.live("a record saved while the create ran is kept, with the attempt added", () =>
+    Effect.gen(function* () {
+      const changed = record({ pendingSend: { commandId: "c-1", before: 7 } });
+      let data = "";
+      // The matcher runs as the create is answered: a send saving meanwhile.
+      const t = rig([
+        {
+          argv: (argv) => {
+            const same = argv.join(" ") === created("/g/1.log").join(" ");
+            if (same) {
+              const file = NodePath.join(data, "paradev", "threads", `${WS}.json`);
+              NodeFS.writeFileSync(file, `${JSON.stringify(changed)}\n`);
+            }
+            return same;
+          },
+          answer: { id: "t-1" },
+        },
+      ]);
+      data = t.data;
+      yield* seed(t.data, record());
+      yield* t.run((s) => s.showGateLog(thread, 1, "/g/1.log"));
+      const after = (yield* saved(t.data))!;
+      assert.deepStrictEqual(after.pendingSend, { commandId: "c-1", before: 7 });
+      assert.deepStrictEqual(after.gateLogAttempts, [1]);
+    }),
+  );
+
   it.live("an archived or unknown thread makes no call", () =>
     Effect.gen(function* () {
       const t = rig([]);

@@ -31,6 +31,8 @@ export interface Step {
    * stdout.
    */
   readonly answer?: unknown;
+  /** In place of a fixture, exit 0 with this raw text on stdout, JSON or not. */
+  readonly stdout?: string;
   /**
    * Rewrites the fixture's parsed stdout before it is answered: to point a recorded path at a
    * test's own repo, say, or to empty a list. Only for a fixture recorded with stdout.
@@ -91,6 +93,16 @@ export const fakeSuperset = (script: ReadonlyArray<Step>) => {
           tailTruncated: false,
         } satisfies RunResult);
       }
+      if (step!.stdout !== undefined) {
+        return Effect.succeed({
+          exitCode: 0,
+          timedOut: false,
+          tail: step!.stdout,
+          stderrTail: "",
+          truncated: false,
+          tailTruncated: false,
+        } satisfies RunResult);
+      }
       if (step!.answer !== undefined) {
         return Effect.succeed({
           exitCode: 0,
@@ -102,7 +114,7 @@ export const fakeSuperset = (script: ReadonlyArray<Step>) => {
         } satisfies RunResult);
       }
       if (step!.fixture === undefined) {
-        return Effect.die(new Error("fake superset: a step needs a fixture, an answer or a fail"));
+        return Effect.die(new Error("fake superset: a step needs a fixture, an answer, stdout or a fail"));
       }
       const answer = readFixture(step!.fixture);
       const stdout =

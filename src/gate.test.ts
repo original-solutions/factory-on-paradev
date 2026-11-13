@@ -1799,7 +1799,7 @@ const gateWithLedgerIo = (name: string, gate: ReadonlyArray<string>, io: AppendI
       .run({ ...input, gate, options: { ...input.options, ledgerIo: io } })
       .pipe(Effect.flip);
     assert.strictEqual(gateLocksHeld(dataDir), 0);
-    return { error, events: entries(dataDir, run).map((l) => l.event) };
+    return { error, events: entries(dataDir, run).map((l) => l.event), dataDir, run };
   });
 
 it.live(
@@ -1829,6 +1829,19 @@ it.live("a command line whose sync fails is in the ledger, so the attempt is use
     );
     assert.instanceOf(error, GateRecordError);
     assert.deepStrictEqual(events, ["gate_checkout", "gate_command"]);
+  }).pipe(provided),
+);
+
+it.live("a ledger failure after the commands passed leaves no passed verdict in the log", () =>
+  Effect.gen(function* () {
+    // Write 1 is gate_checkout, 2 the command's line: it fails, so the attempt errors.
+    const { error, dataDir, run } = yield* gateWithLedgerIo(
+      "gate-record-log",
+      ["true"],
+      failingLedgerIo({ write: 2 }),
+    );
+    assert.instanceOf(error, GateRecordError);
+    assert.notInclude(read(gateLogPath(dataDir, run, 1)), "passed");
   }).pipe(provided),
 );
 
@@ -2005,6 +2018,46 @@ describe("the gate log", () => {
       const lines = logLines(gateLogPath(dataDir, run, 1));
       assert.deepStrictEqual([lines[0], lines[1]], ["$ printf partial", "partial"]);
       assert.match(lines[2]!, /^exit 0 after /);
+    }).pipe(provided),
+  );
+
+  it.live("a command that times out ends the log with a timed out line and a failed verdict", () =>
+    Effect.gen(function* () {
+      const remote = makeRemote("gate-log-timeout");
+      const dataDir = tempDir("gate-log-timeout-data");
+      const run = newRunId(REPO, "10", 1);
+      const sha = remote.push([["README", "pushed\n"]]);
+      Ledger.create(dataDir, run, { clock: ticking(T0, 1000) }).close();
+      const input = baseInput(remote, dataDir, run, sha, sha);
+      const out = yield* (yield* FactoryGate).run({
+        ...input,
+        gate: ["sleep 60"],
+        options: { ...input.options, commandTimeoutMs: 300 },
+      });
+      assert.strictEqual(out._tag, "fail");
+      const lines = logLines(gateLogPath(dataDir, run, 1));
+      assert.match(lines.at(-2)!, /^timed out after \d+\.\d s$/);
+      assert.strictEqual(lines.at(-1), "gate attempt 1 failed");
+    }).pipe(provided),
+  );
+
+  it.live("starts the log empty: what an earlier call of the attempt left is gone", () =>
+    Effect.gen(function* () {
+      const remote = makeRemote("gate-log-stale");
+      const dataDir = tempDir("gate-log-stale-data");
+      const run = newRunId(REPO, "10", 1);
+      const sha = remote.push([["README", "pushed\n"]]);
+      Ledger.create(dataDir, run, { clock: ticking(T0, 1000) }).close();
+      const file = gateLogPath(dataDir, run, 1);
+      NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
+      NodeFS.writeFileSync(file, "stale\n");
+      yield* (yield* FactoryGate).run({
+        ...baseInput(remote, dataDir, run, sha, sha),
+        gate: ["echo fresh"],
+      });
+      const lines = logLines(file);
+      assert.strictEqual(lines[0], "$ echo fresh");
+      assert.notInclude(read(file), "stale");
     }).pipe(provided),
   );
 
