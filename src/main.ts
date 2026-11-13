@@ -851,6 +851,8 @@ interface Current {
   readonly world: PassWorld;
   /** Hands the pass's status to the belt writer; does nothing with the belt off. Never fails. */
   readonly afterPass: Effect.Effect<void, never, FileSystem.FileSystem | Path.Path>;
+  /** Archives orphaned cloud workspaces; does nothing with no `cloud` block. Never fails. */
+  readonly sweep: Effect.Effect<void>;
 }
 
 /** What the Paradev hold reads from a failed CLI call. */
@@ -980,6 +982,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     const context = yield* Effect.context<never>();
     const log = Effect.runSyncWith(context);
     let lastError: string | null = null;
+    yield* current.sweep;
     // The belt goes to Paradev beside the loop, one write at a time, so a hung Paradev holds up
     // no pass and no shutdown. A pass that ends while a write is still going hands nothing over:
     // the next one does.
@@ -1034,7 +1037,18 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       ...(machine.paradev.model === undefined ? {} : { model: machine.paradev.model }),
       ...(machine.paradev.effort === undefined ? {} : { effort: machine.paradev.effort }),
       ghConfigDir: machine.ghConfigDir,
+      hosts: machine.hosts,
     }).pipe(Effect.provide(paradev));
+    const sweep =
+      machine.cloud === undefined
+        ? Effect.void
+        : sessions.sweepOrphans.pipe(
+            Effect.catch((error) =>
+              Effect.logWarning(
+                `the cloud orphan sweep failed: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
+              ),
+            ),
+          );
     // The CLI check runs at start and on every reload, and again each pass until it passes.
     let cliChecked = false;
     // What the belt says of Paradev: the version the check read, and the last pass's answer.
@@ -1210,7 +1224,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         ),
     };
     options.onWorld?.(world);
-    state.current = { machine, world, afterPass };
+    state.current = { machine, world, afterPass, sweep };
     state.status = {
       state: "running",
       settings: {
