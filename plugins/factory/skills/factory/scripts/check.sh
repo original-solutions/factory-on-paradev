@@ -73,7 +73,7 @@ done
 for path in references/receipt.md references/ship.md references/review.md references/isolate.md; do
   grep -qF -- '.factory/' "$path" || { echo "$path: does not point at .factory/"; exit 1; }
 done
-if grep -HE '/tmp|\$TMPDIR|temp dir|tempfile' SKILL.md references/reviewers/*.md \
+if grep -HE '/tmp|\$TMPDIR|temp dir|tempfile' SKILL.md \
   $(ls references/*.md | grep -v field-lessons) | grep -vE 'never (in|into|under) |Nothing of a run goes under '; then
   echo "a skill file names /tmp, \$TMPDIR or a temp dir outside a never rule"; exit 1
 fi
@@ -96,10 +96,13 @@ done
 if grep -qiE 'cycle|panel|checker model' references/check.md; then
   echo "references/check.md: still speaks of cycles or a panel"; exit 1
 fi
-for seat in correctness blind-reader traceability testing security api-contract reliability maintainability docs adversarial mutation; do
-  [ -f "references/reviewers/$seat.md" ] || { echo "references/reviewers/$seat.md: missing"; exit 1; }
+# The mutation pass is the one brief the skill keeps; review-gate reads code and this pass executes it.
+[ -f references/mutation.md ] || { echo "references/mutation.md: missing"; exit 1; }
+[ ! -d references/reviewers ] || { echo "references/reviewers/: the skill's own panel briefs are still here"; exit 1; }
+for needle in 'At most 12 mutants' '20 minutes' 'detached worktree' 'git checkout -- <path>' 'class `cannot-fail`' \
+  'Never the whole suite'; do
+  grep -qF -- "$needle" references/mutation.md || { echo "references/mutation.md: no $needle"; exit 1; }
 done
-grep -qF -- 'no issue, no contract, no commit messages' references/reviewers/blind-reader.md || { echo "references/reviewers/blind-reader.md: the blind reader is told the story"; exit 1; }
 grep -qF -- '- settled:' references/receipt.md || { echo "references/receipt.md: no settled line under Review"; exit 1; }
 # GitHub account: pick by write access, fall back to another login without switching, and stop naming every login's orgs.
 for needle in '## GitHub account' 'gh api repos/<owner/repo> --jq .permissions.push' 'GH_TOKEN=$(gh auth token --user <login>)' \
@@ -113,7 +116,7 @@ done
 grep -qF -- '- account: <login>' references/receipt.md || { echo "references/receipt.md: no account line under Gate"; exit 1; }
 
 missing=0
-for path in $(grep -ohE 'references/[A-Za-z0-9_./-]+\.md' SKILL.md references/*.md references/reviewers/*.md | sort -u); do
+for path in $(grep -ohE 'references/[A-Za-z0-9_./-]+\.md' SKILL.md references/*.md | sort -u); do
   [ -f "$path" ] || { echo "missing: $path"; missing=1; }
 done
 exit "$missing"
