@@ -603,10 +603,10 @@ class FakeT3 {
       return Effect.succeed(this.checkout);
     },
     lastActivity: () => Effect.succeed(null),
-    showGateLog: (threadId, attempt, logPath) => {
-      this.gateLogs.push(`${threadId} ${attempt} ${logPath}`);
-      return Effect.void;
-    },
+    showGateLog: (threadId, attempt, logPath) =>
+      Effect.sync(() => {
+        this.gateLogs.push(`${threadId} ${attempt} ${logPath}`);
+      }),
   };
 }
 

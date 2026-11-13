@@ -13,6 +13,7 @@ import {
   MERGE_COMMAND,
   WorkspaceUnexpectedError,
   commandCode,
+  gateLogPath,
   gateResultsComment,
   gateRoot,
   leftoverCheckouts,
@@ -104,7 +105,7 @@ export interface GateContext extends BuildingContext {
   readonly repoPath: string;
   readonly ghConfigDir: string;
   readonly sessions: BuildingContext["sessions"] &
-    Pick<FactorySessions["Service"], "findProject" | "launch">;
+    Pick<FactorySessions["Service"], "findProject" | "launch" | "showGateLog">;
 }
 
 /** The project names no gate command: nothing can pass, and the pass marker could not tell a gate command from a provision command. */
@@ -1024,6 +1025,10 @@ const gateAttempts = Effect.fn("RunnerGating.gateAttempts")(function* (
     provision: ctx.project.provision,
     gate: ctx.project.gate,
     maxConcurrentGates: ctx.maxConcurrentGates,
+    // The thread's workspace shows the attempt's log while the commands run.
+    ...(seen.threadId !== null && {
+      onStart: ctx.sessions.showGateLog(seen.threadId, attempt, gateLogPath(ctx.dataDir, run, attempt)),
+    }),
     ...(ctx.gateOptions !== undefined && { options: ctx.gateOptions }),
   });
   if (ran._tag === "running") return { kind: "running" } as const;

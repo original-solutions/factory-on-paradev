@@ -55,6 +55,8 @@ const ThreadRecordSchema = Schema.Struct({
    * records written before it existed.
    */
   pendingSend: Schema.optional(Schema.NullOr(PendingSend)),
+  /** The attempt numbers that already have a gate terminal; absent in records written before it existed. */
+  gateLogAttempts: Schema.optional(Schema.Array(Schema.Number)),
 });
 export type ThreadRecord = typeof ThreadRecordSchema.Type;
 

@@ -27,6 +27,11 @@ export interface Step {
    */
   readonly fail?: string;
   /**
+   * In place of a fixture, an answer the spike did not record: exit 0 with this value as JSON on
+   * stdout.
+   */
+  readonly answer?: unknown;
+  /**
    * Rewrites the fixture's parsed stdout before it is answered: to point a recorded path at a
    * test's own repo, say, or to empty a list. Only for a fixture recorded with stdout.
    */
@@ -86,8 +91,18 @@ export const fakeSuperset = (script: ReadonlyArray<Step>) => {
           tailTruncated: false,
         } satisfies RunResult);
       }
+      if (step!.answer !== undefined) {
+        return Effect.succeed({
+          exitCode: 0,
+          timedOut: false,
+          tail: `${JSON.stringify(step!.answer)}\n`,
+          stderrTail: "",
+          truncated: false,
+          tailTruncated: false,
+        } satisfies RunResult);
+      }
       if (step!.fixture === undefined) {
-        return Effect.die(new Error("fake superset: a step needs a fixture or a fail"));
+        return Effect.die(new Error("fake superset: a step needs a fixture, an answer or a fail"));
       }
       const answer = readFixture(step!.fixture);
       const stdout =

@@ -6,6 +6,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 
 /**
@@ -80,6 +81,12 @@ export interface RunInput {
    * server. A process already nicer keeps its own. Unset: the server's priority.
    */
   readonly niceness?: number;
+  /**
+   * Append every stdout and stderr chunk to this file as it arrives, in arrival order, besides
+   * keeping the tails. The directory must exist. A file that cannot be opened or written costs a
+   * warning at most: the command still runs and its result does not change.
+   */
+  readonly logFile?: string;
 }
 
 export interface RunResult {
@@ -203,6 +210,36 @@ const run = Effect.fn("FactoryProcess.run")(function* (input: RunInput) {
     ? ["-c", `${merge}${hold}${input.command}`, ...args]
     : ["-c", `${merge}${hold}exec "$0" "$@"`, input.command, ...args];
 
+  // Best effort: a log that cannot be opened or written never fails the command.
+  let logFd: number | null = null;
+  if (input.logFile !== undefined) {
+    try {
+      logFd = NodeFS.openSync(input.logFile, "a");
+    } catch (cause) {
+      yield* Effect.logWarning(
+        `could not open the log file ${input.logFile}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+  }
+  const log = (chunk: Buffer): void => {
+    if (logFd === null) return;
+    try {
+      NodeFS.writeSync(logFd, chunk);
+    } catch {
+      closeLog();
+    }
+  };
+  function closeLog(): void {
+    if (logFd === null) return;
+    const fd = logFd;
+    logFd = null;
+    try {
+      NodeFS.closeSync(fd);
+    } catch {
+      // Nothing is left to lose.
+    }
+  }
+
   const exited = Deferred.makeUnsafe<
     readonly [number | null, NodeJS.Signals | null],
     RunSpawnError
@@ -230,11 +267,17 @@ const run = Effect.fn("FactoryProcess.run")(function* (input: RunInput) {
       child.once("exit", (code, signal) =>
         Deferred.doneUnsafe(exited, Exit.succeed([code, signal] as const)),
       );
-      child.stdout?.on("data", (chunk: Buffer) => tail.push(chunk));
+      child.stdout?.on("data", (chunk: Buffer) => {
+        tail.push(chunk);
+        log(chunk);
+      });
       child.stdout?.once("close", () => Deferred.doneUnsafe(closed, Exit.void));
       // No stdout (spawn failed): nothing to drain.
       if (!child.stdout) Deferred.doneUnsafe(closed, Exit.void);
-      child.stderr?.on("data", (chunk: Buffer) => stderrTail.push(chunk));
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderrTail.push(chunk);
+        log(chunk);
+      });
       child.stderr?.once("close", () => Deferred.doneUnsafe(stderrClosed, Exit.void));
       if (!child.stderr) Deferred.doneUnsafe(stderrClosed, Exit.void);
       return child;
@@ -343,7 +386,9 @@ const run = Effect.fn("FactoryProcess.run")(function* (input: RunInput) {
     } satisfies RunResult;
   });
 
-  return yield* Effect.acquireUseRelease(acquire, use, release);
+  return yield* Effect.acquireUseRelease(acquire, use, release).pipe(
+    Effect.ensuring(Effect.sync(closeLog)),
+  );
 });
 
 /** Callers depend on this tag, so their tests can swap in a fake that starts no process. */

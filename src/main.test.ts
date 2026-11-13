@@ -141,6 +141,7 @@ const stubSessions: FactorySessions["Service"] = {
   worktreeCheckout: () => Effect.die("no worktree head"),
   runningThreads: Effect.succeed(0),
   lastActivity: () => Effect.succeed(null),
+  showGateLog: () => Effect.void,
   worktreesDirectory: (defaultDir) => Effect.succeed(defaultDir),
 };
 

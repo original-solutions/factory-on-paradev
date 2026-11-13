@@ -45,7 +45,7 @@ export const projectAt = Effect.fn("ParadevProjects.projectAt")(function* (
 });
 
 /** `text` as one shell word: as it is when it is plain, else in single quotes. */
-const shellWord = (text: string): string =>
+export const shellWord = (text: string): string =>
   /^[A-Za-z0-9_./-]+$/.test(text) ? text : `'${text.replaceAll("'", `'\\''`)}'`;
 
 /** The command that adds a runner clone at `path` to Paradev on this Mac, named after its folder. */

@@ -257,5 +257,14 @@ export class FactorySessions extends Context.Service<
     readonly worktreesDirectory: (
       defaultDir: string,
     ) => Effect.Effect<string | null, SessionsError>;
+    /**
+     * Opens a terminal in the thread's workspace that follows the gate log of `attempt` at
+     * `logPath`, once per attempt. Never fails: a failure is one warning in the log.
+     */
+    readonly showGateLog: (
+      threadId: string,
+      attempt: number,
+      logPath: string,
+    ) => Effect.Effect<void>;
   }
 >()("factory-runner/sessions/FactorySessions") {}

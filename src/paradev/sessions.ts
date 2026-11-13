@@ -45,7 +45,7 @@ import { isSafeBranchName } from "../tracker/github.ts";
 import { launchBranch, worktreesRootOf } from "./branches.ts";
 import { call, callWithRetry, decodeAnswer } from "./call.ts";
 import { type CliError, SupersetCli } from "./cli.ts";
-import { listProjects, type ParadevProject, projectAt } from "./projects.ts";
+import { listProjects, type ParadevProject, projectAt, shellWord } from "./projects.ts";
 import {
   listThreads,
   readLaunch,
@@ -828,6 +828,38 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     return explained.state === "none" ? null : explained.lastEventAt;
   }, (effect) => effect.pipe(Effect.mapError(failWith("last-activity"))));
 
+  // `call`, not `callWithRetry`: a second create would open a second terminal.
+  const showGateLog = (threadId: string, attempt: number, logPath: string): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const workspaceId = workspaceIdOf(threadId);
+      const record = workspaceId === null ? null : yield* local(readThread(dataDir, workspaceId));
+      // An archived workspace has nowhere to show it.
+      if (record === null || record.archivedAt !== null) return;
+      if (record.gateLogAttempts?.includes(attempt) === true) return;
+      yield* call(
+        cli,
+        [
+          "terminals",
+          "create",
+          "--local",
+          "--workspace",
+          record.workspaceId,
+          "--command",
+          `tail -n +1 -F ${shellWord(logPath)}`,
+        ],
+        30_000,
+      );
+      // Read again: a send that saved meanwhile must not be overwritten.
+      const fresh = (yield* local(readThread(dataDir, record.workspaceId))) ?? record;
+      yield* save({ ...fresh, gateLogAttempts: [...(fresh.gateLogAttempts ?? []), attempt] });
+    }).pipe(
+      Effect.catch((error: { readonly message?: string }) =>
+        Effect.logWarning(
+          `could not show gate attempt ${attempt} of ${threadId}: ${error.message ?? String(error)}`,
+        ),
+      ),
+    );
+
   const worktreesDirectory = Effect.fn("ParadevSessions.worktreesDirectory")(function* (defaultDir: string) {
     const records = yield* local(listThreads(dataDir));
     const newest = records
@@ -1102,5 +1134,6 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     worktreeCheckout,
     lastActivity,
     worktreesDirectory,
+    showGateLog,
   } satisfies ParadevSessions;
 });

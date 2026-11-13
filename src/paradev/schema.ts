@@ -29,6 +29,7 @@ export const REQUIRED: ReadonlyArray<{
     options: ["local", "workspace", "terminal", "text", "keys"],
   },
   { command: ["terminals", "close"], options: ["local", "workspace", "terminal"] },
+  { command: ["terminals", "create"], options: ["local", "workspace", "command"] },
   { command: ["snapshot"], options: ["workspace"] },
   { command: ["auth", "whoami"], options: [] },
   {
