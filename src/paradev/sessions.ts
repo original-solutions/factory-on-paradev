@@ -674,9 +674,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     const id = created.workspace.id;
     const existing = yield* local(readThread(dataDir, id));
     const record: ThreadRecord = existing ?? {
-      v: 1,
-      threadId: threadIdOf(id),
-      location: "local",
+      v: 2,
+      threadId: threadIdOf({ kind: "local" }, id),
+      target: { kind: "local" },
       workspaceId: id,
       projectId: request.projectId,
       branch: created.workspace.branch,

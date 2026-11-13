@@ -214,9 +214,9 @@ const snapshotOf =
   };
 
 const record = (over: Partial<ThreadRecord> = {}): ThreadRecord => ({
-  v: 1,
+  v: 2,
   threadId: `local:${L1_WS}`,
-  location: "local",
+  target: { kind: "local" },
   workspaceId: L1_WS,
   projectId: SPIKE_PROJECT,
   branch: "fac/1-1",
@@ -278,7 +278,7 @@ describe("launch", () => {
       const saved = yield* readThread(t.data, X8_WS).pipe(Effect.provide(NodeServices.layer));
       assert.deepInclude(saved, {
         threadId: `local:${X8_WS}`,
-        location: "local",
+        target: { kind: "local" },
         workspaceId: X8_WS,
         projectId: SPIKE_PROJECT,
         branch: "fac/x8",

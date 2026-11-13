@@ -100,6 +100,8 @@ const machine = (max: number): MachineConfig => ({
   maxLoadPerCore: 1,
   modelFallbacks: {},
   repos: [],
+  hosts: [],
+  local: { maxRuns: max },
   paradev: {
     cli: "/opt/superset",
     agent: "claude",

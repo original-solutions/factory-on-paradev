@@ -51,6 +51,51 @@ notify: true
 #     path: /Users/YOU/factory-runner/original-solutions/factory-paradev-spike
 repos: []
 
+# Where else a repo may run besides this Mac: other Paradev hosts, and Paradev Cloud. Nothing
+# places a run there yet; a launch still runs on this Mac. To use them, move these keys out of
+# the comment: the repos entry goes in the list above, the other blocks stay at the top level.
+# Config load makes no CLI call, so check each id yourself with `superset hosts list` and
+# `superset environments list`.
+# --- targets ---
+# repos:
+#   - repo: original-solutions/factory-paradev-spike
+#     path: /Users/YOU/factory-runner/original-solutions/factory-paradev-spike
+#     # Optional: the hosts this repo may run on, each with the repo's clone on that host.
+#     hosts:
+#       - id: c9c39956e0c1756e30d6bb9f4f907ff1
+#         path: /Users/tomk/factory-runner/original-solutions/factory-paradev-spike
+#     # Optional: a Paradev Cloud environment id that has this repo. Needs the cloud block.
+#     cloud: edad9805-e48d-40f3-a06c-e19a4105f974
+#
+# # Every host a repo names must be here.
+# hosts:
+#   - id: c9c39956e0c1756e30d6bb9f4f907ff1
+#     # As `superset hosts list` shows it; used in the belt and the log.
+#     name: trilogy-mac
+#     # user@host, a destination that works with ssh -o BatchMode=yes. An ssh config alias works
+#     # as user@alias; a bare host name is refused, since BatchMode would guess the user.
+#     ssh: tomk@trilogy-mac
+#     # Runs this host may hold at once.
+#     max_runs: 2
+#     # The 1-minute load per core above which the host takes no run. 0 turns the check off.
+#     # Defaults to 1.
+#     max_load_per_core: 1
+#
+# # Present when some repo names a cloud environment.
+# cloud:
+#   # small | medium | large. Defaults to small.
+#   machine_size: small
+#   # Cloud runs at once, at most 3. Defaults to 1.
+#   max_runs: 1
+#   # The https:// Funnel address the org's Claude connection points at.
+#   proxy: https://trilogy-mac.tail459612.ts.net:10000
+#
+# # This Mac as a target.
+# local:
+#   # Runs this Mac may hold at once, at most max_concurrent_runs, which is its default.
+#   max_runs: 1
+# --- end targets ---
+
 paradev:
   # The superset CLI bundled with the Paradev app, which must stay open.
   cli: /Applications/Superset.app/Contents/Resources/resources/bin/superset

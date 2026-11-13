@@ -470,6 +470,8 @@ describe("machine config", () => {
       maxLoadPerCore: 1,
       modelFallbacks: {},
       repos: [{ repo: "rawphp/softfac", path: "/Users/me/factory-runner/rawphp/softfac" }],
+      hosts: [],
+      local: { maxRuns: 1 },
       paradev: {
         cli: "/Applications/Superset.app/Contents/Resources/resources/bin/superset",
         agent: "claude",
