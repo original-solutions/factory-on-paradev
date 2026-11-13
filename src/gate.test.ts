@@ -1840,7 +1840,7 @@ it.live("a ledger failure after the commands passed leaves no passed verdict in 
       ["true"],
       failingLedgerIo({ write: 2 }),
     );
-    assert.instanceOf(error, GateRecordError);
+    assert.strictEqual(error._tag, "LedgerIoError");
     assert.notInclude(read(gateLogPath(dataDir, run, 1)), "passed");
   }).pipe(provided),
 );
