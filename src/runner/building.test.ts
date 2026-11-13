@@ -4072,6 +4072,13 @@ describe("checkBinding: a Paradev Cloud launch branch", () => {
     );
   });
 
+  it("does not bind a branch only because the session's worktree path ends with it", () => {
+    assert.strictEqual(
+      checkBinding(pull("feature/x"), 12, "main", "fac/10-1", false, null, "/w/p/feature/x")?.public,
+      NOT_ITS_BRANCH,
+    );
+  });
+
   it("still binds a local session's own launch branch through its worktree", () => {
     assert.strictEqual(checkBinding(pull("fac/10-1"), 12, "main", null, false, null, "/w/p/fac/10-1"), null);
   });
