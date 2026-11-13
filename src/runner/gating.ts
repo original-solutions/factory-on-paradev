@@ -13,6 +13,7 @@ import {
   MERGE_COMMAND,
   WorkspaceUnexpectedError,
   commandCode,
+  gateLogPath,
   gateResultsComment,
   gateRoot,
   leftoverCheckouts,
@@ -104,7 +105,7 @@ export interface GateContext extends BuildingContext {
   readonly repoPath: string;
   readonly ghConfigDir: string;
   readonly sessions: BuildingContext["sessions"] &
-    Pick<FactorySessions["Service"], "findProject" | "launch">;
+    Pick<FactorySessions["Service"], "findProject" | "launch" | "showGateLog">;
 }
 
 /** The project names no gate command: nothing can pass, and the pass marker could not tell a gate command from a provision command. */
@@ -696,6 +697,11 @@ export const gate = (ctx: GateContext, run: RunId): Effect.Effect<GateStep, Gate
  * and its pass waits for the required checks on the new head.
  */
 interface GateMode {
+  /**
+   * The session whose workspace shows the attempt's gate log. Null for a ready pull request: its
+   * session was archived at the pass.
+   */
+  readonly threadId: string | null;
   readonly pr: number;
   readonly prUrl: string;
   /** The cause reason of the `gate-passed` step: `GATE_PASSED_CLEAN` for a re-gate pass with nothing to set again (`Seen.regatePassReassert`), else `GATE_PASSED`. */
@@ -765,6 +771,7 @@ const buildingMode = (
   const issue = Number(run.issue);
   const stuck = (code: string, stop: Stop) => stuckWith(ctx, out, issue, at, code, stop);
   return {
+    threadId,
     pr,
     prUrl,
     passReason: GATE_PASSED,
@@ -869,6 +876,7 @@ const readyMode = (
     return { kind: "ended" } as const;
   });
   return {
+    threadId: null,
     pr,
     prUrl,
     passReason: reassert ? GATE_PASSED : GATE_PASSED_CLEAN,
@@ -1025,6 +1033,14 @@ const gateAttempts = Effect.fn("RunnerGating.gateAttempts")(function* (
     gate: ctx.project.gate,
     maxConcurrentGates: ctx.maxConcurrentGates,
     ...(ctx.gateOptions !== undefined && { options: ctx.gateOptions }),
+    // Opens the terminal that follows the attempt's log once the commands are about to run.
+    ...(mode.threadId !== null && {
+      onStart: ctx.sessions.showGateLog(
+        mode.threadId,
+        attempt,
+        gateLogPath(ctx.dataDir, run, attempt),
+      ),
+    }),
   });
   if (ran._tag === "running") return { kind: "running" } as const;
   if (ran._tag === "queued") {
