@@ -91,7 +91,13 @@ grep -qF -- '- settled:' references/receipt.md || { echo "references/receipt.md:
 # GitHub account: pick by write access, fall back to another login without switching, and stop naming every login's orgs.
 for needle in '## GitHub account' 'gh api repos/<owner/repo> --jq .permissions.push' 'GH_TOKEN=$(gh auth token --user <login>)' \
   "credential.helper=!gh auth git-credential" 'Never run `gh auth switch`' 'never print, echo or export its value' \
-  'No login prints `true` → stop `stuck`' "GH_TOKEN=\$(gh auth token --user <login>) gh api user/orgs --jq '.[].login'"; do
+  'No login prints `true` and no dry run succeeds → stop `stuck`' "GH_TOKEN=\$(gh auth token --user <login>) gh api user/orgs --jq '.[].login'"; do
+  grep -qF -- "$needle" SKILL.md || { echo "SKILL.md: no $needle"; exit 1; }
+done
+# A GitHub App installation token reads all-false permissions and a 403 from gh api user, yet pushes: a push dry run decides.
+for needle in 'gh api user --jq .login' 'a `permissions` object with `push: false`' '`gh api user` answers 403' \
+  'git push --dry-run origin HEAD:refs/heads/factory-probe-<run id>' 'treat success as push access' \
+  'only a failed dry run stops the run'; do
   grep -qF -- "$needle" SKILL.md || { echo "SKILL.md: no $needle"; exit 1; }
 done
 for f in $(grep -lE '(^|[ `(])gh (api|pr|issue|label|run|repo)|git (push|fetch|clone|ls-remote|pull)' references/*.md); do
