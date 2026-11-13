@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "terminals",
+    "read",
+    "--host",
+    "c9c39956e0c1756e30d6bb9f4f907ff1",
+    "--workspace",
+    "4cfac496-5143-4598-a385-41086ef5bd65",
+    "--terminal",
+    "4d38a106-d41b-45c3-8644-0086915aeed3",
+    "--max-lines",
+    "60",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794604415347,
+  "durationMs": 1049,
+  "stderr": ""
+}

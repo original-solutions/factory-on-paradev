@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "terminals",
+    "create",
+    "--host",
+    "c9c39956e0c1756e30d6bb9f4f907ff1",
+    "--workspace",
+    "4cfac496-5143-4598-a385-41086ef5bd65",
+    "--command",
+    "echo \"GH_TOKEN:${GH_TOKEN:+set} GITHUB_TOKEN:${GITHUB_TOKEN:+set}\"; env | grep -c -E \"^(GH_TOKEN|GITHUB_TOKEN)=\"; gh auth status --active 2>&1 | head -4; gh api user --jq .login; git config --show-origin --get-all credential.helper; echo FACTORY-WHOAMI-2-DONE",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794604397653,
+  "durationMs": 1008,
+  "stderr": ""
+}

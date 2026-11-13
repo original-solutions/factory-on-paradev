@@ -1,0 +1,12 @@
+{
+  "terminalId": "99cf7fb4-1892-4237-9196-a28c7751fc12",
+  "state": "idle",
+  "agentId": "claude",
+  "headline": "claude is idle.",
+  "because": "its recorded event is Failed, which means its turn failed",
+  "details": [
+    "The last hook arrived 4 seconds ago; the session started 3 minutes ago."
+  ],
+  "lastEventType": "Failed",
+  "lastEventAt": 1794604467829
+}

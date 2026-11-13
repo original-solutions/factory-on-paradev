@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "hosts",
+    "list",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794604725953,
+  "durationMs": 1075,
+  "stderr": ""
+}

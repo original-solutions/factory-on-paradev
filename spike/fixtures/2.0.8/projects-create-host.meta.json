@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "projects",
+    "create",
+    "--host",
+    "c9c39956e0c1756e30d6bb9f4f907ff1",
+    "--name",
+    "factory-paradev-spike",
+    "--clone",
+    "https://github.com/original-solutions/factory-paradev-spike",
+    "--parent-dir",
+    "/Users/tomk/factory-runner/original-solutions",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794603704599,
+  "durationMs": 4362,
+  "stderr": ""
+}

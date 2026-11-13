@@ -1,0 +1,12 @@
+{
+  "terminalId": "4d901aa2-6514-4e01-812f-a002fba1335d",
+  "state": "starting",
+  "agentId": "claude",
+  "headline": "claude is starting.",
+  "because": "its recorded event is Attached, which means it launched and has not been given a prompt yet",
+  "details": [
+    "The last hook arrived 5 minutes ago; the session started 5 minutes ago."
+  ],
+  "lastEventType": "Attached",
+  "lastEventAt": 1794603762715
+}

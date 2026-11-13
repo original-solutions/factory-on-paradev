@@ -1,0 +1,22 @@
+{
+  "workspaces": [
+    {
+      "id": "80b50ae5-efab-4a32-a7b6-ed78a1ff94fd",
+      "name": "fac #5 clamp",
+      "project": "factory-paradev-spike",
+      "branch": "fac/5-1",
+      "terminals": [
+        {
+          "id": "57be9902-cd2c-4c58-b5fa-46d77355336b",
+          "title": null,
+          "agent": {
+            "id": "claude",
+            "state": "working"
+          }
+        }
+      ],
+      "layout": null,
+      "layoutError": null
+    }
+  ]
+}

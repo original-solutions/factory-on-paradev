@@ -1,0 +1,6 @@
+{
+  "terminalId": "7f3adacd-5682-49a8-ac7a-85eaf8c2a68b",
+  "cols": 120,
+  "rows": 32,
+  "text": "ls -t ~/.claude/projects/-Users-tomk--paradev-worktrees-factory-paradev-spike-fac-11-2/*.jsonl; pgrep -fl \"claude --dang\n➜  11-2 git:(fac/11-2) ls -t ~/.claude/projects/-Users-tomk--paradev-worktrees-factory-paradev-spike-fac-11-2/*.jsonl; p\ngrep -fl \"claude --dangerously\" | grep -v pgrep | wc -l; echo FACTORY-SESSIONS-DONE\n/Users/tomk/.claude/projects/-Users-tomk--paradev-worktrees-factory-paradev-spike-fac-11-2/8b68fab9-97bd-4a02-b4a7-ea4dd\n1e14556.jsonl\n       0\nFACTORY-SESSIONS-DONE\n➜  11-2 git:(fac/11-2) "
+}

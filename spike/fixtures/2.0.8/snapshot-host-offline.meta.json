@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "snapshot",
+    "--host",
+    "c9c39956e0c1756e30d6bb9f4f907ff1",
+    "--workspace",
+    "80b50ae5-efab-4a32-a7b6-ed78a1ff94fd",
+    "--json"
+  ],
+  "exit": 1,
+  "startedAt": 1794604697560,
+  "durationMs": 525,
+  "stderr": "Error: Host is not online\n"
+}

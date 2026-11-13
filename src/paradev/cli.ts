@@ -61,6 +61,7 @@ const shorten = (arg: string): string =>
 const KINDS: ReadonlyArray<readonly [prefix: string | RegExp, kind: CliErrorKind]> = [
   ["Host service for this machine isn't running", "PARADEV_OFFLINE"],
   ["Host service manifest is stale", "PARADEV_OFFLINE"],
+  ["Host is not online", "PARADEV_OFFLINE"],
   ["Not logged in", "PARADEV_SIGNED_OUT"],
   ["No active organization", "PARADEV_SIGNED_OUT"],
   ["Workspace not found on host ", "NOT_FOUND"],
@@ -69,6 +70,7 @@ const KINDS: ReadonlyArray<readonly [prefix: string | RegExp, kind: CliErrorKind
   ["No agent is running in terminal ", "AGENT_EXITED"],
   ["No transcript for that terminal", "NO_TRANSCRIPT"],
   ["A stored value is at most 65536 bytes", "TOO_LARGE"],
+  ["Timed out after ", "TIMEOUT"],
 ];
 
 /** Reads a failed call's stderr: the first `Error: ` line, its kind, and the `Hint: ` after it. */

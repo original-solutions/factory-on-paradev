@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "workspaces",
+    "archive",
+    "80b50ae5-efab-4a32-a7b6-ed78a1ff94fd",
+    "--host",
+    "c9c39956e0c1756e30d6bb9f4f907ff1",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794604896615,
+  "durationMs": 2206,
+  "stderr": ""
+}

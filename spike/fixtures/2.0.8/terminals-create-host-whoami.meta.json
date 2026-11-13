@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "terminals",
+    "create",
+    "--host",
+    "c9c39956e0c1756e30d6bb9f4f907ff1",
+    "--workspace",
+    "4cfac496-5143-4598-a385-41086ef5bd65",
+    "--command",
+    "echo \"-- gh\"; gh auth status 2>&1 | grep -E \"account|Active\"; echo \"-- git ident\"; git var GIT_COMMITTER_IDENT; git config --get user.email || echo \"(no user.email)\"; echo \"-- env\"; env | grep -E \"^(ANTHROPIC|GH_|SUPERSET_|CLAUDE)\" | sed -E \"s/(TOKEN|KEY)=.*/\\1=<set>/\" | sort; echo \"-- who\"; whoami; hostname; pwd; echo FACTORY-WHOAMI-DONE",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794604352194,
+  "durationMs": 1140,
+  "stderr": ""
+}

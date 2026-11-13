@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "agents",
+    "explain",
+    "--host",
+    "c9c39956e0c1756e30d6bb9f4f907ff1",
+    "--workspace",
+    "f0f5d9c4-965a-4cc0-a503-f9d998a8cc92",
+    "--terminal",
+    "4d901aa2-6514-4e01-812f-a002fba1335d",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794604061426,
+  "durationMs": 1053,
+  "stderr": ""
+}
