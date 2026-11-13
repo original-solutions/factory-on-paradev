@@ -324,6 +324,10 @@ const makeParadev = (input: {
         })),
       );
     }
+    if (a === "terminals" && b === "create") {
+      // No fixture of it was recorded, and the adapter reads only the exit code.
+      return live(args) === undefined ? notFound(after(args, "--workspace") ?? "") : ok(`${json({})}\n`);
+    }
     if (a === "terminals" && b === "send") {
       const ws = live(args);
       const text = after(args, "--text");
@@ -1021,6 +1025,11 @@ const assertWritten = (
   assert.deepStrictEqual(
     paradev.calls.filter((call) => call[0] === "terminals" && call.includes("--keys")),
     [],
+  );
+  // One terminal followed each gate attempt's log, and the agent's stayed the current one.
+  assert.strictEqual(
+    paradev.calls.filter((call) => call[0] === "terminals" && call[1] === "create").length,
+    attempt,
   );
 };
 
