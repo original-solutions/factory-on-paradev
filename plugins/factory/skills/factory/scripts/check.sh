@@ -95,13 +95,20 @@ for needle in '## GitHub account' 'gh api repos/<owner/repo> --jq .permissions.p
   grep -qF -- "$needle" SKILL.md || { echo "SKILL.md: no $needle"; exit 1; }
 done
 # A GitHub App installation token reads all-false permissions and a 403 from gh api user, yet pushes: a push dry run decides.
-# The probe skips hooks, tests the gh login rather than a keychain entry or SSH key, and is for a build's origin only.
+# The probe skips hooks, tests the gh login rather than a keychain entry, is for a build's origin only,
+# and the run then pushes with the credential the probe tested.
 for needle in 'gh api user --jq .login' 'a `permissions` object with `push: false`' \
   'or `gh api user` answers 403, run `git push --dry-run origin HEAD:refs/heads/factory-probe-<run id> --no-verify`' \
   'treat success as push access' 'only a failed dry run stops the run' 'A retro, or a repo the run only reads, gets no probe' \
-  "git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push" 'cannot be tested → stop `stuck`' \
-  "The first success picks the run's account"; do
+  "git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push" \
+  'then each other login that answered `push: false`, with its `GH_TOKEN` prefix' \
+  "The first success picks the run's account" 'keeps the flags that probe used, the ones written bare in the reference files included' \
+  'name the one `gh auth status` shows'; do
   grep -qF -- "$needle" SKILL.md || { echo "SKILL.md: no $needle"; exit 1; }
+done
+grep -qF -- 'cannot be tested' SKILL.md && { echo "SKILL.md: a stop other than a failed dry run"; exit 1; }
+for path in references/commits.md references/isolate.md references/ship.md references/check.md; do
+  grep -qF -- 'or picked its account by a push dry run' "$path" || { echo "$path: a probe-picked account does not keep its flags"; exit 1; }
 done
 for f in $(grep -lE '(^|[ `(])gh (api|pr|issue|label|run|repo)|git (push|fetch|clone|ls-remote|pull)' references/*.md); do
   grep -qF -- '`SKILL.md` § GitHub account' "$f" || { echo "$f: a GitHub command with no pointer to SKILL.md § GitHub account"; exit 1; }
