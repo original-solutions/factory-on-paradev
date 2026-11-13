@@ -159,6 +159,12 @@ const codeSpan = (line: string): string => {
   return `${ticks}${pad}${line}${pad}${ticks}`;
 };
 
+/** A duration in seconds with one decimal, rounded half up: 12_345 ms is `12.3`. */
+const seconds = (durationMs: number): string => {
+  const tenths = Math.floor((durationMs + 50) / 100);
+  return `${Math.floor(tenths / 10)}.${tenths % 10}`;
+};
+
 /**
  * The comment for a pull request whose gate ended with `verdict`. `headSha` is the commit the gate
  * ran on and `baseSha` the tip of the base branch it was merged with. The commands are config
@@ -176,8 +182,7 @@ const resultsComment = (
   const base = shortSha(baseSha) || "unknown";
   let text = `**Factory gate: ${verdict}** (attempt ${attempt}, run by the factory in a fresh checkout of the pull request's head \`${head}\` merged with the base branch tip \`${base}\`)\n\n| Command | Exit | Time |\n|---|---|---|`;
   for (const result of results) {
-    const tenths = Math.floor((result.durationMs + 50) / 100);
-    text += `\n| ${tableCode(result.command)} | ${result.exitCode} | ${Math.floor(tenths / 10)}.${tenths % 10} s |`;
+    text += `\n| ${tableCode(result.command)} | ${result.exitCode} | ${seconds(result.durationMs)} s |`;
   }
   return text;
 };
@@ -241,6 +246,12 @@ export interface GateInput {
   readonly gate: ReadonlyArray<string>;
   readonly maxConcurrentGates: number;
   readonly options?: GateOptions;
+  /**
+   * Runs once per attempt, after the checkout and the merge with the base succeeded and before
+   * the first provision command, so something can follow the attempt's log while the commands
+   * run. A queued gate, a failed checkout and a merge conflict never run it.
+   */
+  readonly onStart?: Effect.Effect<void>;
 }
 
 export interface CommandResult {
@@ -297,6 +308,15 @@ const gatesDir = (dataDir: string) => NodePath.join(dataDir, "gates");
 export const gateRoot = (dataDir: string, run: RunId): string => {
   validateRunId(run);
   return NodePath.join(dataDir, "gate", runIdToString(run));
+};
+
+/**
+ * `<dataDir>/gate-logs/<run id>/<attempt>.log`: the attempt's output as it arrives. Outside the
+ * checkout and outside `<dataDir>/gate/`, so cleanup leaves it; nothing prunes it.
+ */
+export const gateLogPath = (dataDir: string, run: RunId, attempt: number): string => {
+  validateRunId(run);
+  return NodePath.join(dataDir, "gate-logs", runIdToString(run), `${attempt}.log`);
 };
 
 /** `<dataDir>/gates/<run id>.lock`: it exists exactly while that run's gate runs. */
@@ -853,6 +873,25 @@ const runGate = (runner: Runner, input: GateInput): Effect.Effect<GateResult, Ga
             })),
           ).pipe(Effect.as(outcome));
 
+        // The attempt's log. Writing it never changes the attempt's result, so a failure is dropped.
+        const logPath = gateLogPath(dataDir, run, attempt);
+        const appendLog = (text: string): void => {
+          try {
+            NodeFS.appendFileSync(logPath, text);
+          } catch {
+            // The log is for watching; the ledger is the record.
+          }
+        };
+        // A repeat of this attempt number (a server that died in it) starts the file fresh.
+        const startLog = (): void => {
+          try {
+            NodeFS.mkdirSync(NodePath.dirname(logPath), { recursive: true, mode: 0o700 });
+            NodeFS.writeFileSync(logPath, "", { mode: 0o600 });
+          } catch {
+            // The log is for watching; the ledger is the record.
+          }
+        };
+
         const runCommands = Effect.gen(function* () {
           const commands: Array<CommandResult> = [];
           const all = [
@@ -861,6 +900,7 @@ const runGate = (runner: Runner, input: GateInput): Effect.Effect<GateResult, Ga
           ];
           let gateCount = 0;
           for (const { command, provision } of all) {
+            appendLog(`$ ${command}\n`);
             const started = yield* Clock.currentTimeMillis;
             const ran = yield* runner
               .run({
@@ -869,6 +909,7 @@ const runGate = (runner: Runner, input: GateInput): Effect.Effect<GateResult, Ga
                 cwd: dir,
                 timeoutMs: options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
                 niceness: COMMAND_NICENESS,
+                logFile: logPath,
               })
               .pipe(
                 Effect.mapError(
@@ -886,12 +927,19 @@ const runGate = (runner: Runner, input: GateInput): Effect.Effect<GateResult, Ga
               ...(ran.timedOut && { timeoutMs }),
               ...(ran.truncated && { truncated: true }),
             };
+            // The tail ends where the output does, so it says whether the last line was finished.
+            const unfinished = ran.tail !== "" && !ran.tail.endsWith("\n") ? "\n" : "";
+            appendLog(
+              `${unfinished}${ran.timedOut ? "timed out" : `exit ${result.exitCode}`} after ${seconds(result.durationMs)} s\n`,
+            );
             commands.push(result);
             if (!provision) gateCount += 1;
             if (result.exitCode !== 0 || result.timedOut) {
+              appendLog(`gate attempt ${attempt} failed\n`);
               return yield* record({ _tag: "fail", dir, commands, failure: result, gateCount });
             }
           }
+          appendLog(`gate attempt ${attempt} passed\n`);
           return yield* record({ _tag: "pass", dir, commands, gateCount });
         });
 
@@ -944,6 +992,8 @@ const runGate = (runner: Runner, input: GateInput): Effect.Effect<GateResult, Ga
               ]);
               return { _tag: "conflict", dir, paths: made.merge.paths } satisfies GateResult;
             }
+            startLog();
+            if (input.onStart !== undefined) yield* input.onStart;
             return yield* runCommands;
           }).pipe(
             Effect.tap(() => recordTime(startedMs)),
