@@ -31,6 +31,8 @@ export interface Step {
    * adapter must read nothing but the exit code from it.
    */
   readonly answer?: unknown;
+  /** Like `answer`, but raw: the exact stdout on exit 0, which need not be JSON. */
+  readonly stdout?: string;
   /**
    * Rewrites the fixture's parsed stdout before it is answered: to point a recorded path at a
    * test's own repo, say, or to empty a list. Only for a fixture recorded with stdout.
@@ -87,6 +89,16 @@ export const fakeSuperset = (script: ReadonlyArray<Step>) => {
           timedOut: false,
           tail: "",
           stderrTail: `Error: ${step!.fail}\n`,
+          truncated: false,
+          tailTruncated: false,
+        } satisfies RunResult);
+      }
+      if (step!.stdout !== undefined) {
+        return Effect.succeed({
+          exitCode: 0,
+          timedOut: false,
+          tail: step!.stdout,
+          stderrTail: "",
           truncated: false,
           tailTruncated: false,
         } satisfies RunResult);

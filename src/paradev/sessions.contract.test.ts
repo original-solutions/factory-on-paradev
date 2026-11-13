@@ -2494,15 +2494,27 @@ describe("showGateLog", () => {
 
   it.live("a terminals create that fails does not fail the effect, warns once and records nothing", () =>
     Effect.gen(function* () {
-      const t = rig([{ argv: createArgv(logPath), fail: "Host unreachable" }]);
+      const t = rig([{ argv: createArgv(logPath), fail: "Could not connect to API" }]);
       yield* seed(t.data, record());
       const logs = yield* warned(t.run((s) => s.showGateLog(threadId, 1, logPath)));
       assert.strictEqual(logs.length, 1, logs.join("\n"));
       assert.match(logs[0]!, /^Warn /);
       assert.include(logs[0]!, threadId);
-      assert.include(logs[0]!, "Host unreachable");
+      assert.include(logs[0]!, "Could not connect to API");
       assert.isUndefined((yield* saved(t.data))!.gateLogAttempts);
-      // One call: a retry could make a second terminal.
+      // One call, though this failure is TRANSIENT: a retry could make a second terminal.
+      assert.strictEqual(t.calls.length, 1);
+    }),
+  );
+
+  it.live("reads only the exit code: exit 0 with stdout that is not JSON counts as created", () =>
+    Effect.gen(function* () {
+      const t = rig([{ argv: createArgv(logPath), stdout: "created terminal\n" }]);
+      yield* seed(t.data, record());
+      const logs = yield* warned(t.run((s) => s.showGateLog(threadId, 1, logPath)));
+      assert.deepStrictEqual(logs, []);
+      assert.deepStrictEqual((yield* saved(t.data))!.gateLogAttempts, [1]);
+      yield* t.run((s) => s.showGateLog(threadId, 1, logPath));
       assert.strictEqual(t.calls.length, 1);
     }),
   );
