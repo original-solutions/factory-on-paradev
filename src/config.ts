@@ -143,7 +143,7 @@ export interface HostConfig {
 
 export type MachineSize = "small" | "medium" | "large";
 
-/** The `cloud` block: present when Paradev Cloud may take runs. */
+/** The `cloud` block: Paradev Cloud's settings. */
 export interface CloudConfig {
   readonly machineSize: MachineSize;
   /** Cloud runs at once, at most {@link MAX_CLOUD_RUNS}. */

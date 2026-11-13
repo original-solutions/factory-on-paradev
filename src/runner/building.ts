@@ -583,7 +583,7 @@ export const checkBinding = (
     };
   }
   // A launch branch is this session's only when its own worktree is on it. A cloud-shaped branch
-  // matches any path, so it binds through `branch`, the cloud thread's own, and never through here.
+  // matches any path, so a cloud session's binds through `branch`, the thread's own.
   const launched =
     worktreePath !== null &&
     worktreePath.endsWith(`/${pull.headRef}`) &&

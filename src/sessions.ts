@@ -135,7 +135,8 @@ const CLOUD_LAUNCH_BRANCH = /^superset\/fac-(\d+|x)-[0-9a-f-]+-[0-9a-f]{8}$/;
 /**
  * Whether `branch` is a launch branch and `worktreePath` is a Paradev worktree on it: the path
  * ends with `/<branch>`. A cloud launch branch is one with any path, since the sandbox's is
- * always `/workspace`. Defined here, not in `paradev/`, so the core reads it without importing
+ * always `/workspace`. So a cloud-shaped branch says only what made it, never that it is a given
+ * session's: that goes through the thread's own `branch`, as in `checkBinding`. Defined here, not in `paradev/`, so the core reads it without importing
  * the adapter; `paradev/branches.ts` re-exports it beside `launchBranch`.
  */
 export const isLaunchBranch = (branch: string, worktreePath: string | null): boolean =>
