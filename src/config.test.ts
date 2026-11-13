@@ -470,6 +470,8 @@ describe("machine config", () => {
       maxLoadPerCore: 1,
       modelFallbacks: {},
       repos: [{ repo: "rawphp/softfac", path: "/Users/me/factory-runner/rawphp/softfac" }],
+      hosts: [],
+      local: { maxRuns: 1 },
       paradev: {
         cli: "/Applications/Superset.app/Contents/Resources/resources/bin/superset",
         agent: "claude",
@@ -769,6 +771,180 @@ describe("machine config", () => {
     });
   });
 
+  describe("targets: hosts, cloud and local", () => {
+    const HOST = "c9c39956e0c1756e30d6bb9f4f907ff1";
+    const ENV = "edad9805-e48d-40f3-a06c-e19a4105f974";
+    const TARGETS = edit(MACHINE, (tree) => {
+      set(tree, "max_concurrent_runs", "3");
+      set(
+        tree,
+        "repos.0",
+        `{repo: rawphp/softfac, path: /Users/me/factory-runner/rawphp/softfac, hosts: [{id: ${HOST}, path: /Users/tomk/factory-runner/rawphp/softfac}], cloud: ${ENV}}`,
+      );
+      set(tree, "hosts", `[{id: ${HOST}, name: trilogy-mac, ssh: tomk@trilogy-mac, max_runs: 2, max_load_per_core: 1}]`);
+      set(tree, "cloud", "{machine_size: medium, max_runs: 1, proxy: 'https://trilogy-mac.tail459612.ts.net:10000'}");
+      set(tree, "local", "{max_runs: 1}");
+    });
+
+    it("a P1 config with no hosts, cloud or local loads unchanged", () => {
+      const c = machine(MACHINE);
+      expect(c.repos).toEqual([{ repo: "rawphp/softfac", path: "/Users/me/factory-runner/rawphp/softfac" }]);
+      expect(c.hosts).toEqual([]);
+      expect(c.cloud).toBeUndefined();
+      expect(c.local).toEqual({ maxRuns: 1 });
+      expect(machineLoaded(MACHINE).warnings).toEqual([]);
+    });
+
+    it("reads every key with its type", () => {
+      const c = machine(TARGETS);
+      expect(c.repos).toEqual([
+        {
+          repo: "rawphp/softfac",
+          path: "/Users/me/factory-runner/rawphp/softfac",
+          hosts: [{ id: HOST, path: "/Users/tomk/factory-runner/rawphp/softfac" }],
+          cloud: ENV,
+        },
+      ]);
+      expect(c.hosts).toEqual([
+        { id: HOST, name: "trilogy-mac", ssh: "tomk@trilogy-mac", maxRuns: 2, maxLoadPerCore: 1 },
+      ]);
+      expect(c.cloud).toEqual({
+        machineSize: "medium",
+        maxRuns: 1,
+        proxy: "https://trilogy-mac.tail459612.ts.net:10000",
+      });
+      expect(c.local).toEqual({ maxRuns: 1 });
+    });
+
+    it("takes 0 for a host's max_runs and max_load_per_core, and every machine size", () => {
+      const host = machine(
+        edit(TARGETS, (tree) => {
+          set(tree, "hosts.0.max_runs", "0");
+          set(tree, "hosts.0.max_load_per_core", "0");
+        }),
+      ).hosts[0]!;
+      expect([host.maxRuns, host.maxLoadPerCore]).toEqual([0, 0]);
+      for (const size of ["small", "medium", "large"]) {
+        expect(machine(edit(TARGETS, (tree) => set(tree, "cloud.machine_size", size))).cloud!.machineSize).toBe(size);
+      }
+    });
+
+    it("defaults a host's max_load_per_core to 1, and cloud to small with one run", () => {
+      const c = machine(
+        edit(TARGETS, (tree) => {
+          remove(tree, "hosts.0.max_load_per_core");
+          set(tree, "cloud", "{proxy: 'https://p.example:10000'}");
+        }),
+      );
+      expect(c.hosts[0]!.maxLoadPerCore).toBe(1);
+      expect(c.cloud).toEqual({ machineSize: "small", maxRuns: 1, proxy: "https://p.example:10000" });
+    });
+
+    it("local.max_runs defaults to max_concurrent_runs, may be 0, and may not exceed it", () => {
+      expect(machine(edit(TARGETS, (tree) => remove(tree, "local"))).local).toEqual({ maxRuns: 3 });
+      expect(machine(edit(TARGETS, (tree) => set(tree, "local", "{}"))).local).toEqual({ maxRuns: 3 });
+      expect(machine(edit(TARGETS, (tree) => set(tree, "local.max_runs", "0"))).local).toEqual({ maxRuns: 0 });
+      const errs = machineErr(edit(TARGETS, (tree) => set(tree, "local.max_runs", "4")));
+      assertOne(errs, "local.max_runs", MFILE);
+      expect(errs[0]!.message).toBe("must be at most max_concurrent_runs (3)");
+    });
+
+    it("refuses a repo host id that is not in hosts, naming the id", () => {
+      const errs = machineErr(edit(TARGETS, (tree) => set(tree, "repos.0.hosts.0.id", "deadbeef")));
+      assertOne(errs, "repos[0].hosts[0].id", MFILE);
+      expect(errs[0]!.message).toBe("deadbeef is not in hosts");
+      const none = machineErr(edit(TARGETS, (tree) => remove(tree, "hosts")));
+      assertOne(none, "repos[0].hosts[0].id", MFILE);
+      expect(none[0]!.message).toBe(`${HOST} is not in hosts`);
+    });
+
+    it("refuses cloud.max_runs over 3", () => {
+      for (const ok of ["0", "3"]) {
+        expect(machine(edit(TARGETS, (tree) => set(tree, "cloud.max_runs", ok))).cloud!.maxRuns).toBe(Number(ok));
+      }
+      const errs = machineErr(edit(TARGETS, (tree) => set(tree, "cloud.max_runs", "4")));
+      assertOne(errs, "cloud.max_runs", MFILE);
+      expect(errs[0]!.message).toBe("must be at most 3");
+    });
+
+    it("refuses a host ssh that is not user@host", () => {
+      for (const bad of [
+        "trilogy-mac",
+        "trilogy-mac.local",
+        "100.64.0.1",
+        "@trilogy-mac",
+        "tomk@",
+        "a@b@c",
+        "tomk @box",
+        "-oProxyCommand=touch${IFS}/tmp/x@h",
+        "tomk@-oProxyCommand=x",
+      ]) {
+        const errs = machineErr(edit(TARGETS, (tree) => set(tree, "hosts.0.ssh", JSON.stringify(bad))));
+        assertOne(errs, "hosts[0].ssh", MFILE);
+        expect(errs[0]!.message).toBe("must be user@host (an ssh config alias works as user@alias)");
+      }
+      expect(machine(edit(TARGETS, (tree) => set(tree, "hosts.0.ssh", "tomk@trilogy-mac.local"))).hosts[0]!.ssh).toBe(
+        "tomk@trilogy-mac.local",
+      );
+    });
+
+    it("refuses a repo cloud environment with no cloud block, and allows a cloud block no repo names", () => {
+      const errs = machineErr(edit(TARGETS, (tree) => remove(tree, "cloud")));
+      assertOne(errs, "repos[0].cloud", MFILE);
+      expect(errs[0]!.message).toBe("needs the top-level cloud block");
+      expect(machine(edit(TARGETS, (tree) => remove(tree, "repos.0.cloud"))).cloud).toBeDefined();
+    });
+
+    it("refuses each malformed host, repo host and cloud field, naming its path", () => {
+      for (const [path, yaml, field] of [
+        ["hosts", "nope", "hosts"],
+        ["hosts.0.id", '""', "hosts[0].id"],
+        ["hosts.0.id", "a:b", "hosts[0].id"],
+        ["hosts.0.id", "-abc", "hosts[0].id"],
+        ["hosts.0.name", '""', "hosts[0].name"],
+        ["hosts.0.max_runs", "-1", "hosts[0].max_runs"],
+        ["hosts.0.max_load_per_core", "x", "hosts[0].max_load_per_core"],
+        ["hosts.0.sshh", "x", "hosts[0].sshh"],
+        ["repos.0.hosts", "x", "repos[0].hosts"],
+        ["repos.0.hosts.0.path", "rel/path", "repos[0].hosts[0].path"],
+        ["repos.0.hosts.0.pathh", "x", "repos[0].hosts[0].pathh"],
+        ["repos.0.cloud", '""', "repos[0].cloud"],
+        ["repos.0.cloud", "--host", "repos[0].cloud"],
+        ["repos.0.cloud", "a/b", "repos[0].cloud"],
+        ["cloud.machine_size", "huge", "cloud.machine_size"],
+        ["cloud.proxy", "http://p.example", "cloud.proxy"],
+        ["cloud.proxy", "not a url", "cloud.proxy"],
+        ["cloud.proxyy", "x", "cloud.proxyy"],
+        ["local.max_runs", "-1", "local.max_runs"],
+        ["local.maxruns", "1", "local.maxruns"],
+      ] as const) {
+        assertOne(machineErr(edit(TARGETS, (tree) => set(tree, path, yaml))), field, MFILE);
+      }
+      for (const [path, field] of [
+        ["hosts.0.id", "hosts[0].id"],
+        ["hosts.0.name", "hosts[0].name"],
+        ["hosts.0.ssh", "hosts[0].ssh"],
+        ["hosts.0.max_runs", "hosts[0].max_runs"],
+        ["repos.0.hosts.0.path", "repos[0].hosts[0].path"],
+        ["cloud.proxy", "cloud.proxy"],
+      ] as const) {
+        const errs = machineErr(edit(TARGETS, (tree) => remove(tree, path)));
+        expect(fields(errs), path).toContain(field);
+      }
+    });
+
+    it("refuses a host id listed twice, in hosts or in one repo", () => {
+      const twice = edit(TARGETS, (tree) => {
+        tree.hosts.push({ ...tree.hosts[0], name: "other" });
+      });
+      assertOne(machineErr(twice), "hosts[1].id", MFILE);
+      const repoTwice = edit(TARGETS, (tree) => {
+        tree.repos[0].hosts.push({ ...tree.repos[0].hosts[0] });
+      });
+      assertOne(machineErr(repoTwice), "repos[0].hosts[1].id", MFILE);
+    });
+  });
+
   describe("unknown keys", () => {
     it("machine unknown top-level key is one file-level error", () => {
       const errs = machineErr(edit(MACHINE, (t) => set(t, "self_updte", "1")));
@@ -909,6 +1085,8 @@ describe("the example machine config", () => {
             maxLoadPerCore: 1,
             modelFallbacks: {},
             repos: [],
+            hosts: [],
+            local: { maxRuns: 1 },
             paradev: {
               cli: "/Applications/Superset.app/Contents/Resources/resources/bin/superset",
               agent: "claude",
@@ -919,6 +1097,38 @@ describe("the example machine config", () => {
           },
         }),
       );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  effectIt.effect("the example's commented targets load once uncommented, with the spike's host and environment", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const file = yield* path.fromFileUrl(new URL("../config.example.yml", import.meta.url));
+      const text = yield* fs.readFileString(file);
+      // The targets are the lines between the two markers, each commented out with `# `.
+      const lines = text.split("\n");
+      const from = lines.indexOf("# --- targets ---");
+      const to = lines.indexOf("# --- end targets ---");
+      expect(from).toBeGreaterThan(-1);
+      expect(to).toBeGreaterThan(from);
+      const block = lines.slice(from + 1, to);
+      for (const line of block) expect(line === "#" || line.startsWith("# "), line).toBe(true);
+      const yaml = block.map((line) => line.slice(2)).join("\n");
+      // max_concurrent_runs 3, so local.max_runs 1 can only come from the example's local block.
+      const c = machine(
+        edit(MACHINE, (tree) => {
+          set(tree, "max_concurrent_runs", "3");
+          Object.assign(tree, parse(yaml));
+        }),
+      );
+      expect(c.hosts.map((h) => [h.id, h.name])).toEqual([["c9c39956e0c1756e30d6bb9f4f907ff1", "trilogy-mac"]]);
+      expect(c.repos[0]!.hosts).toEqual([
+        { id: "c9c39956e0c1756e30d6bb9f4f907ff1", path: expect.stringMatching(/^\//) },
+      ]);
+      expect(c.repos[0]!.cloud).toBe("edad9805-e48d-40f3-a06c-e19a4105f974");
+      expect(c.cloud).toBeDefined();
+      expect(c.local.maxRuns).toBe(1);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

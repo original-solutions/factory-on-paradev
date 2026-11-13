@@ -12,6 +12,7 @@ import {
   listThreads,
   readLaunch,
   readThread,
+  targetOf,
   type ThreadRecord,
   threadIdOf,
   workspaceIdOf,
@@ -24,9 +25,9 @@ const tempDir = useTempDirs();
 const WS = "be47b9e8-7687-4c3c-8791-5fd7f04ba5fe";
 
 const record = (over: Partial<ThreadRecord> = {}): ThreadRecord => ({
-  v: 1,
+  v: 2,
   threadId: `local:${WS}`,
-  location: "local",
+  target: { kind: "local" },
   workspaceId: WS,
   projectId: "e9ab7dc2-e7f6-42d9-94ed-82d6d623aabd",
   branch: "fac/1-1",
@@ -70,6 +71,47 @@ describe("thread records", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("a v1 record reads as a local target, and is written back as v2", () =>
+    Effect.gen(function* () {
+      const data = tempDir("state");
+      const { v: _v, target: _target, ...fields } = record();
+      const v1 = { v: 1, ...fields, location: "local" };
+      NodeFS.mkdirSync(NodePath.dirname(threadFile(data)), { recursive: true });
+      NodeFS.writeFileSync(threadFile(data), `${JSON.stringify(v1)}\n`);
+      const read = yield* readThread(data, WS);
+      assert.deepStrictEqual(read, record());
+      assert.notProperty(read, "location");
+      assert.deepStrictEqual(yield* listThreads(data), [record()]);
+      // Reading never rewrites the file.
+      assert.deepStrictEqual(JSON.parse(NodeFS.readFileSync(threadFile(data), "utf8")), v1);
+      yield* writeThread(data, { ...read!, archivedAt: 1 });
+      assert.deepStrictEqual(JSON.parse(NodeFS.readFileSync(threadFile(data), "utf8")), record({ archivedAt: 1 }));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a v2 record of each target round-trips", () =>
+    Effect.gen(function* () {
+      const data = tempDir("state");
+      for (const over of [
+        { threadId: `local:${WS}`, target: { kind: "local" } },
+        {
+          threadId: `host:c9c39956e0c1756e30d6bb9f4f907ff1:${WS}`,
+          target: { kind: "host", machineId: "c9c39956e0c1756e30d6bb9f4f907ff1", name: "trilogy-mac" },
+        },
+        {
+          threadId: `cloud:${WS}`,
+          target: { kind: "cloud", environmentId: "edad9805-e48d-40f3-a06c-e19a4105f974" },
+          branch: "superset/fac-1-1-a2bc69cb",
+          worktreePath: "/workspace",
+        },
+      ] as const) {
+        yield* writeThread(data, record(over));
+        assert.deepStrictEqual(yield* readThread(data, WS), record(over));
+        assert.deepStrictEqual(JSON.parse(NodeFS.readFileSync(threadFile(data), "utf8")), record(over));
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("a missing record reads as null", () =>
     Effect.gen(function* () {
       assert.isNull(yield* readThread(tempDir("state"), WS));
@@ -83,7 +125,14 @@ describe("thread records", () => {
       const whole = NodeFS.readFileSync(threadFile(data), "utf8");
       NodeFS.writeFileSync(threadFile(data), whole.slice(0, whole.length / 2));
       assert.isNull(yield* readThread(data, WS));
-      NodeFS.writeFileSync(threadFile(data), JSON.stringify({ ...record(), v: 2 }));
+      NodeFS.writeFileSync(threadFile(data), JSON.stringify({ ...record(), v: 3 }));
+      assert.isNull(yield* readThread(data, WS));
+      const { target: _, ...noTarget } = record();
+      NodeFS.writeFileSync(threadFile(data), JSON.stringify(noTarget));
+      assert.isNull(yield* readThread(data, WS));
+      NodeFS.writeFileSync(threadFile(data), JSON.stringify({ ...record(), target: { kind: "host", machineId: "m" } }));
+      assert.isNull(yield* readThread(data, WS));
+      NodeFS.writeFileSync(threadFile(data), JSON.stringify({ ...record(), target: { kind: "cloud" } }));
       assert.isNull(yield* readThread(data, WS));
       NodeFS.writeFileSync(threadFile(data), "");
       assert.isNull(yield* readThread(data, WS));
@@ -123,8 +172,49 @@ describe("launch files", () => {
 });
 
 describe("thread ids", () => {
-  it("are local:<workspaceId>, and only a plain id parses back", () => {
-    assert.strictEqual(threadIdOf(WS), `local:${WS}`);
+  const HOST = "c9c39956e0c1756e30d6bb9f4f907ff1";
+
+  it("are local:<ws>, host:<machineId>:<ws> or cloud:<ws> from a target", () => {
+    assert.strictEqual(threadIdOf({ kind: "local" }, WS), `local:${WS}`);
+    assert.strictEqual(threadIdOf({ kind: "host", machineId: HOST, name: "trilogy-mac" }, WS), `host:${HOST}:${WS}`);
+    assert.strictEqual(threadIdOf({ kind: "cloud", environmentId: "env" }, WS), `cloud:${WS}`);
+  });
+
+  it("targetOf reads each form back, and a malformed id as null", () => {
+    assert.deepStrictEqual(targetOf(`local:${WS}`), { target: { kind: "local" }, workspaceId: WS });
+    assert.deepStrictEqual(targetOf(`host:${HOST}:${WS}`), {
+      target: { kind: "host", machineId: HOST },
+      workspaceId: WS,
+    });
+    assert.deepStrictEqual(targetOf(`cloud:${WS}`), { target: { kind: "cloud" }, workspaceId: WS });
+    for (const target of [{ kind: "local" }, { kind: "host", machineId: HOST }, { kind: "cloud" }] as const) {
+      assert.deepStrictEqual(targetOf(threadIdOf(target, WS)), { target, workspaceId: WS });
+    }
+    for (const bad of [
+      "",
+      WS,
+      "local:",
+      "local:../etc",
+      "local:a/b",
+      "local:a:b",
+      "host:",
+      `host:${HOST}`,
+      `host:${HOST}:`,
+      `host::${WS}`,
+      `host:a/b:${WS}`,
+      `host:${HOST}:${WS}:x`,
+      "cloud:",
+      "cloud:a.b",
+      `remote:${WS}`,
+      "local:-x",
+      `host:-m:${WS}`,
+      `LOCAL:${WS}`,
+    ]) {
+      assert.isNull(targetOf(bad), bad);
+    }
+  });
+
+  it("workspaceIdOf answers local thread ids only, and only a plain id parses back", () => {
     assert.strictEqual(workspaceIdOf(`local:${WS}`), WS);
     for (const bad of [WS, "local:", "host:m:abc", "local:../etc", "local:a/b", "cloud:abc"]) {
       assert.isNull(workspaceIdOf(bad), bad);

@@ -55,6 +55,26 @@ describe("isLaunchBranch", () => {
     assert.isFalse(isLaunchBranch("fac/1-1z", `${ROOT}/fac/1-1z`));
     assert.isFalse(isLaunchBranch("t3/2e8db933", "/t3/worktrees/softfac/t3-2e8db933"));
   });
+
+  it("accepts the branch Paradev Cloud picks, superset/fac-<issue>-<attempt>-<id8>, with any worktree path", () => {
+    for (const branch of ["superset/fac-3-1-a2bc69cb", "superset/fac-x-0123456789ab-a2bc69cb", "superset/fac-42-3-1f2e3d4c-a2bc69cb"]) {
+      for (const path of ["/workspace", null, `${ROOT}/fac/1-1`]) {
+        assert.isTrue(isLaunchBranch(branch, path), `${branch} ${path}`);
+      }
+    }
+    for (const branch of [
+      "superset/fac-3-1",
+      "superset/fac-3-1-a2bc69c",
+      "superset/fac-3-1-A2BC69CB",
+      "superset/fac-3-1-a2bc69cbx",
+      "superset/divide-a2bc69cb",
+      "superset/fac-3z-1-a2bc69cb",
+      "other/fac-3-1-a2bc69cb",
+      "xsuperset/fac-3-1-a2bc69cb",
+    ]) {
+      assert.isFalse(isLaunchBranch(branch, "/workspace"), branch);
+    }
+  });
 });
 
 describe("launchBranchOf", () => {
@@ -64,6 +84,15 @@ describe("launchBranchOf", () => {
     assert.strictEqual(launchBranchOf(`${ROOT}/main`), null);
     assert.strictEqual(launchBranchOf("fac"), null);
     assert.strictEqual(launchBranchOf(null), null);
+  });
+
+  it("is null for a path that is not under a local worktree folder, such as a cloud sandbox's", () => {
+    assert.strictEqual(launchBranchOf("/workspace"), null);
+    assert.strictEqual(launchBranchOf("/fac/1-1"), null);
+    assert.strictEqual(launchBranchOf("/project/fac/1-1"), null);
+    assert.strictEqual(launchBranchOf("/w//fac/1-1"), null);
+    assert.strictEqual(launchBranchOf("//p/fac/1-1"), null);
+    assert.strictEqual(launchBranchOf("/w/project/fac/1-1"), "fac/1-1");
   });
 });
 

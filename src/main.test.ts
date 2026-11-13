@@ -242,6 +242,8 @@ const baseMachine: MachineConfig = {
   maxLoadPerCore: 0,
   modelFallbacks: {},
   repos: [],
+  hosts: [],
+  local: { maxRuns: 1 },
   paradev: PARADEV,
 };
 
@@ -3659,9 +3661,9 @@ describe("reloading the machine config", () => {
             (made) =>
               moved
                 ? writeThread(made.baseDir, {
-                    v: 1,
+                    v: 2,
                     threadId: "local:ws1",
-                    location: "local",
+                    target: { kind: "local" },
                     workspaceId: "ws1",
                     projectId: "project-a/b",
                     branch: "fac/10-1-abc",

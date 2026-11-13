@@ -6,7 +6,7 @@ import * as Schema from "effect/Schema";
 import { parse } from "yaml";
 
 import type { Defaulted, DefaultProject } from "./defaultProject.ts";
-import type { Model } from "./sessions.ts";
+import { isPlainId, type Model } from "./sessions.ts";
 import { asciiLower } from "./ledger/runId.ts";
 
 export const ConfigErrorSchema = Schema.Struct({
@@ -110,12 +110,56 @@ export type RepoConfigReading =
 export interface WatchedRepo {
   readonly repo: string;
   readonly path: string;
+  /** `repos[].hosts`: the Paradev hosts the repo may also run on, each with its clone there. Absent: none. */
+  readonly hosts?: ReadonlyArray<RepoHost>;
+  /** `repos[].cloud`: the Paradev Cloud environment id that has the repo. Absent: no cloud. */
+  readonly cloud?: string;
   /**
    * Set when the checkout has no `factory` block and the machine has a `default_project`: the
    * repo runs on that default, with what the reader found on its default branch.
    */
   readonly defaulted?: Defaulted;
 }
+
+/** One entry of `repos[].hosts`: a host of `hosts` by id, and the repo's clone on that host. */
+export interface RepoHost {
+  readonly id: string;
+  readonly path: string;
+}
+
+/** One entry of `hosts`: a Paradev host the runner may start agents on. */
+export interface HostConfig {
+  /** The machine id, as `superset hosts list` shows it. */
+  readonly id: string;
+  /** As `superset hosts list` shows it; used in the belt and the log. */
+  readonly name: string;
+  /** `user@host`: an ssh destination that works with BatchMode=yes. */
+  readonly ssh: string;
+  /** Runs this host may hold at once. */
+  readonly maxRuns: number;
+  /** The 1-minute load per core above which the host takes no run; 0 turns the check off. */
+  readonly maxLoadPerCore: number;
+}
+
+export type MachineSize = "small" | "medium" | "large";
+
+/** The `cloud` block: Paradev Cloud's settings. */
+export interface CloudConfig {
+  readonly machineSize: MachineSize;
+  /** Cloud runs at once, at most {@link MAX_CLOUD_RUNS}. */
+  readonly maxRuns: number;
+  /** The `https://` address the org's Claude connection points at, checked before each cloud launch. */
+  readonly proxy: string;
+}
+
+/** The `local` block: this Mac as a target. */
+export interface LocalConfig {
+  /** Runs this Mac may hold at once; defaults to `max_concurrent_runs`, and is at most that. */
+  readonly maxRuns: number;
+}
+
+/** The most runs `cloud.max_runs` may allow. */
+export const MAX_CLOUD_RUNS = 3;
 
 /** A watched repo with the title of the T3 project it comes from, for the settings page. */
 export interface WatchedProject extends WatchedRepo {
@@ -190,6 +234,12 @@ export interface MachineConfig {
   readonly modelFallbacks: Readonly<Record<string, string>>;
   /** `repos`: the repos this runner builds, each with the runner's own clone, in file order. */
   readonly repos: ReadonlyArray<WatchedRepo>;
+  /** `hosts`: every entry of the `hosts` block, in file order; empty when there is none. */
+  readonly hosts: ReadonlyArray<HostConfig>;
+  /** `cloud`: the `cloud` block; absent when there is none. */
+  readonly cloud?: CloudConfig;
+  /** `local`: this Mac as a target. */
+  readonly local: LocalConfig;
   /** `paradev`: how the runner starts sessions in Paradev on this Mac. */
   readonly paradev: ParadevConfig;
   /**
@@ -540,6 +590,9 @@ const MACHINE_KEYS = [
   "model_fallbacks",
   "default_project",
   "repos",
+  "hosts",
+  "cloud",
+  "local",
   "paradev",
 ] as const;
 
@@ -582,12 +635,100 @@ const checkUnknownKeys = (c: Checker, root: Mapping) => {
   c.unknownKeys(root, [...MACHINE_KEYS, ...RETIRED_MACHINE_KEYS, CONTROL_PLANE_KEY], "");
 };
 
-const REPO_KEYS = ["repo", "path"] as const;
+const REPO_KEYS = ["repo", "path", "hosts", "cloud"] as const;
+const REPO_HOST_KEYS = ["id", "path"] as const;
 /** `owner/name` as GitHub allows them. */
 const REPO_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
-/** `repos`: a list of `{ repo: owner/name, path: <absolute clone path> }`, no repo twice. */
-const reposFrom = (c: Checker, root: Mapping): ReadonlyArray<WatchedRepo> | undefined => {
+/**
+ * What a repo's targets are checked against: the ids of `hosts`, and whether there is a `cloud`
+ * block. Undefined when that block has errors of its own, so a repo is not blamed for them.
+ */
+interface TargetsKnown {
+  readonly hostIds: ReadonlySet<string> | undefined;
+  readonly cloud: boolean | undefined;
+}
+
+/** `repos[i].hosts`: absent, or a list of `{ id, path }` naming hosts in `hosts`, no id twice. */
+const repoHostsFrom = (
+  c: Checker,
+  entry: Mapping,
+  path: string,
+  known: TargetsKnown,
+): ReadonlyArray<RepoHost> | null | undefined => {
+  if (!Object.hasOwn(entry, "hosts")) return null;
+  const value = entry["hosts"];
+  const listPath = `${path}.hosts`;
+  if (!Array.isArray(value)) {
+    c.err(listPath, "must be a list of `id` and `path` entries");
+    return undefined;
+  }
+  let ok = true;
+  const out: Array<RepoHost> = [];
+  value.forEach((item, j) => {
+    const at = `${listPath}[${j}]`;
+    const host = c.mapping(item, at);
+    if (host === undefined) {
+      ok = false;
+      return;
+    }
+    const id = c.nonEmptyString(c.child(host, at, "id"), `${at}.id`);
+    const clone = c.nonEmptyString(c.child(host, at, "path"), `${at}.path`);
+    c.unknownFields(host, REPO_HOST_KEYS, at);
+    if (id === undefined || clone === undefined) {
+      ok = false;
+      return;
+    }
+    if (!clone.startsWith("/")) {
+      c.err(`${at}.path`, "must be an absolute path");
+      ok = false;
+      return;
+    }
+    if (out.some((h) => h.id === id)) {
+      c.err(`${at}.id`, `${id} is listed twice for this repo`);
+      ok = false;
+      return;
+    }
+    if (known.hostIds !== undefined && !known.hostIds.has(id)) {
+      c.err(`${at}.id`, `${id} is not in hosts`);
+      ok = false;
+      return;
+    }
+    out.push({ id, path: clone });
+  });
+  return ok ? out : undefined;
+};
+
+/** `repos[i].cloud`: absent, or an environment id; needs the top-level `cloud` block. */
+const repoCloudFrom = (
+  c: Checker,
+  entry: Mapping,
+  path: string,
+  known: TargetsKnown,
+): string | null | undefined => {
+  if (!Object.hasOwn(entry, "cloud")) return null;
+  const environment = c.nonEmptyString(entry["cloud"], `${path}.cloud`);
+  if (environment === undefined) return undefined;
+  if (!isPlainId(environment)) {
+    c.err(`${path}.cloud`, "must be the environment id from superset environments list");
+    return undefined;
+  }
+  if (known.cloud === false) {
+    c.err(`${path}.cloud`, "needs the top-level cloud block");
+    return undefined;
+  }
+  return environment;
+};
+
+/**
+ * `repos`: a list of `{ repo: owner/name, path: <absolute clone path> }`, no repo twice, each
+ * optionally with `hosts` and `cloud`.
+ */
+const reposFrom = (
+  c: Checker,
+  root: Mapping,
+  known: TargetsKnown,
+): ReadonlyArray<WatchedRepo> | undefined => {
   const value = c.child(root, "", "repos");
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) {
@@ -606,8 +747,10 @@ const reposFrom = (c: Checker, root: Mapping): ReadonlyArray<WatchedRepo> | unde
     }
     const repo = c.nonEmptyString(c.child(entry, path, "repo"), `${path}.repo`);
     const clone = c.nonEmptyString(c.child(entry, path, "path"), `${path}.path`);
+    const hosts = repoHostsFrom(c, entry, path, known);
+    const cloud = repoCloudFrom(c, entry, path, known);
     c.unknownFields(entry, REPO_KEYS, path);
-    if (repo === undefined || clone === undefined) {
+    if (repo === undefined || clone === undefined || hosts === undefined || cloud === undefined) {
       ok = false;
       return;
     }
@@ -627,9 +770,139 @@ const reposFrom = (c: Checker, root: Mapping): ReadonlyArray<WatchedRepo> | unde
       return;
     }
     seen.add(asciiLower(repo));
-    out.push({ repo, path: clone });
+    out.push({
+      repo,
+      path: clone,
+      ...(hosts !== null && { hosts }),
+      ...(cloud !== null && { cloud }),
+    });
   });
   return ok ? out : undefined;
+};
+
+const HOST_KEYS = ["id", "name", "ssh", "max_runs", "max_load_per_core"] as const;
+/**
+ * `user@host`, nothing else: with no user, ssh under BatchMode guesses one. An ssh config alias
+ * keeps its HostName, port and key when written `user@alias`. Neither side starts with `-`, which
+ * ssh would read as an option.
+ */
+const SSH_DESTINATION = /^[^-@\s][^@\s]*@[^-@\s][^@\s]*$/;
+
+/** `hosts`: absent (no hosts), or a list of hosts, no id twice. */
+const hostsFrom = (c: Checker, root: Mapping): ReadonlyArray<HostConfig> | undefined => {
+  if (!Object.hasOwn(root, "hosts")) return [];
+  const value = root["hosts"];
+  if (!Array.isArray(value)) {
+    c.err("hosts", "must be a list of hosts");
+    return undefined;
+  }
+  let ok = true;
+  const out: Array<HostConfig> = [];
+  value.forEach((item, i) => {
+    const path = `hosts[${i}]`;
+    const entry = c.mapping(item, path);
+    if (entry === undefined) {
+      ok = false;
+      return;
+    }
+    const id = c.nonEmptyString(c.child(entry, path, "id"), `${path}.id`);
+    const name = c.nonEmptyString(c.child(entry, path, "name"), `${path}.name`);
+    const ssh = c.nonEmptyString(c.child(entry, path, "ssh"), `${path}.ssh`);
+    const maxRuns = c.uint(c.child(entry, path, "max_runs"), `${path}.max_runs`, 0);
+    const maxLoadPerCore = c.optionalUint(
+      entry,
+      path,
+      "max_load_per_core",
+      DEFAULT_MAX_LOAD_PER_CORE,
+      0,
+    );
+    c.unknownFields(entry, HOST_KEYS, path);
+    // A machine id goes into thread ids (`host:<id>:<ws>`) and onto the superset command line.
+    if (id !== undefined && !isPlainId(id)) {
+      c.err(`${path}.id`, "must be the machine id from superset hosts list: letters, digits and -");
+      ok = false;
+      return;
+    }
+    if (id !== undefined && out.some((h) => h.id === id)) {
+      c.err(`${path}.id`, `${id} is listed twice; one entry per host`);
+      ok = false;
+      return;
+    }
+    if (ssh !== undefined && !SSH_DESTINATION.test(ssh)) {
+      c.err(`${path}.ssh`, "must be user@host (an ssh config alias works as user@alias)");
+      ok = false;
+      return;
+    }
+    if (
+      id === undefined ||
+      name === undefined ||
+      ssh === undefined ||
+      maxRuns === undefined ||
+      maxLoadPerCore === undefined
+    ) {
+      ok = false;
+      return;
+    }
+    out.push({ id, name, ssh, maxRuns, maxLoadPerCore });
+  });
+  return ok ? out : undefined;
+};
+
+const CLOUD_KEYS = ["machine_size", "max_runs", "proxy"] as const;
+const MACHINE_SIZES: ReadonlyArray<MachineSize> = ["small", "medium", "large"];
+
+/** `cloud`: null when absent, undefined when it has errors. */
+const cloudFrom = (c: Checker, root: Mapping): CloudConfig | null | undefined => {
+  if (!Object.hasOwn(root, "cloud")) return null;
+  const block = c.mapping(root["cloud"], "cloud");
+  if (block === undefined) return undefined;
+  const size = Object.hasOwn(block, "machine_size") ? block["machine_size"] : "small";
+  const machineSize = MACHINE_SIZES.find((known) => known === size);
+  if (machineSize === undefined) c.err("cloud.machine_size", "must be small, medium or large");
+  let maxRuns = c.optionalUint(block, "cloud", "max_runs", 1, 0);
+  if (maxRuns !== undefined && maxRuns > MAX_CLOUD_RUNS) {
+    c.err("cloud.max_runs", `must be at most ${MAX_CLOUD_RUNS}`);
+    maxRuns = undefined;
+  }
+  let proxy = c.nonEmptyString(c.child(block, "cloud", "proxy"), "cloud.proxy");
+  if (proxy !== undefined && !isHttpsUrl(proxy)) {
+    c.err("cloud.proxy", "must be an https:// URL");
+    proxy = undefined;
+  }
+  c.unknownFields(block, CLOUD_KEYS, "cloud");
+  if (machineSize === undefined || maxRuns === undefined || proxy === undefined) return undefined;
+  return { machineSize, maxRuns, proxy };
+};
+
+const isHttpsUrl = (text: string): boolean => {
+  try {
+    return new URL(text).protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+
+const LOCAL_KEYS = ["max_runs"] as const;
+
+/** `local`: absent or `{ max_runs }`, which defaults to `max_concurrent_runs` and may not exceed it. */
+const localFrom = (
+  c: Checker,
+  root: Mapping,
+  maxConcurrentRuns: number | undefined,
+): LocalConfig | undefined => {
+  const block = Object.hasOwn(root, "local") ? c.mapping(root["local"], "local") : {};
+  if (block === undefined) return undefined;
+  c.unknownFields(block, LOCAL_KEYS, "local");
+  if (!Object.hasOwn(block, "max_runs")) {
+    return maxConcurrentRuns === undefined ? undefined : { maxRuns: maxConcurrentRuns };
+  }
+  const maxRuns = c.uint(block["max_runs"], "local.max_runs", 0);
+  if (maxRuns === undefined || maxConcurrentRuns === undefined) return undefined;
+  if (maxRuns > maxConcurrentRuns) {
+    c.err("local.max_runs", `must be at most max_concurrent_runs (${maxConcurrentRuns})`);
+    return undefined;
+  }
+  return { maxRuns };
 };
 
 const PARADEV_KEYS = ["cli", "agent", "model", "effort", "belt"] as const;
@@ -720,7 +993,13 @@ const machineFrom = (c: Checker, root: Mapping): MachineConfig | undefined => {
   );
   const modelFallbacks = fallbacksFrom(c, root);
   const defaultProject = defaultProjectFrom(c, root);
-  const repos = reposFrom(c, root);
+  const hosts = hostsFrom(c, root);
+  const cloud = cloudFrom(c, root);
+  const local = localFrom(c, root, maxConcurrentRuns);
+  const repos = reposFrom(c, root, {
+    hostIds: hosts === undefined ? undefined : new Set(hosts.map((h) => h.id)),
+    cloud: cloud === undefined ? undefined : cloud !== null,
+  });
   const paradev = paradevFrom(c, root);
   checkUnknownKeys(c, root);
 
@@ -736,6 +1015,9 @@ const machineFrom = (c: Checker, root: Mapping): MachineConfig | undefined => {
     modelFallbacks === undefined ||
     defaultProject === undefined ||
     repos === undefined ||
+    hosts === undefined ||
+    cloud === undefined ||
+    local === undefined ||
     paradev === undefined
   ) {
     return undefined;
@@ -751,6 +1033,9 @@ const machineFrom = (c: Checker, root: Mapping): MachineConfig | undefined => {
     maxLoadPerCore,
     modelFallbacks,
     repos,
+    hosts,
+    ...(cloud !== null && { cloud }),
+    local,
     paradev,
     ...(defaultProject !== null && { defaultProject }),
   };

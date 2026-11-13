@@ -4043,3 +4043,43 @@ describe("checkBinding: a session relaunched from a pull request's branch", () =
     }
   });
 });
+
+describe("checkBinding: a Paradev Cloud launch branch", () => {
+  const pull = (headRef: string): PullRequest => ({ ...defaultPr(), headRef });
+  const NOT_ITS_BRANCH = "the session reported PR #12 but its branch is not this session's branch";
+  const OTHER = "superset/fac-11-1-a2bc69cb";
+
+  it("binds a cloud session's own branch, which its record reports", () => {
+    const own = "superset/fac-10-1-1f2e3d4c";
+    assert.strictEqual(checkBinding(pull(own), 12, "main", own, false, null, "/workspace"), null);
+  });
+
+  it("refuses another run's cloud branch, whatever the session's worktree", () => {
+    for (const [branch, worktreePath] of [
+      ["fac/10-1", "/w/p/fac/10-1"],
+      ["superset/fac-10-1-1f2e3d4c", "/workspace"],
+      ["fac/10-1", null],
+    ] as const) {
+      assert.strictEqual(
+        checkBinding(pull(OTHER), 12, "main", branch, false, null, worktreePath)?.public,
+        NOT_ITS_BRANCH,
+        `${branch} ${worktreePath}`,
+      );
+    }
+    assert.strictEqual(
+      checkBinding(pull(OTHER), 12, "main", null, false, null, "/workspace")?.public,
+      "the session reported PR #12 but the session has no branch",
+    );
+  });
+
+  it("does not bind a branch only because the session's worktree path ends with it", () => {
+    assert.strictEqual(
+      checkBinding(pull("feature/x"), 12, "main", "fac/10-1", false, null, "/w/p/feature/x")?.public,
+      NOT_ITS_BRANCH,
+    );
+  });
+
+  it("still binds a local session's own launch branch through its worktree", () => {
+    assert.strictEqual(checkBinding(pull("fac/10-1"), 12, "main", null, false, null, "/w/p/fac/10-1"), null);
+  });
+});

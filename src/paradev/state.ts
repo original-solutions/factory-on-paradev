@@ -10,6 +10,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import { writeFileAtomically } from "../files.ts";
+import { isPlainId } from "../sessions.ts";
 import { sha256 } from "../text.ts";
 
 const Turn = Schema.Struct({
@@ -27,12 +28,18 @@ const PendingSend = Schema.Struct({
 });
 export type PendingSend = typeof PendingSend.Type;
 
-const ThreadRecordSchema = Schema.Struct({
-  v: Schema.Literal(1),
-  /** `local:<workspaceId>`. */
-  threadId: Schema.String,
-  location: Schema.Literal("local"),
+/** Where a thread's agent runs. The record keeps the host's name and the cloud environment. */
+const TargetSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("local") }),
+  Schema.Struct({ kind: Schema.Literal("host"), machineId: Schema.String, name: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("cloud"), environmentId: Schema.String }),
+]);
+export type Target = typeof TargetSchema.Type;
+
+/** Every field a record has in both versions, after `v`, `threadId` and where it runs. */
+const RECORD_FIELDS = {
   workspaceId: Schema.String,
+  /** The Paradev project; for cloud, the environment id. */
   projectId: Schema.String,
   /** The branch Paradev reported at create. */
   branch: Schema.String,
@@ -61,24 +68,75 @@ const ThreadRecordSchema = Schema.Struct({
    * written before it existed.
    */
   gateLogAttempts: Schema.optional(Schema.Array(Schema.Number)),
+};
+
+/** A record as P1 wrote it: every thread local. */
+const ThreadRecordV1Schema = Schema.Struct({
+  v: Schema.Literal(1),
+  /** `local:<workspaceId>`. */
+  threadId: Schema.String,
+  location: Schema.Literal("local"),
+  ...RECORD_FIELDS,
 });
+
+const ThreadRecordSchema = Schema.Struct({
+  v: Schema.Literal(2),
+  /** `local:<ws>`, `host:<machineId>:<ws>` or `cloud:<ws>`: {@link threadIdOf} of the target. */
+  threadId: Schema.String,
+  target: TargetSchema,
+  ...RECORD_FIELDS,
+});
+/** The record as the adapter holds and writes it: always v2. */
 export type ThreadRecord = typeof ThreadRecordSchema.Type;
 
 const LaunchFileSchema = Schema.Struct({ threadId: Schema.String });
 
-const decodeRecord = Schema.decodeUnknownOption(Schema.fromJsonString(ThreadRecordSchema));
+const decodeStored = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Union([ThreadRecordSchema, ThreadRecordV1Schema])),
+);
 const decodeLaunch = Schema.decodeUnknownOption(Schema.fromJsonString(LaunchFileSchema));
 
-/** A workspace id that is safe as a file name: no separator, no dots. */
-const WORKSPACE_ID = /^[A-Za-z0-9-]+$/;
+/**
+ * The record in a file's text, as v2; null when it is torn or foreign. A v1 record reads as a
+ * local target. The file is not rewritten: the next write of the record writes v2.
+ */
+const decodeRecord = (text: string): ThreadRecord | null => {
+  const stored = Option.getOrNull(decodeStored(text));
+  if (stored === null || stored.v === 2) return stored;
+  const { v: _v, location: _location, ...fields } = stored;
+  return { v: 2, target: { kind: "local" }, ...fields };
+};
 
-export const threadIdOf = (workspaceId: string): string => `local:${workspaceId}`;
+/** A target as its thread id names it: the host's name and the cloud environment are not in it. */
+export type ThreadTarget =
+  | { readonly kind: "local" }
+  | { readonly kind: "host"; readonly machineId: string }
+  | { readonly kind: "cloud" };
+
+/** `local:<ws>`, `host:<machineId>:<ws>` or `cloud:<ws>`. */
+export const threadIdOf = (target: Target | ThreadTarget, workspaceId: string): string =>
+  target.kind === "host" ? `host:${target.machineId}:${workspaceId}` : `${target.kind}:${workspaceId}`;
+
+/** The inverse of {@link threadIdOf}; null for an id of any other form or with an id that is not plain. */
+export const targetOf = (
+  threadId: string,
+): { readonly target: ThreadTarget; readonly workspaceId: string } | null => {
+  const parts = threadId.split(":");
+  if (!parts.every(isPlainId)) return null;
+  const [kind, first, second] = parts;
+  if (parts.length === 2 && (kind === "local" || kind === "cloud")) {
+    return { target: { kind }, workspaceId: first! };
+  }
+  if (parts.length === 3 && kind === "host") {
+    return { target: { kind, machineId: first! }, workspaceId: second! };
+  }
+  return null;
+};
 
 /** The workspace of a `local:<workspaceId>` thread id; null for any other id. */
 export const workspaceIdOf = (threadId: string): string | null => {
-  if (!threadId.startsWith("local:")) return null;
-  const id = threadId.slice("local:".length);
-  return WORKSPACE_ID.test(id) ? id : null;
+  const parsed = targetOf(threadId);
+  return parsed?.target.kind === "local" ? parsed.workspaceId : null;
 };
 
 const threadsDir = (path: Path.Path, dataDir: string) => path.join(dataDir, "paradev", "threads");
@@ -110,7 +168,7 @@ export const readThread = Effect.fn("ParadevState.readThread")(function* (
 ) {
   const path = yield* Path.Path;
   const text = yield* readText(path.join(threadsDir(path, dataDir), `${workspaceId}.json`));
-  return text === null ? null : Option.getOrNull(decodeRecord(text));
+  return text === null ? null : decodeRecord(text);
 });
 
 export const writeThread = Effect.fn("ParadevState.writeThread")(function* (
@@ -137,7 +195,7 @@ export const listThreads = Effect.fn("ParadevState.listThreads")(function* (data
   for (const name of names) {
     if (!name.endsWith(".json")) continue;
     const text = yield* readText(path.join(dir, name));
-    const record = text === null ? null : Option.getOrNull(decodeRecord(text));
+    const record = text === null ? null : decodeRecord(text);
     if (record !== null) records.push(record);
   }
   return records;

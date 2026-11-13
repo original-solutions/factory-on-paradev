@@ -116,21 +116,41 @@ export interface ThreadStatus extends Thread {
   readonly lastAssistantMessage: string | null;
 }
 
+/**
+ * Whether `id` is plain enough to go into a thread id and a file name, and to be passed to a
+ * CLI as an argument: letters, digits and `-`, not starting with `-`. Workspace, machine and
+ * environment ids from Paradev all are.
+ */
+export const isPlainId = (id: string): boolean => /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(id);
+
 /** The branches `paradev/branches.ts` `launchBranch` makes: `fac/<issue>-<attempt>[-<hex>]`, or `fac/x-<hex>`. */
 const LAUNCH_BRANCH = /^fac\/(\d+|x)-[0-9a-f-]+$/;
 
 /**
+ * The branch Paradev Cloud names for a workspace called after a launch branch:
+ * `superset/<name slug>-<first 8 of the workspace id>`, so `fac/3-1` becomes `superset/fac-3-1-a2bc69cb`.
+ */
+const CLOUD_LAUNCH_BRANCH = /^superset\/fac-(\d+|x)-[0-9a-f-]+-[0-9a-f]{8}$/;
+
+/**
  * Whether `branch` is a launch branch and `worktreePath` is a Paradev worktree on it: the path
- * ends with `/<branch>`. Defined here, not in `paradev/`, so the core reads it without importing
+ * ends with `/<branch>`. A cloud launch branch is one with any path, since the sandbox's is
+ * always `/workspace`. So a cloud-shaped branch says only what made it, never that it is a given
+ * session's: that goes through the thread's own `branch`, as in `checkBinding`. Defined here, not in `paradev/`, so the core reads it without importing
  * the adapter; `paradev/branches.ts` re-exports it beside `launchBranch`.
  */
 export const isLaunchBranch = (branch: string, worktreePath: string | null): boolean =>
-  worktreePath !== null && LAUNCH_BRANCH.test(branch) && worktreePath.endsWith(`/${branch}`);
+  CLOUD_LAUNCH_BRANCH.test(branch) ||
+  (worktreePath !== null && LAUNCH_BRANCH.test(branch) && worktreePath.endsWith(`/${branch}`));
 
-/** The launch branch read back from a Paradev worktree path (the inverse of `isLaunchBranch`). */
+/**
+ * The launch branch read back from a local Paradev worktree path,
+ * `<worktrees folder>/<project>/fac/<n>` (the inverse of `isLaunchBranch`). Null for any other
+ * path, a cloud sandbox's `/workspace` among them: the core reads that branch from the thread.
+ */
 export const launchBranchOf = (worktreePath: string | null): string | null => {
   const parts = worktreePath?.split("/") ?? [];
-  if (parts.length < 2 || parts.at(-2) !== "fac") return null;
+  if (parts.length < 5 || parts.at(-2) !== "fac" || parts.slice(1, -2).includes("")) return null;
   const branch = `fac/${parts.at(-1)}`;
   return isLaunchBranch(branch, worktreePath) ? branch : null;
 };
