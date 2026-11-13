@@ -23,6 +23,7 @@ import {
   GateCommandSpawnError,
   WorkspaceSpawnError,
   WorkspaceUnexpectedError,
+  gateLogPath,
   gateRoot,
   type CommandResult,
   type GateError,
@@ -503,6 +504,8 @@ class FakeT3 {
   status: () => ThreadStatus | ThreadNotFoundError | SessionsError = () =>
     statusOf("completed", DONE_MESSAGE);
   readonly archived: Array<string> = [];
+  /** Each `showGateLog` as `<thread> <attempt> <log path>`; kept out of `calls`, which other tests compare whole. */
+  readonly gateLogs: Array<string> = [];
   /** How many GitHub calls had been made at each archive. */
   readonly countedAtArchive: Array<number> = [];
   archiveFails = false;
@@ -585,6 +588,10 @@ class FakeT3 {
       if (this.archiveFails) return Effect.fail(sessionsFailure("archive"));
       this.archived.push(threadId);
       this.countedAtArchive.push(this.gh.calls.length);
+      return Effect.void;
+    },
+    showGateLog: (threadId, attempt, logPath) => {
+      this.gateLogs.push(`${threadId} ${attempt} ${logPath}`);
       return Effect.void;
     },
     removeWorktree: (path) => {
@@ -786,10 +793,13 @@ class FakeGate {
       }
       remove(dir, { attempt });
       rmdirRoot();
-      return Effect.succeed(
-        failure === null
-          ? ({ _tag: "pass", dir, commands: ran, gateCount } satisfies GateResult)
-          : ({ _tag: "fail", dir, commands: ran, failure, gateCount } satisfies GateResult),
+      // The real gate runs it once the checkout and the merge are done, before the commands.
+      return (input.onStart ?? Effect.void).pipe(
+        Effect.as(
+          failure === null
+            ? ({ _tag: "pass", dir, commands: ran, gateCount } satisfies GateResult)
+            : ({ _tag: "fail", dir, commands: ran, failure, gateCount } satisfies GateResult),
+        ),
       );
     });
   }
@@ -1725,6 +1735,30 @@ const RESUMED: ReadonlyArray<RunEvent> = STARTED.map((event) =>
       }
     : event,
 );
+
+describe("gate: the gate log is shown in the session's workspace", () => {
+  it.effect("a building run's gate passes an onStart that shows the attempt's log in its thread", () =>
+    Effect.gen(function* () {
+      const rig = yield* readyForGate();
+      assert.deepStrictEqual(yield* gateIn(rig), { kind: "passed", pr: 12 });
+      assert.deepStrictEqual(rig.t3.gateLogs, [
+        `thread-1 1 ${gateLogPath(rig.dataDir, rig.run, 1)}`,
+      ]);
+    }),
+  );
+
+  it.effect("a failed attempt shows its log too", () =>
+    Effect.gen(function* () {
+      const rig = yield* readyForGate();
+      rig.ws.script = (call, commands) =>
+        call === 0 ? failingLast(commands, 101, "boom\n") : passing(commands);
+      assert.strictEqual((yield* gateIn(rig)).kind, "sent-back");
+      assert.deepStrictEqual(rig.t3.gateLogs, [
+        `thread-1 1 ${gateLogPath(rig.dataDir, rig.run, 1)}`,
+      ]);
+    }),
+  );
+});
 
 describe("gate: a resumed run's pull request", () => {
   it.effect("is accepted from the branch the run resumed from", () =>
@@ -4226,6 +4260,19 @@ describe("regate: the base branch moved", () => {
       assert.deepStrictEqual(rig.gh.calls, [PR_READ]);
       assert.deepStrictEqual(rig.ws.calls, []);
       assert.strictEqual(bytesOf(rig), bytes);
+    }),
+  );
+
+  it.effect("a re-gate has no session to show its log in and passes no onStart", () =>
+    Effect.gen(function* () {
+      const rig = yield* prOpenRun();
+      // The first gate showed its own log; the re-gate adds nothing.
+      assert.strictEqual(rig.t3.gateLogs.length, 1);
+      baseMoved(rig, 0);
+      appendLines(rig, [regateLine(BASE, MOVED)] as ReadonlyArray<RunEvent>);
+      assert.strictEqual((yield* regateIn(rig)).step.kind, "passed");
+      assert.strictEqual(rig.ws.gateCalls, 2);
+      assert.strictEqual(rig.t3.gateLogs.length, 1);
     }),
   );
 
