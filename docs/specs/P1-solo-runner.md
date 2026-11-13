@@ -249,6 +249,8 @@ interface ThreadRecord {
   // The send about to type, or that typed, its text, whose turn is not recorded yet (#37), with the `lastEventAt`
   // read before typing (null when the agent had no hook yet): a repeat of its command id types nothing.
   readonly pendingSend?: { readonly commandId: string; readonly before: number | null } | null;
+  // The attempt numbers that already have a gate terminal (#44); `terminals` is not touched.
+  readonly gateLogAttempts?: ReadonlyArray<number>;
 }
 ```
 
@@ -283,6 +285,7 @@ Every call but `snapshot` passes `--local`, and the runner adds `--json`. Timeou
 | `worktreeCheckout(path)` | None. `git -C <path> rev-parse HEAD` and `git -C <path> symbolic-ref -q --short HEAD`, as the T3 adapter does | `head`, `branch` (null when detached). Null when `path` has no `.git` | 30 s |
 | `lastActivity(threadId)` | `agents explain` on the current terminal | `lastEventAt`; null when the state is `none`. Hooks fire on tool calls and on prompts, so a prompt the factory sent counts too, which T3's answer did not | explain 30 s, one retry |
 | `worktreesDirectory(dir)` | None. `~/.paradev/worktrees`: the newest thread record's `worktreePath` with `/<project name>/<branch>` cut off, else `dir` | none | none |
+| `showGateLog(threadId, attempt, logPath)` | The thread record, then `terminals create --local --workspace <w> --command "tail -n +1 -F <logPath>"` (the path shell-quoted) once per attempt. Nothing for an unknown or archived thread, or an attempt already in `gateLogAttempts`. After the create, the attempt goes into `gateLogAttempts`, saved from a fresh read of the record; `terminals` is not touched, so its last entry stays the agent's. The gate calls it through `onStart`, after the checkout and merge and before the first command | the exit code only | 30 s, no retry: a second create opens a second terminal. Never fails: any failure is one warning in the log |
 
 `req.pullRequestUrl` is not used: a local Paradev workspace has no PR link.
 
@@ -365,6 +368,7 @@ A `SessionsError` reaches the machine log as an `error` with kind `t3`, as today
 | `agents explain`, `agents read` | `--local`, `--workspace`, `--terminal` |
 | `terminals send` | `--local`, `--workspace`, `--terminal`, `--text`, `--keys` |
 | `terminals close` | `--local`, `--workspace`, `--terminal` |
+| `terminals create` | `--local`, `--workspace`, `--command` |
 | `snapshot` | `--workspace` |
 | `auth whoami` | none |
 | `pages publish` | `--page`, `--title`, `--visibility`, `--label`, `--no-watch`, `--workspace` |
