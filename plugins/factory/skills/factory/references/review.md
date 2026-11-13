@@ -19,7 +19,7 @@ The tree is clean at the tip and the maker is idle. `n` is the round number, sta
 
 ```bash
 cd <worktree> && git fetch origin <base>        # `SKILL.md` § GitHub account
-mkdir -p .factory/review/round-<n>
+rm -rf .factory/review/round-<n> && mkdir -p .factory/review/round-<n>
 nohup sh -c 'PYTHONPATH="'"$RG"'" python3 -P -m review_gate review \
   --base origin/<base> --maker-model <maker id from references/models.md> --full \
   --title "$(cat .factory/issue-title.txt)" --body "$(cat .factory/issue-body.md)" \
@@ -27,6 +27,8 @@ nohup sh -c 'PYTHONPATH="'"$RG"'" python3 -P -m review_gate review \
   > .factory/review/round-<n>/stdout.json 2> .factory/review/round-<n>/stderr.log; echo $? > .factory/review/round-<n>/exit' \
   > /dev/null 2>&1 &
 ```
+
+The `rm -rf` matters when a round is run again (an incomplete round, a head mismatch): without it the old `exit` file ends the poll at once and the session reads the old verdict while the new CLI still runs.
 
 `--full` every round: the whole `base...tip` diff is read each time, so a fix is judged beside the code it changes, and round count, ids and settles are kept. `--maker-model` puts the reviewers on another model family than the maker's.
 
@@ -46,14 +48,14 @@ Read `.factory/review/round-<n>/verdict.json` and nothing else from the round: n
 jq '{status, score, head, door: .door.kind, risk, counts, report: .report.markdown,
      open: [.findings[] | select(.status == "open" and (.severity == "blocker" or .severity == "action"))
             | {id, severity, title, sites, scenario, fix}],
-     reviewers_failed: [.report.reviewers[]? | select(.status != "done") | .name]}' .factory/review/round-<n>/verdict.json
+     reviewers_failed: .personas.failed}' .factory/review/round-<n>/verdict.json
 ```
 
-- `verdict.head` must equal `git rev-parse HEAD`. A mismatch means something committed while the round ran: the round is discarded (not counted toward the cap) and run again on the tip.
+- `verdict.head` must equal `git rev-parse HEAD`. A mismatch means something committed while the round ran: the round is discarded (not counted toward the cap) and run again from § 2 on the tip.
 - Exit 2 or 4: there is no verdict. Stop `stuck` with the last line of `stderr.log`.
 - `status: done` (exit 0): score 5, nothing open. On to `references/mutation.md`, then Check § 5 Live.
 - `status: open` (exit 1): the open blockers and actions go to Make (§ 4), then the next round.
-- `status: incomplete` (exit 1): reviewers failed, not the code. Run the same round again as it is, once; an incomplete round is not saved, so it spends no round. Two incomplete in a row → stop `stuck`, naming `reviewers_failed`. A 429 in `stderr.log` that names a reset time → stop `stuck` at once, naming the time; a retry before it fails the same way.
+- `status: incomplete` (exit 1): reviewers failed, not the code. Run the same round again as it is, once, from § 2; an incomplete round is not saved, so it spends no round. Two incomplete in a row → stop `stuck`, naming `reviewers_failed`. A 429 in `stderr.log` that names a reset time → stop `stuck` at once, naming the time; a retry before it fails the same way.
 
 Receipt fields: `references/receipt.md` § Review. Every saved round's `score` and pair go there as they happen, so a stop still shows the trail.
 

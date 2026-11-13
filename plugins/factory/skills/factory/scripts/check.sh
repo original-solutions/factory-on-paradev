@@ -82,7 +82,7 @@ fi
 for needle in 'python3 -P -m review_gate review' '--maker-model' '--full' '--format json' '--out .factory/review/round-' \
   'REVIEW_GATE_V2_HOME' 'Never fall back to a self-run review' 'nohup' 'for i in 1 2 3 4' \
   '`verdict.head` must equal' 'the pair (open blockers, open actions)' 'A run never calls `settle` on its own word' \
-  'review_gate settle <id> --reason "instructor' 'references/mutation.md'; do
+  'review_gate settle <id> --reason "instructor' 'references/mutation.md' 'rm -rf .factory/review/round-<n>' '.personas.failed'; do
   grep -qF -- "$needle" references/review.md || { echo "references/review.md: no $needle"; exit 1; }
 done
 if grep -qE 'dispatch|packet|seat|panel|blind-reader|traceability' references/review.md; then
@@ -108,8 +108,8 @@ grep -qF -- 'the mutation pass' references/models.md || { echo "references/model
 # The mutation pass is the one brief the skill keeps; review-gate reads code and this pass executes it.
 [ -f references/mutation.md ] || { echo "references/mutation.md: missing"; exit 1; }
 [ ! -d references/reviewers ] || { echo "references/reviewers/: the skill's own panel briefs are still here"; exit 1; }
-for needle in 'At most 12 mutants' '20 minutes' 'detached worktree' 'git checkout -- <path>' 'class `cannot-fail`' \
-  'Never the whole suite'; do
+for needle in 'At most 12 mutants' '20 minutes' 'detached worktree' 'git checkout -- <path>' \
+  'Never the whole suite' 'mutation: killed n, survived n, unreached n' 'the test that should have failed'; do
   grep -qF -- "$needle" references/mutation.md || { echo "references/mutation.md: no $needle"; exit 1; }
 done
 grep -qF -- '- settled:' references/receipt.md || { echo "references/receipt.md: no settled line under Review"; exit 1; }

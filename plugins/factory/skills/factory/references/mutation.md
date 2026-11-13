@@ -26,4 +26,13 @@ For each mutant, in order, one command each so you can read a message between th
 
 Stop at the time limit. Report every mutant as `killed`, `survived` or `unreached`. A survivor's finding names the test that should have failed, with the mutant as its scenario, class `cannot-fail`, severity blocker.
 
-End on a clean `git status` in your worktree. Kill only processes you started, by pid. Report once, as your final message, in the finding contract's verdict shape.
+End on a clean `git status` in your worktree. Kill only processes you started, by pid. Report once, as your final message, in this shape and nothing else:
+
+```text
+## Mutation
+<mutant>: killed | survived | unreached — <the test command you ran> — survived: <the test that should have failed>
+…one line per mutant, in the packet's order…
+mutation: killed n, survived n, unreached n
+```
+
+The last line is copied to the receipt as it stands. A `survived` line is a blocker for Make: the named test, with the mutant as its scenario.
