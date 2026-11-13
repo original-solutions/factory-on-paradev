@@ -64,5 +64,5 @@ rec terminals-send-host-5 terminals send "${ON[@]}" --text "$GATE" --wait --unti
 rec agents-explain-host-5-after-gate agents explain "${ON[@]}"; show agents-explain-host-5-after-gate '{state,lastEventType}'
 rec agents-read-host-5-after-gate agents read "${ON[@]}"; jq -r '(.text | split("\n") | map(select(test("^FACTORY-"))) | .[-1])' $FIX/agents-read-host-5-after-gate.json
 jq -r .text $FIX/agents-read-host-5-after-gate.json | grep -c '<pasted_content'
-echo '=== proxy'; $BOX 'grep gin_logger ~/.cli-proxy-api/logs/main.log | grep 100.87.249.45 | tail -2 | cut -c1-110'
+echo '=== proxy'; $BOX "grep gin_logger ~/.cli-proxy-api/logs/main.log | grep ${HOST_TAILNET_IP:?set HOST_TAILNET_IP to the host tailnet address} | tail -2 | cut -c1-110"
 echo DONE
