@@ -935,13 +935,24 @@ const runGate = (runner: Runner, input: GateInput): Effect.Effect<GateResult, Ga
             commands.push(result);
             if (!provision) gateCount += 1;
             if (result.exitCode !== 0 || result.timedOut) {
+              const outcome = yield* record({
+                _tag: "fail",
+                dir,
+                commands,
+                failure: result,
+                gateCount,
+              });
               appendLog(`gate attempt ${attempt} failed\n`);
-              return yield* record({ _tag: "fail", dir, commands, failure: result, gateCount });
+              return outcome;
             }
           }
+          const outcome = yield* record({ _tag: "pass", dir, commands, gateCount });
           appendLog(`gate attempt ${attempt} passed\n`);
-          return yield* record({ _tag: "pass", dir, commands, gateCount });
-        });
+          return outcome;
+        }).pipe(
+          // An attempt that ends in an error still ends its log, so a watcher sees it is over.
+          Effect.tapError(() => Effect.sync(() => appendLog(`gate attempt ${attempt} errored\n`))),
+        );
 
         // How long the attempt took, from the start of its checkout to the end of its last
         // command or of its aborted merge, for the run log. The attempt is decided by then, so
