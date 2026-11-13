@@ -1,0 +1,15 @@
+{
+	"name": "factory-on-paradev",
+	"plugins": [
+		{
+			"name": "factory",
+			"description": "One GitHub issue in, one draft pull request out: the /factory skill the runner's agents build with",
+			"author": {
+				"name": "Original Solutions"
+			},
+			"category": "development",
+			"source": "./plugins/factory",
+			"version": "0.1.0"
+		}
+	]
+}
