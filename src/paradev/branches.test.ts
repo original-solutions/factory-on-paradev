@@ -90,6 +90,8 @@ describe("launchBranchOf", () => {
     assert.strictEqual(launchBranchOf("/workspace"), null);
     assert.strictEqual(launchBranchOf("/fac/1-1"), null);
     assert.strictEqual(launchBranchOf("/project/fac/1-1"), null);
+    assert.strictEqual(launchBranchOf("/w//fac/1-1"), null);
+    assert.strictEqual(launchBranchOf("//p/fac/1-1"), null);
     assert.strictEqual(launchBranchOf("/w/project/fac/1-1"), "fac/1-1");
   });
 });

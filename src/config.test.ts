@@ -816,6 +816,19 @@ describe("machine config", () => {
       expect(c.local).toEqual({ maxRuns: 1 });
     });
 
+    it("takes 0 for a host's max_runs and max_load_per_core, and every machine size", () => {
+      const host = machine(
+        edit(TARGETS, (tree) => {
+          set(tree, "hosts.0.max_runs", "0");
+          set(tree, "hosts.0.max_load_per_core", "0");
+        }),
+      ).hosts[0]!;
+      expect([host.maxRuns, host.maxLoadPerCore]).toEqual([0, 0]);
+      for (const size of ["small", "medium", "large"]) {
+        expect(machine(edit(TARGETS, (tree) => set(tree, "cloud.machine_size", size))).cloud!.machineSize).toBe(size);
+      }
+    });
+
     it("defaults a host's max_load_per_core to 1, and cloud to small with one run", () => {
       const c = machine(
         edit(TARGETS, (tree) => {
@@ -855,7 +868,17 @@ describe("machine config", () => {
     });
 
     it("refuses a host ssh that is not user@host", () => {
-      for (const bad of ["trilogy-mac", "trilogy-mac.local", "100.64.0.1", "@trilogy-mac", "tomk@", "a@b@c", "tomk @box"]) {
+      for (const bad of [
+        "trilogy-mac",
+        "trilogy-mac.local",
+        "100.64.0.1",
+        "@trilogy-mac",
+        "tomk@",
+        "a@b@c",
+        "tomk @box",
+        "-oProxyCommand=touch${IFS}/tmp/x@h",
+        "tomk@-oProxyCommand=x",
+      ]) {
         const errs = machineErr(edit(TARGETS, (tree) => set(tree, "hosts.0.ssh", JSON.stringify(bad))));
         assertOne(errs, "hosts[0].ssh", MFILE);
         expect(errs[0]!.message).toBe("must be user@host (an ssh config alias works as user@alias)");
@@ -885,6 +908,8 @@ describe("machine config", () => {
         ["repos.0.hosts.0.path", "rel/path", "repos[0].hosts[0].path"],
         ["repos.0.hosts.0.pathh", "x", "repos[0].hosts[0].pathh"],
         ["repos.0.cloud", '""', "repos[0].cloud"],
+        ["repos.0.cloud", "--host", "repos[0].cloud"],
+        ["repos.0.cloud", "a/b", "repos[0].cloud"],
         ["cloud.machine_size", "huge", "cloud.machine_size"],
         ["cloud.proxy", "http://p.example", "cloud.proxy"],
         ["cloud.proxy", "not a url", "cloud.proxy"],
@@ -1089,7 +1114,13 @@ describe("the example machine config", () => {
       const block = lines.slice(from + 1, to);
       for (const line of block) expect(line === "#" || line.startsWith("# "), line).toBe(true);
       const yaml = block.map((line) => line.slice(2)).join("\n");
-      const c = machine(edit(MACHINE, (tree) => Object.assign(tree, parse(yaml))));
+      // max_concurrent_runs 3, so local.max_runs 1 can only come from the example's local block.
+      const c = machine(
+        edit(MACHINE, (tree) => {
+          set(tree, "max_concurrent_runs", "3");
+          Object.assign(tree, parse(yaml));
+        }),
+      );
       expect(c.hosts.map((h) => [h.id, h.name])).toEqual([["c9c39956e0c1756e30d6bb9f4f907ff1", "trilogy-mac"]]);
       expect(c.repos[0]!.hosts).toEqual([
         { id: "c9c39956e0c1756e30d6bb9f4f907ff1", path: expect.stringMatching(/^\//) },

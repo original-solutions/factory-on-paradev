@@ -132,6 +132,8 @@ describe("thread records", () => {
       assert.isNull(yield* readThread(data, WS));
       NodeFS.writeFileSync(threadFile(data), JSON.stringify({ ...record(), target: { kind: "host", machineId: "m" } }));
       assert.isNull(yield* readThread(data, WS));
+      NodeFS.writeFileSync(threadFile(data), JSON.stringify({ ...record(), target: { kind: "cloud" } }));
+      assert.isNull(yield* readThread(data, WS));
       NodeFS.writeFileSync(threadFile(data), "");
       assert.isNull(yield* readThread(data, WS));
     }).pipe(Effect.provide(NodeServices.layer)),
