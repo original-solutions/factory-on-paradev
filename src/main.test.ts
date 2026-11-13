@@ -311,6 +311,9 @@ const paradevAnswer = (paradev: FakeParadev, argv: ReadonlyArray<string>): RunRe
       return paradev.listDown === undefined
         ? reply(0, JSON.stringify(paradev.projects))
         : reply(1, "", `Error: ${paradev.listDown}\n`);
+    // The orphan sweep's listing: no cloud workspace.
+    case "workspaces list --host cloud":
+      return reply(0, "[]");
     default:
       if (argv[0] === "pages" && paradev.pages !== undefined) return paradev.pages(argv);
       throw new Error(`the scripted superset got an unexpected call: ${argv.join(" ")}`);
@@ -1386,6 +1389,23 @@ describe("on the Paradev CLI", () => {
           loop.status.state === "running" ? loop.status.settings.repos : null,
           ["a/b", "c/d"],
         );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("with a cloud block each pass sweeps the cloud for orphaned workspaces once, and with none never", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const sweeps = (calls: ReadonlyArray<ReadonlyArray<string>>) =>
+          calls.filter((argv) => argv.join(" ") === "workspaces list --host cloud").length;
+        const cloud = yield* started(configFor([["a/b", "/b"]], "/gh", "cloud:\n  proxy: https://proxy.example\n"));
+        yield* idleAfter(cloud.loop, cloud.factoryDir, 1);
+        assert.strictEqual(sweeps(cloud.paradev.calls), 1);
+        yield* onePassMore(cloud.loop, cloud.factoryDir);
+        assert.strictEqual(sweeps(cloud.paradev.calls), 2);
+        const none = yield* started(VALID);
+        yield* idleAfter(none.loop, none.factoryDir, 1);
+        assert.strictEqual(sweeps(none.paradev.calls), 0);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
