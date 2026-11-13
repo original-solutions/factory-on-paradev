@@ -1,9 +1,0 @@
-# Read by the /factory skill. One GitHub issue in, one draft pull request out.
-factory:
-  instructors: [tomkaczocha, rawphp]
-  base: main
-  provision: []
-  gate:
-    - bash scripts/check.sh
-  limits: { minutes: 90, gate_retries: 2 }
-  autonomy: pr
