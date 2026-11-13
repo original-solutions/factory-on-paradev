@@ -7,7 +7,7 @@ tests green
   → review round (references/review.md: run the CLI → read verdict.json)
       → done → mutation pass → live → Gate
       → open → Make → tests → commit → review round
-until: done | round == 5 | two rounds without progress | two incomplete rounds in a row | a 429 naming a reset time
+until: done | round == 5 | two rounds without progress | two incomplete rounds in a row | reviewers failed on a usage limit
 ```
 
 ## 1. Tests
@@ -30,9 +30,11 @@ When that Make is green, commit the round's fixes (`references/commits.md`, `fix
 
 Before each round, `git fetch origin` (`SKILL.md` § GitHub account); when `origin/<base>` moved (another PR landed), `git merge origin/<base>`, re-run tests and commit, so the reviewers and the gate see the merged tree rather than a conflict on the files every change touches. Every round passes `--full`, so a merged base is read with the change, never as part of it.
 
-Round 1 is the first saved round. `done` → the mutation pass (`references/mutation.md`), then § 5 Live, then Gate. `open` → Make, then the next round. An incomplete round is not saved and does not count: run it again once as it is.
+Round 1 is the first saved round of this run (`references/review.md` § 1 clears any older state). `done` → the mutation pass (`references/mutation.md`), then § 5 Live, then Gate. `open` → Make, then the next round. An incomplete round is not saved and does not count: run it again once as it is.
 
-**Stop `stuck`**, listing the open ids and the last report path, when: round 5 ends `open`; two consecutive saved rounds do not improve the pair (open blockers, open actions), as `references/review.md` § 5 defines it (two rounds without progress); two rounds in a row end `incomplete`; or `stderr.log` shows a 429 that names a reset time. Do not open a "good enough" PR as if it were clean: the `stuck` path in `SKILL.md` § Stops opens the draft with the open findings on its receipt.
+Any commit after `done` (a mutation survivor's test, a live fix, a base merge) is followed by another round before Gate; it counts toward the cap, and the mutation pass is not repeated. The tip that ships is the head of a `done` verdict, and the receipt's last `rounds:` entry is that round.
+
+**Stop `stuck`**, listing the open ids and the last report path, when: round 5 ends `open`; two consecutive saved rounds do not improve the pair (open blockers, open actions), as `references/review.md` § 5 defines it (two rounds without progress); two rounds in a row end `incomplete`; or an incomplete round's `reviewers_failed[].reason` names a usage limit (`references/review.md` § 3). Do not open a "good enough" PR as if it were clean: the `stuck` path in `SKILL.md` § Stops opens the draft with the open findings on its receipt.
 
 ## 5. Live
 

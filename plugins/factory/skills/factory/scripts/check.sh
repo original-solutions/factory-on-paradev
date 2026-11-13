@@ -82,15 +82,19 @@ fi
 for needle in 'python3 -P -m review_gate review' '--maker-model' '--full' '--format json' '--out .factory/review/round-' \
   'REVIEW_GATE_V2_HOME' 'Never fall back to a self-run review' 'nohup' 'for i in 1 2 3 4' \
   '`verdict.head` must equal' 'the pair (open blockers, open actions)' 'A run never calls `settle` on its own word' \
-  'review_gate settle <id> --reason "instructor' 'references/mutation.md' 'rm -rf .factory/review/round-<n>' '.personas.failed'; do
+  'review_gate settle <id> --reason "instructor' 'references/mutation.md' 'rm -rf .factory/review/round-<n>' '.personas.failed' \
+  '.factory/rg-home' 'no `verdict.json` beside it' 'review/$(git branch --show-current' 'already names the tip' 'kill -0' '60 minutes'; do
   grep -qF -- "$needle" references/review.md || { echo "references/review.md: no $needle"; exit 1; }
 done
 if grep -qE 'dispatch|packet|seat|panel|blind-reader|traceability' references/review.md; then
   echo "references/review.md: still describes the skill's own panel"; exit 1
 fi
+# The limit stop reads the verdict's failed reviewers, not stderr, which the CLI never writes failures to.
+grep -E 'reviewers_failed.*reason.*(429|limit|reset)|reason.*(429|limit|reset).*reviewers_failed' references/review.md >/dev/null || { echo "references/review.md: the limit stop does not read reviewers_failed[].reason"; exit 1; }
+if grep -qE '429 in `stderr.log`' references/review.md references/check.md; then echo "the limit stop still reads stderr.log"; exit 1; fi
 # Check: a loop of review-gate rounds, with the stops that end it.
 for needle in 'review round' 'round == 5' 'two rounds without progress' '`git merge origin/<base>`' \
-  'references/mutation.md' 'a 429' 'An incomplete round is not saved'; do
+  'references/mutation.md' 'An incomplete round is not saved' 'Any commit after `done`' 'counts toward the cap'; do
   grep -qF -- "$needle" references/check.md || { echo "references/check.md: no $needle"; exit 1; }
 done
 if grep -qiE 'cycle|panel|checker model' references/check.md; then
