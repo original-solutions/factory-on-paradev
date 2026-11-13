@@ -1,6 +1,6 @@
 # Commits
 
-Load at Make, after each Check-fix cycle, and at Ship.
+Load at Make, after each Check fix round, and at Ship.
 
 The branch is the audit log. Do not wait for Ship to make the first commit. Do not squash Make or Check commits.
 

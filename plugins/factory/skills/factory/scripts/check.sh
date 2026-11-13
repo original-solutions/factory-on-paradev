@@ -73,20 +73,49 @@ done
 for path in references/receipt.md references/ship.md references/review.md references/isolate.md; do
   grep -qF -- '.factory/' "$path" || { echo "$path: does not point at .factory/"; exit 1; }
 done
-if grep -HE '/tmp|\$TMPDIR|temp dir|tempfile' SKILL.md references/reviewers/*.md \
+if grep -HE '/tmp|\$TMPDIR|temp dir|tempfile' SKILL.md \
   $(ls references/*.md | grep -v field-lessons) | grep -vE 'never (in|into|under) |Nothing of a run goes under '; then
   echo "a skill file names /tmp, \$TMPDIR or a temp dir outside a never rule"; exit 1
 fi
 
-# Review: a gate call, an independent blind reader, a finding that states its failure, and a stop on no progress.
-for needle in '## 1. Gate call' '`blind-reader`' '`traceability`' 'scenario:' 'No scenario, no site, no evidence' \
-  'Two consecutive cycles that do not improve' 'A blocker is never settled by a run' 'references/reviewers/mutation.md'; do
+# Review: the review-gate-v2 CLI is the grader. The session runs it, reads verdict.json, never grades or settles itself.
+for needle in 'python3 -P -m review_gate review' '--maker-model' '--full' '--format json' '--out .factory/review/round-' \
+  'REVIEW_GATE_V2_HOME' 'Never fall back to a self-run review' 'nohup' 'for i in 1 2 3 4' \
+  '`verdict.head` must equal' 'the pair (open blockers, open actions)' 'A run never calls `settle` on its own word' \
+  'review_gate settle <id> --reason "instructor' 'references/mutation.md' 'rm -rf .factory/review/round-<n>' '.personas.failed' \
+  '.factory/rg-home' 'no `verdict.json` beside it' 'review/$(git branch --show-current' 'already names the tip' 'kill -0' '60 minutes'; do
   grep -qF -- "$needle" references/review.md || { echo "references/review.md: no $needle"; exit 1; }
 done
-for seat in correctness blind-reader traceability testing security api-contract reliability maintainability docs adversarial mutation; do
-  [ -f "references/reviewers/$seat.md" ] || { echo "references/reviewers/$seat.md: missing"; exit 1; }
+if grep -qE 'dispatch|packet|seat|panel|blind-reader|traceability' references/review.md; then
+  echo "references/review.md: still describes the skill's own panel"; exit 1
+fi
+# The limit stop reads the verdict's failed reviewers, not stderr, which the CLI never writes failures to.
+grep -E 'reviewers_failed.*reason.*(429|limit|reset)|reason.*(429|limit|reset).*reviewers_failed' references/review.md >/dev/null || { echo "references/review.md: the limit stop does not read reviewers_failed[].reason"; exit 1; }
+if grep -qE '429 in `stderr.log`' references/review.md references/check.md; then echo "the limit stop still reads stderr.log"; exit 1; fi
+# Check: a loop of review-gate rounds, with the stops that end it.
+for needle in 'review round' 'round == 5' 'two rounds without progress' '`git merge origin/<base>`' \
+  'references/mutation.md' 'An incomplete round is not saved' 'Any commit after `done`' 'counts toward the cap'; do
+  grep -qF -- "$needle" references/check.md || { echo "references/check.md: no $needle"; exit 1; }
 done
-grep -qF -- 'no issue, no contract, no commit messages' references/reviewers/blind-reader.md || { echo "references/reviewers/blind-reader.md: the blind reader is told the story"; exit 1; }
+if grep -qiE 'cycle|panel|checker model' references/check.md; then
+  echo "references/check.md: still speaks of cycles or a panel"; exit 1
+fi
+# The rest of the skill speaks of review-gate rounds, not the panel's cycles.
+grep -qF -- 'review-gate-v2' SKILL.md || { echo "SKILL.md: the description does not name review-gate-v2"; exit 1; }
+if grep -n -iE 'persona-review|review cycle|cycles|a panel|checker model' SKILL.md references/make.md references/weight.md references/models.md references/receipt.md | grep -v 'references/field-lessons.md'; then
+  echo "a skill file still speaks of cycles, a panel or persona review"; exit 1
+fi
+for needle in '- rounds: n' '- open: none' '- report:' '- reviewers: review-gate-v2' '- incomplete: none'; do
+  grep -qF -- "$needle" references/receipt.md || { echo "references/receipt.md: no $needle"; exit 1; }
+done
+grep -qF -- 'the mutation pass' references/models.md || { echo "references/models.md: the checker is not scoped to the mutation pass"; exit 1; }
+# The mutation pass is the one brief the skill keeps; review-gate reads code and this pass executes it.
+[ -f references/mutation.md ] || { echo "references/mutation.md: missing"; exit 1; }
+[ ! -d references/reviewers ] || { echo "references/reviewers/: the skill's own panel briefs are still here"; exit 1; }
+for needle in 'At most 12 mutants' '20 minutes' 'detached worktree' 'git checkout -- <path>' \
+  'Never the whole suite' 'mutation: killed n, survived n, unreached n' 'the test that should have failed'; do
+  grep -qF -- "$needle" references/mutation.md || { echo "references/mutation.md: no $needle"; exit 1; }
+done
 grep -qF -- '- settled:' references/receipt.md || { echo "references/receipt.md: no settled line under Review"; exit 1; }
 # GitHub account: pick by write access, fall back to another login without switching, and stop naming every login's orgs.
 for needle in '## GitHub account' 'gh api repos/<owner/repo> --jq .permissions.push' 'GH_TOKEN=$(gh auth token --user <login>)' \
@@ -100,7 +129,7 @@ done
 grep -qF -- '- account: <login>' references/receipt.md || { echo "references/receipt.md: no account line under Gate"; exit 1; }
 
 missing=0
-for path in $(grep -ohE 'references/[A-Za-z0-9_./-]+\.md' SKILL.md references/*.md references/reviewers/*.md | sort -u); do
+for path in $(grep -ohE 'references/[A-Za-z0-9_./-]+\.md' SKILL.md references/*.md | sort -u); do
   [ -f "$path" ] || { echo "missing: $path"; missing=1; }
 done
 exit "$missing"

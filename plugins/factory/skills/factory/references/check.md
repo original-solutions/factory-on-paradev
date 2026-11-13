@@ -4,35 +4,37 @@ Load at step 5. This is a loop, not a report.
 
 ```text
 tests green
-  → review cycle (gate call → panel → collect → decide)
-      → score 5 → mutation pass → live → Gate
-      → findings → Make → tests → commit → review cycle
-until: score 5 | cycle == 5 | two cycles without progress
+  → review round (references/review.md: run the CLI → read verdict.json)
+      → done → mutation pass → live → Gate
+      → open → Make → tests → commit → review round
+until: done | round == 5 | two rounds without progress | two incomplete rounds in a row | reviewers failed on a usage limit
 ```
 
 ## 1. Tests
 
-Run the contract `test:` command from the worktree. Red → Make (counts toward Make's 3-strike, not the review cycle). One unexplained failure in many runs is red too: find the cause (a parallel test, an inherited handle, a timing bound) and prove the fix with 30 or more consecutive green runs at the tip.
+Run the contract `test:` command from the worktree. Red → Make (counts toward Make's 3-strike, not the review rounds). One unexplained failure in many runs is red too: find the cause (a parallel test, an inherited handle, a timing bound) and prove the fix with 30 or more consecutive green runs at the tip.
 
-**S mechanical:** green (or no tests needed, say why) → Gate. No panel.
+**S mechanical:** green (or no tests needed, say why) → Gate. No review round.
 
 ## 2. Review (M/L)
 
-Load `references/review.md` and run one cycle on the tip. Checker model: `references/models.md`.
+Load `references/review.md` and run one round on the tip. The reviewers' model is the CLI's choice, steered off the maker's family by `--maker-model` (`references/models.md`).
 
 ## 3. Feed into Make
 
-The cycle's open blockers and actions, with their ids, are the next Make contract. Blockers cannot be skipped. Re-run tests.
+The round's open blockers and actions, with their ids, are the next Make contract. Blockers cannot be skipped. Re-run tests.
 
-When that Make is green, commit the cycle (`references/commits.md`, `fix:`) **before** the next cycle. Reviewers re-check the tip that includes the fixes; a finding is fixed when its reviewer says so, not when the maker does.
+When that Make is green, commit the round's fixes (`references/commits.md`, `fix:`) **before** the next round. The next round re-reads the whole diff at the tip that includes the fixes; a finding is fixed when its id is gone from the verdict, not when the maker says so.
 
-## 4. Cycle
+## 4. Round
 
-Before each cycle, `git fetch origin`; when `origin/<base>` moved (another PR landed), `git merge origin/<base>`, re-run tests and commit, so reviewers and the gate see the merged tree rather than a conflict on the files every change touches. The fetch runs as `SKILL.md` § GitHub account says when Read picked a login other than the active one.
+Before each round, `git fetch origin` (`SKILL.md` § GitHub account); when `origin/<base>` moved (another PR landed), `git merge origin/<base>`, re-run tests and commit, so the reviewers and the gate see the merged tree rather than a conflict on the files every change touches. Every round passes `--full`, so a merged base is read with the change, never as part of it.
 
-Cycle starts at 1 after the first review. Score 5 → the mutation pass (`references/review.md` § 6), then § 5 Live, then Gate. Else review again.
+Round 1 is the first saved round of this run (`references/review.md` § 1 clears any older state). `done` → the mutation pass (`references/mutation.md`), then § 5 Live, then Gate. `open` → Make, then the next round. An incomplete round is not saved and does not count: run it again once as it is.
 
-**Max 5**, or two consecutive cycles without progress (`references/review.md` § 5): stop `stuck` and list the leftovers. Do not open a "good enough" PR as if it were clean.
+Any commit after `done` (a mutation survivor's test, a live fix, a base merge) is followed by another round before Gate; it counts toward the cap, and the mutation pass is not repeated. The tip that ships is the head of a `done` verdict, and the receipt's last `rounds:` entry is that round.
+
+**Stop `stuck`**, listing the open ids and the last report path, when: round 5 ends `open`; two consecutive saved rounds do not improve the pair (open blockers, open actions), as `references/review.md` § 5 defines it (two rounds without progress); two rounds in a row end `incomplete`; or an incomplete round's `reviewers_failed[].reason` names a usage limit (`references/review.md` § 3). Do not open a "good enough" PR as if it were clean: the `stuck` path in `SKILL.md` § Stops opens the draft with the open findings on its receipt.
 
 ## 5. Live
 
@@ -40,6 +42,6 @@ An acceptance criterion with no test (docs, visual): verify it yourself and note
 
 A UI or API criterion: run it once through its real entry point with data shaped like the contract's own examples, from a detached worktree at the tip. Whatever breaks becomes a failing test first, then Make.
 
-A reviewer's note that nothing in the repo shows what an outside system returns for a repeated call is a live check, not a nit: makers and reviewers only have fakes. Call it twice against the real system before the fix cycle closes and give the maker the exact responses.
+A reviewer's note that nothing in the repo shows what an outside system returns for a repeated call is a live check, not a nit: makers and reviewers only have fakes. Call it twice against the real system before the fix round closes and give the maker the exact responses.
 
 Receipt fields: `references/receipt.md` § Review.

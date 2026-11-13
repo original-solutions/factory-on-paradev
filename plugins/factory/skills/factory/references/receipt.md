@@ -31,24 +31,25 @@ Closes #<n>
 
 ## Models
 - maker: <id>
-- checker: <id> | default (peer unavailable)
+- checker: <id> | default (peer unavailable)   (the mutation pass)
+- reviewers: review-gate-v2, --maker-model <maker id>
 
 ## Review
-- door: one-way | two-way — <reason>
-- risk: high | low — <reason>
-- cycles: n — cycle 1: <score>/5 (b/a) → cycle n: <score>/5 (b/a)
-- fixed: …
-- settled: none | <id> — <reason>
-- dropped: none | <seat>: n
-- incomplete: none | <seat>
+- door: one-way | two-way — <reason from the last verdict>
+- risk: high | low — <reason from the last verdict>
+- rounds: n — round 1: <score>/5 (b/a) → round n: <score>/5 (b/a)
+- fixed: none | <id>, <id>
+- open: none | <id> <severity> — <title>; <one line why it is still open>
+- settled: none | <id> — instructor <login>: <reason>
+- incomplete: none | round <n>: <reviewer>, <reviewer>
 - mutation: skipped (<reason>) | killed n, survived n, unreached n
-- leftovers: none | list (non-blockers only)
+- report: .factory/review/round-<n>/report.md (removed with the worktree; the rounds above are the record)
 
 ## Lessons
 - none | **<title>.** Symptom: … Cause: … Default: …
 
 ## Commits
-- `<sha>` `<subject>` — Make slice | Check cycle n | Ship leftover
+- `<sha>` `<subject>` — Make slice | Check round n | Ship leftover
 
 ## Files
 - path — why
