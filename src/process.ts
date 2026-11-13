@@ -6,6 +6,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 
 /**
@@ -80,6 +81,12 @@ export interface RunInput {
    * server. A process already nicer keeps its own. Unset: the server's priority.
    */
   readonly niceness?: number;
+  /**
+   * Append every stdout and stderr chunk to this file as it arrives, besides keeping the tails.
+   * The file is made if it is missing. Logging never changes the result: a file that cannot be
+   * opened is one warning, and one that fails to write stops being written.
+   */
+  readonly logFile?: string;
 }
 
 export interface RunResult {
@@ -203,6 +210,41 @@ const run = Effect.fn("FactoryProcess.run")(function* (input: RunInput) {
     ? ["-c", `${merge}${hold}${input.command}`, ...args]
     : ["-c", `${merge}${hold}exec "$0" "$@"`, input.command, ...args];
 
+  // Opened once, in append mode. A failed open is a warning and the command runs without a log.
+  let logFd: number | null = null;
+  if (input.logFile !== undefined) {
+    const opened = yield* Effect.try({
+      try: () => NodeFS.openSync(input.logFile!, "a", 0o600),
+      catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
+    }).pipe(
+      Effect.catch((message) =>
+        Effect.logWarning(`could not open the log file ${input.logFile}: ${message}`).pipe(
+          Effect.as(null),
+        ),
+      ),
+    );
+    logFd = opened;
+  }
+  // Synchronous, so lines land in the order they arrive. A failed write ends the log.
+  const writeLog = (chunk: Buffer): void => {
+    if (logFd === null) return;
+    try {
+      NodeFS.writeSync(logFd, chunk);
+    } catch {
+      closeLog();
+    }
+  };
+  const closeLog = (): void => {
+    const fd = logFd;
+    logFd = null;
+    if (fd === null) return;
+    try {
+      NodeFS.closeSync(fd);
+    } catch {
+      // Nothing to do about a log that will not close.
+    }
+  };
+
   const exited = Deferred.makeUnsafe<
     readonly [number | null, NodeJS.Signals | null],
     RunSpawnError
@@ -230,16 +272,26 @@ const run = Effect.fn("FactoryProcess.run")(function* (input: RunInput) {
       child.once("exit", (code, signal) =>
         Deferred.doneUnsafe(exited, Exit.succeed([code, signal] as const)),
       );
-      child.stdout?.on("data", (chunk: Buffer) => tail.push(chunk));
+      child.stdout?.on("data", (chunk: Buffer) => {
+        tail.push(chunk);
+        writeLog(chunk);
+      });
       child.stdout?.once("close", () => Deferred.doneUnsafe(closed, Exit.void));
       // No stdout (spawn failed): nothing to drain.
       if (!child.stdout) Deferred.doneUnsafe(closed, Exit.void);
-      child.stderr?.on("data", (chunk: Buffer) => stderrTail.push(chunk));
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderrTail.push(chunk);
+        writeLog(chunk);
+      });
       child.stderr?.once("close", () => Deferred.doneUnsafe(stderrClosed, Exit.void));
       if (!child.stderr) Deferred.doneUnsafe(stderrClosed, Exit.void);
       return child;
     },
-    catch: spawnError,
+    // Release does not run when acquire fails, so the log is closed here.
+    catch: (cause) => {
+      closeLog();
+      return spawnError(cause);
+    },
   });
 
   // Signals the group, and the leader too in case it left the group (softfac's kill_all).
@@ -265,6 +317,7 @@ const run = Effect.fn("FactoryProcess.run")(function* (input: RunInput) {
       child.stdin?.destroy();
       child.stdout?.destroy();
       child.stderr?.destroy();
+      closeLog();
     });
 
   // Lowers the wrapper's priority, then lets it go on. Failing to lower it only costs the
