@@ -1,0 +1,11 @@
+[
+  {
+    "agent": "claude",
+    "kind": "api_key",
+    "baseUrl": "https://<proxy host>:10000",
+    "provider": null,
+    "accountLabel": null,
+    "lastValidatedAt": "2026-11-13T10:07:21.818Z",
+    "updatedAt": "2026-11-13T10:07:21.835Z"
+  }
+]

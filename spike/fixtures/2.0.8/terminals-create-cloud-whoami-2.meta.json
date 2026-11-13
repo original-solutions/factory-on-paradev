@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "terminals",
+    "create",
+    "--host",
+    "cloud",
+    "--workspace",
+    "a2bc69cb-10d6-4c73-adf9-a9efae0372a2",
+    "--command",
+    "gh auth status 2>&1 | sed -E 's/(gho_|ghs_|ghp_)[A-Za-z0-9_]+/<redacted>/g'; gh api repos/original-solutions/factory-paradev-spike --jq .permissions; env | grep -E '^(GH_|GITHUB_|ANTHROPIC_|CLAUDE_|SUPERSET_)' | sed -E 's/=.*/=<set>/' | sort; whoami; uname -a; node --version; which claude gh git; echo WHOAMI2-END",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794564564168,
+  "durationMs": 605,
+  "stderr": ""
+}

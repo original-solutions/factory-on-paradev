@@ -1,0 +1,19 @@
+{
+  "workspaces": [
+    {
+      "id": "b4b0e881-16c4-48b5-afbc-dc146d7fee7f",
+      "name": "workspace",
+      "project": "project",
+      "branch": "superset/fac-6-range-b4b0e881",
+      "terminals": [
+        {
+          "id": "abcd1342-7f2e-4650-8548-ef86eb4dacf2",
+          "title": null,
+          "agent": null
+        }
+      ],
+      "layout": null,
+      "layoutError": null
+    }
+  ]
+}

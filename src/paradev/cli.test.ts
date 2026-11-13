@@ -119,7 +119,6 @@ const UNSEEN: ReadonlyArray<readonly [string, CliErrorKind]> = [
   ["Could not connect to API", "TRANSIENT"],
   ["Needs the Pro plan", "PARADEV_PLAN"],
   ["No agent is running in terminal 7f3c", "AGENT_EXITED"],
-  ["No transcript for that terminal", "NO_TRANSCRIPT"],
   ["Something new went wrong", "UNKNOWN"],
 ];
 

@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "workspaces",
+    "list",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794564482306,
+  "durationMs": 1214,
+  "stderr": ""
+}

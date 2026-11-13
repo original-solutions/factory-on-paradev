@@ -1,0 +1,18 @@
+{
+  "id": "b4b0e881-16c4-48b5-afbc-dc146d7fee7f",
+  "name": "fac #6 range",
+  "branch": "superset/fac-6-range-b4b0e881",
+  "status": "deleted",
+  "visibility": "org",
+  "agentStatus": "working",
+  "description": null,
+  "environmentId": "edad9805-e48d-40f3-a06c-e19a4105f974",
+  "createdByUserId": "8bccd4e3-aa91-4913-afe4-cb4dce8edfbf",
+  "createdAt": "2026-11-13T10:11:41.041Z",
+  "archivedAt": "2026-11-13T10:18:31.947Z",
+  "repositories": "original-solutions/factory-paradev-spike",
+  "tasks": null,
+  "labels": null,
+  "url": "superset://v2-workspace/b4b0e881-16c4-48b5-afbc-dc146d7fee7f",
+  "webUrl": "https://app.superset.sh/workspaces/b4b0e881-16c4-48b5-afbc-dc146d7fee7f"
+}

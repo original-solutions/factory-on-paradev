@@ -344,10 +344,11 @@ The CLI error "No transcript for that terminal" gives `null`. The adapter reads 
 | `Host service for this machine isn't running` (seen, L5a), `Host service manifest is stale` | `PARADEV_OFFLINE` | The pass holds claims and their resumes (`paradev-offline`). Running builds are left as they are. Attention item after three passes |
 | `Not logged in` (seen), `No active organization` | `PARADEV_SIGNED_OUT` | As offline, with its own attention text naming `superset auth login` |
 | `Workspace not found on host ...` (seen, X10) | `NOT_FOUND` | `ThreadNotFoundError` in `status` and `thread`; archived in `archive` |
+| `Terminal session "..." has ended` (seen, C5: a terminal the cloud box opened after a wake and closed again) | `NOT_FOUND` | The thread's current terminal is gone: `send` resumes, as when the snapshot no longer lists it |
 | `Could not connect to API` | `TRANSIENT` | One retry, then `SessionsError` |
 | `Needs the ... plan` | `PARADEV_PLAN` | `SessionsError`; attention item naming the plan |
 | `No agent is running in terminal ...` | `AGENT_EXITED` | Treated as `exited` |
-| `No transcript for that terminal` | `NO_TRANSCRIPT` | `lastAssistantMessage: null` |
+| `No transcript for that terminal` (seen, C5) | `NO_TRANSCRIPT` | `lastAssistantMessage: null` |
 | `A stored value is at most 65536 bytes` (seen, X4) | `TOO_LARGE` | Belt writer only: a warning in the log |
 | Our timeout | `TIMEOUT` | `SessionsError` |
 | Anything else | `UNKNOWN` | `SessionsError` with the message |
@@ -618,7 +619,7 @@ From `spike/RESULTS.md` in factory-on-paradev, local runs on 2026-11-10 and 2026
 | `agents list --local` | `claude` runs `claude --dangerously-skip-permissions`, prompt as an argument. No model ids are listed | `paradev.model` is optional |
 | stderr | `Host service … isn't running`, `Not logged in`, `Workspace not found on host …`, `A stored value is at most 65536 bytes` | the error table |
 
-P2 still needs the host and cloud runs (factory-on-paradev #8 and #9): H1's create time against the relay's 30-second cap, H5, X2, X3, C1 to C6.
+P2 still needs the host run (factory-on-paradev #8): H1's create time against the relay's 30-second cap, H5, X2. The cloud run (#9, 2026-11-13) settled X3 and C1 to C6: see the Cloud column of `spike/RESULTS.md`.
 
 ## Assumptions
 

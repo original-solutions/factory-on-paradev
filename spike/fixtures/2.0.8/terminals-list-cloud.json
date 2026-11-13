@@ -1,0 +1,14 @@
+{
+  "sessions": [
+    {
+      "terminalId": "c66509a3-aea9-40f5-b34d-f9a40170963e",
+      "workspaceId": "a2bc69cb-10d6-4c73-adf9-a9efae0372a2",
+      "createdAt": 1794564487954,
+      "exited": false,
+      "exitCode": 0,
+      "attached": false,
+      "title": "◐ Claude Code",
+      "customTitle": null
+    }
+  ]
+}

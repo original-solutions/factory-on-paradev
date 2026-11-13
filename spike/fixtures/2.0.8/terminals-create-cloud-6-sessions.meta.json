@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "terminals",
+    "create",
+    "--host",
+    "cloud",
+    "--workspace",
+    "b4b0e881-16c4-48b5-afbc-dc146d7fee7f",
+    "--command",
+    "echo WP=$SUPERSET_WORKSPACE_PATH; ls -t ~/.claude/projects/*/*.jsonl 2>/dev/null | head -3; pgrep -x claude || echo NO-CLAUDE-PROCESS; git -C $SUPERSET_WORKSPACE_PATH status --short | head -5; git -C $SUPERSET_WORKSPACE_PATH log --oneline -3; echo SESS-END",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794565033721,
+  "durationMs": 610,
+  "stderr": ""
+}

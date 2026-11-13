@@ -1,0 +1,6 @@
+{
+  "terminalId": "7bb90817-3f07-4ca5-bf7f-6a0d42811054",
+  "cols": 120,
+  "rows": 32,
+  "text": "\u276f gh api user --jq .login; git config user.email; git remote -v; echo WHOAMI-END\n{\n  \"message\": \"Resource not accessible by integration\",\n  \"documentation_url\": \"https://docs.github.com/rest/users/users#get-the-authenticated-user\",\n  \"status\": \"403\"\n}\ngh: Resource not accessible by integration (HTTP 403)\nredacted@example.com\norigin  https://github.com/original-solutions/factory-paradev-spike.git (fetch)\norigin  https://github.com/original-solutions/factory-paradev-spike.git (push)\nWHOAMI-END\n\u276f "
+}

@@ -1,0 +1,14 @@
+{
+  "sessions": [
+    {
+      "terminalId": "abcd1342-7f2e-4650-8548-ef86eb4dacf2",
+      "workspaceId": "b4b0e881-16c4-48b5-afbc-dc146d7fee7f",
+      "createdAt": 1794564839168,
+      "exited": false,
+      "exitCode": 0,
+      "attached": false,
+      "title": null,
+      "customTitle": null
+    }
+  ]
+}

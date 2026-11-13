@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "terminals",
+    "wait",
+    "--host",
+    "cloud",
+    "--workspace",
+    "c8f29e4f-86aa-4e6f-83cb-301a9d0460f4",
+    "--terminal",
+    "506a60d3-6dd2-4c12-b67d-dfd20151f16f",
+    "--match",
+    "FACTORY-GATE-EXIT=[0-9]+",
+    "--timeout",
+    "600",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794564618726,
+  "durationMs": 1094,
+  "stderr": ""
+}

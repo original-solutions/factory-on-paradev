@@ -1,0 +1,42 @@
+{
+  "id": "a2bc69cb-10d6-4c73-adf9-a9efae0372a2",
+  "organizationId": "fef625a4-1dbc-451b-b0e1-1c285c61a68e",
+  "name": "fac #3 divide",
+  "branch": "superset/fac-3-divide-a2bc69cb",
+  "baseBranch": "main",
+  "provider": "vercel",
+  "providerSandboxId": "ws-a2bc69cb10d64c73adf9a9ef",
+  "sandboxUrl": null,
+  "status": "provisioning",
+  "visibility": "org",
+  "environmentId": "edad9805-e48d-40f3-a06c-e19a4105f974",
+  "hostVersion": null,
+  "bootAgentCredentialDigest": null,
+  "agentStatus": null,
+  "agentStatusAt": null,
+  "prompt": "/factory original-solutions/factory-paradev-spike#3\n\nThe factory launched this session unattended, in a workspace it created for you. Nobody is in the chat. The factory owns the issue's labels and comments and runs its own gate after your draft PR.",
+  "description": null,
+  "projectId": null,
+  "deletedAt": null,
+  "usageStopAt": null,
+  "machineSize": "small",
+  "createdByUserId": "8bccd4e3-aa91-4913-afe4-cb4dce8edfbf",
+  "createdAt": "2026-11-13T10:07:49.822Z",
+  "updatedAt": "2026-11-13T10:07:49.822Z",
+  "initialLaunch": {
+    "agent": "claude",
+    "surface": "terminal",
+    "promptHash": "b9574f2953f1058a954d356cc0835afb94348973e16fa6a0f3bf4a8ccb49d7c5",
+    "terminalId": null
+  },
+  "createdBy": {
+    "userId": "8bccd4e3-aa91-4913-afe4-cb4dce8edfbf",
+    "name": "Tom",
+    "image": "https://avatars.githubusercontent.com/u/330738380?v=4"
+  },
+  "presence": [],
+  "tags": [],
+  "skippedChats": [],
+  "url": "superset://v2-workspace/a2bc69cb-10d6-4c73-adf9-a9efae0372a2",
+  "webUrl": "https://app.superset.sh/workspaces/a2bc69cb-10d6-4c73-adf9-a9efae0372a2"
+}

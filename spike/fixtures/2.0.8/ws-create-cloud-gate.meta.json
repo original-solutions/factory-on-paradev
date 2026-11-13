@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "workspaces",
+    "create",
+    "--host",
+    "cloud",
+    "--environment",
+    "edad9805-e48d-40f3-a06c-e19a4105f974",
+    "--machine-size",
+    "small",
+    "--name",
+    "fac gate probe",
+    "--base-branch",
+    "main",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794564592670,
+  "durationMs": 1896,
+  "stderr": ""
+}

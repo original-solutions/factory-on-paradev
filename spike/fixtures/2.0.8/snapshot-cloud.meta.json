@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "snapshot",
+    "--host",
+    "cloud",
+    "--workspace",
+    "a2bc69cb-10d6-4c73-adf9-a9efae0372a2",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794564510113,
+  "durationMs": 1378,
+  "stderr": ""
+}
