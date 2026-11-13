@@ -829,35 +829,46 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   }, (effect) => effect.pipe(Effect.mapError(failWith("last-activity"))));
 
   // `call`, not `callWithRetry`: a second create would open a second terminal.
-  const showGateLog = (threadId: string, attempt: number, logPath: string): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      const workspaceId = workspaceIdOf(threadId);
-      const record = workspaceId === null ? null : yield* local(readThread(dataDir, workspaceId));
-      // An archived workspace has nowhere to show it.
-      if (record === null || record.archivedAt !== null) return;
-      if (record.gateLogAttempts?.includes(attempt) === true) return;
-      yield* call(
-        cli,
-        [
-          "terminals",
-          "create",
-          "--local",
-          "--workspace",
-          record.workspaceId,
-          "--command",
-          `tail -n +1 -F ${shellWord(logPath)}`,
-        ],
-        30_000,
-      );
-      // Read again: a send that saved meanwhile must not be overwritten.
-      const fresh = (yield* local(readThread(dataDir, record.workspaceId))) ?? record;
-      yield* save({ ...fresh, gateLogAttempts: [...(fresh.gateLogAttempts ?? []), attempt] });
-    }).pipe(
-      Effect.catch((error: { readonly message?: string }) =>
-        Effect.logWarning(
-          `could not show gate attempt ${attempt} of ${threadId}: ${error.message ?? String(error)}`,
+  const showGateLog: (threadId: string, attempt: number, logPath: string) => Effect.Effect<void> =
+    Effect.fn("ParadevSessions.showGateLog")(
+      function* (threadId: string, attempt: number, logPath: string) {
+        const workspaceId = workspaceIdOf(threadId);
+        const record = workspaceId === null ? null : yield* local(readThread(dataDir, workspaceId));
+        // An archived workspace has nowhere to show it.
+        if (record === null || record.archivedAt !== null) return;
+        if (record.gateLogAttempts?.includes(attempt) === true) return;
+        yield* call(
+          cli,
+          [
+            "terminals",
+            "create",
+            "--local",
+            "--workspace",
+            record.workspaceId,
+            "--command",
+            `tail -n +1 -F ${shellWord(logPath)}`,
+          ],
+          30_000,
+        ).pipe(
+          // Only the exit code counts: the CLI raises PARADEV_SHAPE after exit 0 when stdout is
+          // not JSON or is over its cap, and the terminal exists all the same.
+          Effect.catchIf(
+            (error) => error.kind === "PARADEV_SHAPE",
+            () => Effect.void,
+          ),
+        );
+        // Read again: a send that saved meanwhile must not be overwritten.
+        const fresh = (yield* local(readThread(dataDir, record.workspaceId))) ?? record;
+        yield* save({ ...fresh, gateLogAttempts: [...(fresh.gateLogAttempts ?? []), attempt] });
+      },
+      (effect, threadId, attempt) =>
+        effect.pipe(
+          Effect.catch((error: { readonly message?: string }) =>
+            Effect.logWarning(
+              `could not show gate attempt ${attempt} of ${threadId}: ${error.message ?? String(error)}`,
+            ),
+          ),
         ),
-      ),
     );
 
   const worktreesDirectory = Effect.fn("ParadevSessions.worktreesDirectory")(function* (defaultDir: string) {

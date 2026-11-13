@@ -159,18 +159,18 @@ const codeSpan = (line: string): string => {
   return `${ticks}${pad}${line}${pad}${ticks}`;
 };
 
-/**
- * The comment for a pull request whose gate ended with `verdict`. `headSha` is the commit the gate
- * ran on and `baseSha` the tip of the base branch it was merged with. The commands are config
- * text, so each is cleaned like the gate's own command line, then put in a code span nothing can
- * leave.
- */
 /** `durationMs` in seconds with one decimal, rounded to the nearest tenth: `12.3`. */
 const seconds = (durationMs: number): string => {
   const tenths = Math.floor((durationMs + 50) / 100);
   return `${Math.floor(tenths / 10)}.${tenths % 10}`;
 };
 
+/**
+ * The comment for a pull request whose gate ended with `verdict`. `headSha` is the commit the gate
+ * ran on and `baseSha` the tip of the base branch it was merged with. The commands are config
+ * text, so each is cleaned like the gate's own command line, then put in a code span nothing can
+ * leave.
+ */
 const resultsComment = (
   verdict: string,
   results: ReadonlyArray<CommandResult>,
@@ -921,13 +921,6 @@ const runGate = (runner: Runner, input: GateInput): Effect.Effect<GateResult, Ga
               );
             const ended = yield* Clock.currentTimeMillis;
             const timeoutMs = options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
-            const took = seconds(Math.max(0, ended - started));
-            appendLog(
-              logFile,
-              `${ran.tail !== "" && !ran.tail.endsWith("\n") ? "\n" : ""}${
-                ran.timedOut ? `timed out after ${took} s` : `exit ${ran.exitCode ?? -1} after ${took} s`
-              }\n`,
-            );
             const result: CommandResult = {
               command,
               exitCode: ran.timedOut || ran.exitCode === null ? -1 : ran.exitCode,
@@ -937,15 +930,26 @@ const runGate = (runner: Runner, input: GateInput): Effect.Effect<GateResult, Ga
               ...(ran.timedOut && { timeoutMs }),
               ...(ran.truncated && { truncated: true }),
             };
+            // Streams are merged for gate commands, so the tail covers both.
+            const newline = ran.tail !== "" && !ran.tail.endsWith("\n") ? "\n" : "";
+            const took = seconds(result.durationMs);
+            appendLog(
+              logFile,
+              `${newline}${
+                result.timedOut ? `timed out after ${took} s` : `exit ${result.exitCode} after ${took} s`
+              }\n`,
+            );
             commands.push(result);
             if (!provision) gateCount += 1;
             if (result.exitCode !== 0 || result.timedOut) {
-              appendLog(logFile, `gate attempt ${attempt} failed\n`);
-              return yield* record({ _tag: "fail", dir, commands, failure: result, gateCount });
+              return yield* record({ _tag: "fail", dir, commands, failure: result, gateCount }).pipe(
+                Effect.tap(() => Effect.sync(() => appendLog(logFile, `gate attempt ${attempt} failed\n`))),
+              );
             }
           }
-          appendLog(logFile, `gate attempt ${attempt} passed\n`);
-          return yield* record({ _tag: "pass", dir, commands, gateCount });
+          return yield* record({ _tag: "pass", dir, commands, gateCount }).pipe(
+            Effect.tap(() => Effect.sync(() => appendLog(logFile, `gate attempt ${attempt} passed\n`))),
+          );
         });
 
         // How long the attempt took, from the start of its checkout to the end of its last
