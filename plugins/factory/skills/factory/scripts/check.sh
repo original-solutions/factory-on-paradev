@@ -95,9 +95,12 @@ for needle in '## GitHub account' 'gh api repos/<owner/repo> --jq .permissions.p
   grep -qF -- "$needle" SKILL.md || { echo "SKILL.md: no $needle"; exit 1; }
 done
 # A GitHub App installation token reads all-false permissions and a 403 from gh api user, yet pushes: a push dry run decides.
-for needle in 'gh api user --jq .login' 'a `permissions` object with `push: false`' '`gh api user` answers 403' \
-  'git push --dry-run origin HEAD:refs/heads/factory-probe-<run id>' 'treat success as push access' \
-  'only a failed dry run stops the run'; do
+# The probe skips hooks, tests the gh login rather than a keychain entry or SSH key, and is for a build's origin only.
+for needle in 'gh api user --jq .login' 'a `permissions` object with `push: false`' \
+  'or `gh api user` answers 403, run `git push --dry-run origin HEAD:refs/heads/factory-probe-<run id> --no-verify`' \
+  'treat success as push access' 'only a failed dry run stops the run' 'A retro, or a repo the run only reads, gets no probe' \
+  "git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push" 'cannot be tested → stop `stuck`' \
+  "The first success picks the run's account"; do
   grep -qF -- "$needle" SKILL.md || { echo "SKILL.md: no $needle"; exit 1; }
 done
 for f in $(grep -lE '(^|[ `(])gh (api|pr|issue|label|run|repo)|git (push|fetch|clone|ls-remote|pull)' references/*.md); do
