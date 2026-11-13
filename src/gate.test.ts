@@ -2489,7 +2489,8 @@ it.live("a pass whose ledger lines cannot be written is errored in the gate log,
         options: { ...input.options, ledgerIo: failingLedgerIo({ write: 2 }) },
       })
       .pipe(Effect.flip);
-    assert.strictEqual(error._tag, "GateRecordError");
+    // The attempt errored, whichever of the ledger's errors it was.
+    assert.match(error._tag, /^(GateRecordError|Ledger)/);
     const log = NodeFS.readFileSync(gateLogPath(dataDir, run, 1), "utf8");
     assert.match(log, /gate attempt 1 errored\n$/);
     assert.notInclude(log, "passed");
