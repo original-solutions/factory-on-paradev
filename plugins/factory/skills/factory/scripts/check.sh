@@ -88,6 +88,14 @@ done
 if grep -qE 'dispatch|packet|seat|panel|blind-reader|traceability' references/review.md; then
   echo "references/review.md: still describes the skill's own panel"; exit 1
 fi
+# Check: a loop of review-gate rounds, with the stops that end it.
+for needle in 'review round' 'round == 5' 'two rounds without progress' '`git merge origin/<base>`' \
+  'references/mutation.md' 'a 429' 'An incomplete round is not saved'; do
+  grep -qF -- "$needle" references/check.md || { echo "references/check.md: no $needle"; exit 1; }
+done
+if grep -qiE 'cycle|panel|checker model' references/check.md; then
+  echo "references/check.md: still speaks of cycles or a panel"; exit 1
+fi
 for seat in correctness blind-reader traceability testing security api-contract reliability maintainability docs adversarial mutation; do
   [ -f "references/reviewers/$seat.md" ] || { echo "references/reviewers/$seat.md: missing"; exit 1; }
 done
