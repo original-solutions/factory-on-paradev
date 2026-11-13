@@ -48,6 +48,7 @@ import {
 } from "./defaultProject.ts";
 import { readLowestFreeSpace, type FreeSpace } from "./disk.ts";
 import { overload, readLoad, type Load } from "./load.ts";
+import { liveSshRunner, type SshRunner } from "./paradev/ssh.ts";
 import * as Gate from "./gate.ts";
 import { guardLogStreams } from "./logStreams.ts";
 import { FactoryGate, clearGateLocks, gateLockFile } from "./gate.ts";
@@ -310,6 +311,8 @@ export interface LiveGate {
   readonly scope: Scope.Scope;
   /** How the machine's load is read. Default `os.loadavg`; a test passes the load it needs. */
   readonly readLoad?: () => Load;
+  /** How a host is read over ssh. Default the `ssh` binary; a test passes the answers it needs. */
+  readonly ssh?: SshRunner;
 }
 
 /** The run's line when its gate, started in the background, has ended. */
@@ -422,6 +425,12 @@ export interface LiveShared {
   readonly cooldowns: Map<string, Cooldown>;
   readonly prunedAt: Map<string, number>;
   readonly paradevHold: { passes: number };
+  /** Failed load reads in a row per host id: see `PassWorld.hostMisses`. */
+  readonly hostMisses: Map<string, number>;
+  /** Each host's load reading this pass: see `PassWorld.hostLoads`. */
+  readonly hostLoads: Map<string, Load | null>;
+  /** Host id to its first failing `hosts check` line, as of the last config load. */
+  readonly hostsNotReady: Map<string, string>;
 }
 
 /** A fresh `LiveShared`, made once per process. */
@@ -435,6 +444,9 @@ export const newShared = (): LiveShared => ({
   cooldowns: new Map(),
   prunedAt: new Map(),
   paradevHold: { passes: 0 },
+  hostMisses: new Map(),
+  hostLoads: new Map(),
+  hostsNotReady: new Map(),
 });
 
 /** What the pass's branch prune answers: P1 prunes no branch. */
@@ -469,6 +481,9 @@ export const liveWorld = (
     cooldowns,
     prunedAt,
     paradevHold,
+    hostMisses,
+    hostLoads,
+    hostsNotReady,
   }: LiveShared = newShared(),
 ): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown"> => {
   const load = live.readLoad ?? readLoad;
@@ -778,6 +793,10 @@ export const liveWorld = (
     recordError,
     handPause: () => loadHandPause(dataDir),
     paradevHold,
+    ssh: live.ssh ?? liveSshRunner(process),
+    hostMisses,
+    hostLoads,
+    hostsNotReady,
     // Paradev removes a workspace's worktree when it archives it, so no thread is left on one.
     threadsOnBrokenWorktrees: () => Effect.succeed([]),
     sessionRuns: () =>
@@ -838,6 +857,8 @@ export interface RuntimeOptions {
   readonly readFreeSpace?: (path: string) => FreeSpace;
   /** How the machine's load is read. Default `os.loadavg`; a test passes the load it needs. */
   readonly readLoad?: () => Load;
+  /** How a host is read over ssh. Default the `ssh` binary; a test passes the answers it needs. */
+  readonly ssh?: SshRunner;
   /** What the Paradev adapter is built with beyond the `paradev` block: a test's remote base and waits. */
   readonly sessions?: Partial<Omit<ParadevSessionsConfig, "agent" | "model" | "effort">>;
 }
@@ -1102,6 +1123,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         wake: Effect.suspend(() => state.loop?.wake ?? Effect.void),
         scope,
         ...(options.readLoad !== undefined && { readLoad: options.readLoad }),
+        ...(options.ssh !== undefined && { ssh: options.ssh }),
       },
       options.gateRemoteBase,
       undefined,
