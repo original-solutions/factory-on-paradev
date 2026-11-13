@@ -900,6 +900,7 @@ describe("machine config", () => {
         ["hosts", "nope", "hosts"],
         ["hosts.0.id", '""', "hosts[0].id"],
         ["hosts.0.id", "a:b", "hosts[0].id"],
+        ["hosts.0.id", "-abc", "hosts[0].id"],
         ["hosts.0.name", '""', "hosts[0].name"],
         ["hosts.0.max_runs", "-1", "hosts[0].max_runs"],
         ["hosts.0.max_load_per_core", "x", "hosts[0].max_load_per_core"],

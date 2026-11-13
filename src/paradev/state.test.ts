@@ -206,6 +206,8 @@ describe("thread ids", () => {
       "cloud:",
       "cloud:a.b",
       `remote:${WS}`,
+      "local:-x",
+      `host:-m:${WS}`,
       `LOCAL:${WS}`,
     ]) {
       assert.isNull(targetOf(bad), bad);
