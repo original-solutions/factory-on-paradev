@@ -324,6 +324,10 @@ const makeParadev = (input: {
         })),
       );
     }
+    if (a === "terminals" && b === "create") {
+      // The gate's log terminal: only the exit code is read.
+      return live(args) === undefined ? undefined : ok(`${json({ id: "gate-terminal" })}\n`);
+    }
     if (a === "terminals" && b === "send") {
       const ws = live(args);
       const text = after(args, "--text");
@@ -969,6 +973,11 @@ const assertWritten = (
   );
   assert.deepStrictEqual(github.unhandled, [], result.diagnosis());
   assert.deepStrictEqual(paradev.unhandled, [], result.diagnosis());
+  // One terminal follows each attempt's gate log.
+  assert.strictEqual(
+    paradev.calls.filter((call) => call[0] === "terminals" && call[1] === "create").length,
+    attempt,
+  );
 
   // The pull request was marked ready once, by the gate, and its results were posted on it.
   assert.deepStrictEqual(
