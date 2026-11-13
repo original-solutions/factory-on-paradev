@@ -14,7 +14,7 @@ Load at step 4, and again when Check or the gate feeds findings back.
 
 ## Findings from Check
 
-The review cycle's actionable items **are** the next Make contract. Same worktree, same `files` unless a finding names a missed path that is still this issue. Path-limit still holds.
+The review round's open blockers and actions **are** the next Make contract, verbatim from the verdict. Same worktree, same `files` unless a finding names a missed path that is still this issue. Path-limit still holds.
 
 Blockers (logic, security, missing test, API break, data loss) must be fixed. Scope-expanding nits → drop, and list them on the receipt.
 

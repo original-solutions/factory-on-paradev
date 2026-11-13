@@ -96,6 +96,15 @@ done
 if grep -qiE 'cycle|panel|checker model' references/check.md; then
   echo "references/check.md: still speaks of cycles or a panel"; exit 1
 fi
+# The rest of the skill speaks of review-gate rounds, not the panel's cycles.
+grep -qF -- 'review-gate-v2' SKILL.md || { echo "SKILL.md: the description does not name review-gate-v2"; exit 1; }
+if grep -n -iE 'persona-review|review cycle|cycles|a panel|checker model' SKILL.md references/make.md references/weight.md references/models.md references/receipt.md | grep -v 'references/field-lessons.md'; then
+  echo "a skill file still speaks of cycles, a panel or persona review"; exit 1
+fi
+for needle in '- rounds: n' '- open: none' '- report:' '- reviewers: review-gate-v2' '- incomplete: none'; do
+  grep -qF -- "$needle" references/receipt.md || { echo "references/receipt.md: no $needle"; exit 1; }
+done
+grep -qF -- 'the mutation pass' references/models.md || { echo "references/models.md: the checker is not scoped to the mutation pass"; exit 1; }
 # The mutation pass is the one brief the skill keeps; review-gate reads code and this pass executes it.
 [ -f references/mutation.md ] || { echo "references/mutation.md: missing"; exit 1; }
 [ ! -d references/reviewers ] || { echo "references/reviewers/: the skill's own panel briefs are still here"; exit 1; }

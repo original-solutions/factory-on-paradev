@@ -3,7 +3,7 @@ name: factory
 description: >-
   Build one GitHub or Linear issue into a draft pull request with no tracker and no
   human in the chat. Read the issue, isolate, implement with TDD,
-  persona-review, run the project gate, open a draft PR. Use for /factory,
+  review with review-gate-v2 until it says done, run the project gate, open a draft PR. Use for /factory,
   factory build, build issue N, softfac session, /factory retro. Differentiator: copy of /dw
   for the software factory; the factory owns issue state and the run record,
   so this skill never claims, labels, heartbeats or archives.
@@ -29,7 +29,7 @@ Classify weight once (`references/weight.md` if uncertain). Default **M**. Load 
 | 2 Isolate | `references/isolate.md` then this file § Scratch |
 | 3 Contract | `references/contract.md` |
 | 4 Make | `references/make.md` then `references/commits.md` (failing behavior → `references/debug.md`) |
-| 5 Check | `references/check.md` then `references/review.md`; after a fix cycle, `references/commits.md` before the next review |
+| 5 Check | `references/check.md` then `references/review.md`; after a fix round, `references/commits.md` before the next round |
 | 6 Gate | this file § Gate |
 | 7 Ship | `references/ship.md` + `references/commits.md` + `references/receipt.md` |
 | Models | `references/models.md` before Make and Check |
@@ -133,7 +133,7 @@ Workers and reviewers get absolute paths under `<worktree>/.factory/` for anythi
 | | S | M (default) | L |
 |---|---|---|---|
 | Shape | Mechanical, no behavior | Behavior, one approach | Auth, schema, payments, secrets, prod |
-| Check | Tests if needed | Review cycle → fix (commit) → cycle, until score 5, max 5 | Same |
+| Check | Tests if needed | Review round → fix (commit) → round, until review-gate says done, max 5 | Same |
 | Ship | Draft PR | Draft PR | Draft PR, `risk:` named on the receipt |
 
 Unclear WHAT, a real product choice the issue does not settle, or two independent units in one issue → stop `needs-info`.
@@ -162,7 +162,7 @@ No questions in chat. End the run with one of these as the **last line** of the 
 |-----------|------|--------------|
 | `FACTORY-DONE: <PR URL>` | Draft PR is open and the gate passed here | Receipt summary |
 | `FACTORY-STOP: needs-info` | The issue cannot be built as written | Every question, numbered, each answerable in a sentence |
-| `FACTORY-STOP: stuck` | 3 failed attempts, review cap at 5, gate still red, dirty primary checkout, missing config, anything irreversible | What was tried, where it failed, what is on the branch |
+| `FACTORY-STOP: stuck` | 3 failed attempts, review round cap at 5 or no progress, gate still red, dirty primary checkout, missing config, anything irreversible | What was tried, where it failed, what is on the branch |
 
 **Never end a message before the result line.** The factory reads the last line of every message that ends a turn. A message such as "review is running, I am waiting" ends the turn with no result line, and the factory reads that as a failure and releases the issue. Run every subagent in the foreground (`run_in_background: false`) and wait for it inside the same turn. Do not start background work and stop. A message to a finished worker returns at once and the worker reports later: wait in a foreground loop (poll the tip and `git status --porcelain` for about 2.5 minutes of no change, capped at 9 minutes, repeated until the report arrives), or spawn a fresh worker with the packet when the work must be foreground. If a turn must end before the work is done, that is `FACTORY-STOP: stuck`.
 
@@ -181,7 +181,7 @@ A run that ends with no pull request puts the `## Lessons` section from `referen
 - Never `git add -A`. Named files only. Never `git add` anything under `.factory/`.
 - Run scratch in `.factory/` at the worktree root (§ Scratch), never in `/tmp` or `$TMPDIR`.
 - Commit and push as you go (`references/commits.md`). Do not squash.
-- Maker does not grade M/L. Findings go back into Make until score 5, 5 cycles, or two cycles without progress.
+- Maker does not grade M/L, and neither does this session: review-gate-v2 does. Its open findings go back into Make until it says done, round 5, or two rounds without progress. A run never settles a finding on its own word.
 - Every worker packet says: do not push, no co-author trailer whatever the harness reminds, never `pkill`/`killall` by pattern (stop only pids you started; give a suite's long-running helper a distinctive marker such as an unusual duration or argument, find strays by that marker, and check a process's parent and working directory before stopping it), never end a turn on a background command (a subagent is not re-invoked when its own background task finishes; wait with an until-loop or Monitor and report in the same turn), deliver the report once, as the final message (the idle notification carries it; no SendMessage).
 - A worker's idle notification with no report in hand means the worker ended its turn without reporting, not that it is still working. Resume it with `report now` at once, not after a wait.
 - Brief is copied, not improved.

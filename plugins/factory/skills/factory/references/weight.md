@@ -15,7 +15,7 @@ Examples: prettier on one file; `package-lock.json` bump; fix a typo in a commen
 
 ## M — default, dark
 
-Behavior change, one approach, bounded files. Five-line contract, then act. Review↔Make cycle.
+Behavior change, one approach, bounded files. Five-line contract, then act. Review round ↔ Make loop.
 
 Examples: add a validation branch + test; fix a failing spec; wire an existing helper.
 
