@@ -7,6 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as TestClock from "effect/testing/TestClock";
 
 import { useTempDirs } from "../ledger/testSupport.ts";
@@ -2418,6 +2419,112 @@ describe("removeWorktree", () => {
       assert.strictEqual(git(r.clone, "rev-parse", "--verify", "refs/heads/fac/1-1"), work);
       const removal = t.gitCalls.find((c) => c.args.includes("remove"));
       assert.include(removal!.args.join(" "), `-C ${NodeFS.realpathSync(r.clone)} worktree remove --force ${r.worktree}`);
+    }),
+  );
+});
+
+describe("showGateLog", () => {
+  const threadId = `local:${L1_WS}`;
+  const logPath = "/data/gate-logs/o__r__1__1/1.log";
+  const createArgv = (path: string) => [
+    "terminals",
+    "create",
+    "--local",
+    "--workspace",
+    L1_WS,
+    "--command",
+    `tail -n +1 -F '${path}'`,
+  ];
+  const saved = (data: string) => readThread(data, L1_WS).pipe(Effect.provide(NodeServices.layer));
+  // No fixture of `terminals create` was recorded: the adapter reads only the exit code.
+  const created = (path: string): Step => ({ argv: createArgv(path), answer: { id: "t-new" } });
+
+  /** The warnings the body logged, as text. */
+  const warned = <A, E>(body: Effect.Effect<A, E, never>) =>
+    Effect.gen(function* () {
+      const logs: Array<string> = [];
+      const capture = Logger.make(({ logLevel, message }) => {
+        logs.push(`${logLevel} ${(Array.isArray(message) ? message : [message]).join(" ")}`);
+      });
+      yield* body.pipe(Effect.provide(Logger.layer([capture], { mergeWithExisting: false })));
+      return logs;
+    });
+
+  it.live("creates one terminal that follows the log, and records the attempt, terminals untouched", () =>
+    Effect.gen(function* () {
+      const t = rig([created(logPath)]);
+      yield* seed(t.data, record());
+      const logs = yield* warned(t.run((s) => s.showGateLog(threadId, 1, logPath)));
+      assert.deepStrictEqual(t.calls, [createArgv(logPath)]);
+      assert.deepStrictEqual(logs, []);
+      const after = (yield* saved(t.data))!;
+      assert.deepStrictEqual(after.gateLogAttempts, [1]);
+      assert.deepStrictEqual(after.terminals, [L1_TERM]);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("a repeat for the same attempt creates nothing; the next attempt creates another", () =>
+    Effect.gen(function* () {
+      const second = "/data/gate-logs/o__r__1__1/2.log";
+      const t = rig([created(logPath), created(second)]);
+      yield* seed(t.data, record());
+      yield* t.run((s) => s.showGateLog(threadId, 1, logPath));
+      yield* t.run((s) => s.showGateLog(threadId, 1, logPath));
+      assert.strictEqual(t.calls.length, 1);
+      yield* t.run((s) => s.showGateLog(threadId, 2, second));
+      assert.strictEqual(t.calls.length, 2);
+      assert.deepStrictEqual((yield* saved(t.data))!.gateLogAttempts, [1, 2]);
+    }),
+  );
+
+  it.live("shell-quotes the path", () =>
+    Effect.gen(function* () {
+      const t = rig([
+        {
+          argv: [...createArgv("").slice(0, 6), `tail -n +1 -F '/data/it'\\''s here/1.log'`],
+          answer: {},
+        },
+      ]);
+      yield* seed(t.data, record());
+      yield* t.run((s) => s.showGateLog(threadId, 1, "/data/it's here/1.log"));
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("a terminals create that fails does not fail the effect, warns once and records nothing", () =>
+    Effect.gen(function* () {
+      const t = rig([{ argv: createArgv(logPath), fail: "Could not connect to API" }]);
+      yield* seed(t.data, record());
+      const logs = yield* warned(t.run((s) => s.showGateLog(threadId, 1, logPath)));
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.match(logs[0]!, /^Warn /);
+      assert.include(logs[0]!, threadId);
+      assert.include(logs[0]!, "Could not connect to API");
+      assert.isUndefined((yield* saved(t.data))!.gateLogAttempts);
+      // One call, though this failure is TRANSIENT: a retry could make a second terminal.
+      assert.strictEqual(t.calls.length, 1);
+    }),
+  );
+
+  it.live("reads only the exit code: exit 0 with stdout that is not JSON counts as created", () =>
+    Effect.gen(function* () {
+      const t = rig([{ argv: createArgv(logPath), stdout: "created terminal\n" }]);
+      yield* seed(t.data, record());
+      const logs = yield* warned(t.run((s) => s.showGateLog(threadId, 1, logPath)));
+      assert.deepStrictEqual(logs, []);
+      assert.deepStrictEqual((yield* saved(t.data))!.gateLogAttempts, [1]);
+      yield* t.run((s) => s.showGateLog(threadId, 1, logPath));
+      assert.strictEqual(t.calls.length, 1);
+    }),
+  );
+
+  it.live("a thread with no record warns once and runs nothing", () =>
+    Effect.gen(function* () {
+      const t = rig([]);
+      const logs = yield* warned(t.run((s) => s.showGateLog(threadId, 1, logPath)));
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.deepStrictEqual(t.calls, []);
     }),
   );
 });

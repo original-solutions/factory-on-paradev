@@ -55,6 +55,12 @@ const ThreadRecordSchema = Schema.Struct({
    * records written before it existed.
    */
   pendingSend: Schema.optional(Schema.NullOr(PendingSend)),
+  /**
+   * The gate attempts that already have a gate terminal in the workspace, so a repeat call for one
+   * creates nothing. Not in `terminals`: its last entry stays the agent's. Absent in records
+   * written before it existed.
+   */
+  gateLogAttempts: Schema.optional(Schema.Array(Schema.Number)),
 });
 export type ThreadRecord = typeof ThreadRecordSchema.Type;
 

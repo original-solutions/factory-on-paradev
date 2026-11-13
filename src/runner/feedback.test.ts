@@ -465,6 +465,7 @@ class FakeT3 {
     },
     worktreeCheckout: () => Effect.die("no worktree head"),
     lastActivity: () => Effect.succeed(null),
+    showGateLog: () => Effect.void,
     removeWorktree: (path) => {
       this.calls.push(`removeWorktree ${path}`);
       if (this.worktreeRemoveFails) {

@@ -522,3 +522,78 @@ it.live("a command already nicer than the niceness asked for keeps its own, with
     assert.deepStrictEqual(logs, []);
   }),
 );
+
+it.live("logFile holds output as it arrives, and tail is the same as without it", () =>
+  withTempDir((dir) =>
+    Effect.gen(function* () {
+      const logFile = NodePath.join(dir, "out.log");
+      const command = "echo first; sleep 1; echo second";
+      const fiber = yield* run({ command, shell: true, logFile }).pipe(Effect.forkChild);
+      // The command is still sleeping when the file already has its first line.
+      yield* Effect.promise(() =>
+        vi.waitFor(
+          () => {
+            assert.isTrue(NodeFS.existsSync(logFile));
+            assert.strictEqual(NodeFS.readFileSync(logFile, "utf8"), "first\n");
+          },
+          { timeout: 900, interval: 20 },
+        ),
+      );
+      assert.isUndefined(fiber.pollUnsafe());
+      const result = yield* Fiber.join(fiber);
+      const plain = yield* run({ command, shell: true });
+      assert.strictEqual(result.tail, plain.tail);
+      assert.strictEqual(result.tail, "first\nsecond\n");
+      assert.strictEqual(NodeFS.readFileSync(logFile, "utf8"), "first\nsecond\n");
+    }),
+  ),
+);
+
+it.live("logFile appends to what the file already holds", () =>
+  withTempDir((dir) =>
+    Effect.gen(function* () {
+      const logFile = NodePath.join(dir, "out.log");
+      NodeFS.writeFileSync(logFile, "before\n");
+      yield* run({ command: "echo after", shell: true, logFile });
+      assert.strictEqual(NodeFS.readFileSync(logFile, "utf8"), "before\nafter\n");
+    }),
+  ),
+);
+
+it.live("logFile gets both streams when separateStderr is set", () =>
+  withTempDir((dir) =>
+    Effect.gen(function* () {
+      const logFile = NodePath.join(dir, "out.log");
+      const result = yield* run({
+        command: "echo out; echo err >&2",
+        shell: true,
+        separateStderr: true,
+        logFile,
+      });
+      assert.strictEqual(result.tail, "out\n");
+      assert.strictEqual(result.stderrTail, "err\n");
+      const lines = NodeFS.readFileSync(logFile, "utf8").trim().split("\n").sort();
+      assert.deepStrictEqual(lines, ["err", "out"]);
+    }),
+  ),
+);
+
+it.live("a logFile that cannot be opened logs one warning and the command still runs", () =>
+  withTempDir((dir) =>
+    Effect.gen(function* () {
+      const logs: Array<string> = [];
+      const capture = Logger.make(({ logLevel, message }) => {
+        logs.push(`${logLevel} ${String(Array.isArray(message) ? message[0] : message)}`);
+      });
+      const result = yield* run({
+        command: "echo ran",
+        shell: true,
+        logFile: NodePath.join(dir, "missing-dir", "out.log"),
+      }).pipe(Effect.provide(Logger.layer([capture], { mergeWithExisting: false })));
+      assert.strictEqual(result.exitCode, 0);
+      assert.strictEqual(result.tail, "ran\n");
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.match(logs[0]!, /^Warn /);
+    }),
+  ),
+);

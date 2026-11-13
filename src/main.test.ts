@@ -137,6 +137,7 @@ const stubSessions: FactorySessions["Service"] = {
   thread: () => Effect.die("no thread"),
   send: () => Effect.die("not sent"),
   archive: () => Effect.die("not archived"),
+  showGateLog: () => Effect.void,
   removeWorktree: () => Effect.die("not removed"),
   worktreeCheckout: () => Effect.die("no worktree head"),
   runningThreads: Effect.succeed(0),

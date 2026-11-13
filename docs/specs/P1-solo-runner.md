@@ -132,7 +132,7 @@ Only the folder changes, plus mechanical import edits in every file: `./t3/sessi
 
 ### The interface the core uses today
 
-Copied from `t3/sessions.ts` before the source commit. At the source commit the service also has `worktreeCheckout(path)` and `lastActivity(threadId)`, which `runner/building.ts` calls; the method table covers both. Where this block and the file differ, the file at the source commit wins. Doc comments are cut to one line; the file has the full ones.
+Copied from `t3/sessions.ts` before the source commit. At the source commit the service also has `worktreeCheckout(path)` and `lastActivity(threadId)`, which `runner/building.ts` calls; the method table covers both. `showGateLog(threadId, attempt, logPath)` came after the source commit (#44); the method table has it too. Where this block and the file differ, the file at the source commit wins. Doc comments are cut to one line; the file has the full ones.
 
 ```ts
 export const RUN_STATUSES = [
@@ -249,6 +249,9 @@ interface ThreadRecord {
   // The send about to type, or that typed, its text, whose turn is not recorded yet (#37), with the `lastEventAt`
   // read before typing (null when the agent had no hook yet): a repeat of its command id types nothing.
   readonly pendingSend?: { readonly commandId: string; readonly before: number | null } | null;
+  // The gate attempts that already have a gate terminal (#44), so a repeat call for one creates nothing.
+  // `terminals` is not touched: its last entry stays the agent's.
+  readonly gateLogAttempts?: ReadonlyArray<number>;
 }
 ```
 
@@ -282,6 +285,7 @@ Every call but `snapshot` passes `--local`, and the runner adds `--json`. Timeou
 | `runningThreads` | `snapshot`, then the thread records | count of terminals that are the current terminal of a thread record with no `archivedAt` and whose `agent.state` is `starting` or `working`. `snapshot` lists every workspace on this Mac, so the person's own Paradev agents and terminals the adapter has moved on from do not count. A dead agent counts until resume closes its terminal or the workspace is archived | 30 s, one retry |
 | `worktreeCheckout(path)` | None. `git -C <path> rev-parse HEAD` and `git -C <path> symbolic-ref -q --short HEAD`, as the T3 adapter does | `head`, `branch` (null when detached). Null when `path` has no `.git` | 30 s |
 | `lastActivity(threadId)` | `agents explain` on the current terminal | `lastEventAt`; null when the state is `none`. Hooks fire on tool calls and on prompts, so a prompt the factory sent counts too, which T3's answer did not | explain 30 s, one retry |
+| `showGateLog(threadId, attempt, logPath)` | Nothing when the record's `gateLogAttempts` has `attempt`. Else `terminals create --local --workspace <w> --command "tail -n +1 -F <logPath>"`, with `logPath` in single quotes, then the attempt is added to `gateLogAttempts`. The gate of a building run calls it once per attempt, after its checkout and merge and before its first command, so the terminal follows the log while the commands run. A re-gate of a ready pull request does not call it: its workspace was archived at the pass, so it has no live thread. It never fails: a missing record, a failed create or a failed write is one warning in the log, and the gate goes on. A failed create records nothing, so a later call for the attempt tries again | The exit code only. `terminals create` was not recorded in P0, and the answer is not read: a `PARADEV_SHAPE` error (exit 0, stdout not JSON) counts as created | 30 s, no retry: a second try could make a second terminal |
 | `worktreesDirectory(dir)` | None. `~/.paradev/worktrees`: the newest thread record's `worktreePath` with `/<project name>/<branch>` cut off, else `dir` | none | none |
 
 `req.pullRequestUrl` is not used: a local Paradev workspace has no PR link.
@@ -365,6 +369,7 @@ A `SessionsError` reaches the machine log as an `error` with kind `t3`, as today
 | `agents explain`, `agents read` | `--local`, `--workspace`, `--terminal` |
 | `terminals send` | `--local`, `--workspace`, `--terminal`, `--text`, `--keys` |
 | `terminals close` | `--local`, `--workspace`, `--terminal` |
+| `terminals create` | `--local`, `--workspace`, `--command` |
 | `snapshot` | `--workspace` |
 | `auth whoami` | none |
 | `pages publish` | `--page`, `--title`, `--visibility`, `--label`, `--no-watch`, `--workspace` |

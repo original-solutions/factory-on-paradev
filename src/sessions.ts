@@ -251,6 +251,16 @@ export class FactorySessions extends Context.Service<
      */
     readonly lastActivity: (threadId: string) => Effect.Effect<number | null, SessionsError>;
     /**
+     * Opens a terminal in the thread's workspace that follows the gate log of `attempt`, once per
+     * attempt: a repeat for the same attempt opens nothing. Never fails: an error is one warning
+     * in the log.
+     */
+    readonly showGateLog: (
+      threadId: string,
+      attempt: number,
+      logPath: string,
+    ) => Effect.Effect<void>;
+    /**
      * The folder T3 makes a new thread's worktree under now: the one Settings → Storage names,
      * else `defaultDir`. Null for a setting T3 cannot make a worktree under.
      */

@@ -24,6 +24,7 @@ import {
   gateLockFile,
   gateLocksHeld,
   gateLockTimes,
+  gateLogPath,
   gateResultsComment,
   gateRoot,
   layer as gateLayer,
@@ -1762,6 +1763,9 @@ it("the gate's paths are built from the validated run id", () => {
   assert.strictEqual(gateLockFile("/data", run), "/data/gates/rawphp__softfac__10__1.lock");
   assert.throws(() => gateRoot("/data", { repo: "../x/y", issue: "1", attempt: 1 }));
   assert.throws(() => gateLockFile("/data", { repo: "a/b", issue: "1", attempt: -1 }));
+  // The log is outside the checkout and outside `<data>/gate/`.
+  assert.strictEqual(gateLogPath("/data", run, 2), "/data/gate-logs/rawphp__softfac__10__1/2.log");
+  assert.throws(() => gateLogPath("/data", { repo: "../x/y", issue: "1", attempt: 1 }, 1));
 });
 
 /**
@@ -2258,4 +2262,237 @@ it.live("a git call whose output is parsed and passes the cap fails the checkout
       );
     }),
   ),
+);
+
+const GATE_LOG_SECONDS = "\\d+\\.\\d s";
+
+it.live("a passing attempt writes its commands, their output and the verdict to the gate log", () =>
+  Effect.gen(function* () {
+    const remote = makeRemote("gate-log-pass");
+    const dataDir = tempDir("gate-log-pass-data");
+    const run = newRunId(REPO, "10", 1);
+    const sha = remote.push([["README", "pushed\n"]]);
+    Ledger.create(dataDir, run, { clock: ticking(T0, 1000) }).close();
+    const gate = yield* FactoryGate;
+    const out = yield* gate.run({
+      ...baseInput(remote, dataDir, run, sha, sha),
+      provision: ["echo provisioning"],
+      gate: ["printf 'no newline'"],
+    });
+    assert.strictEqual(out._tag, "pass");
+    const log = NodeFS.readFileSync(gateLogPath(dataDir, run, 1), "utf8");
+    assert.match(
+      log,
+      new RegExp(
+        `^\\$ echo provisioning\\nprovisioning\\nexit 0 after ${GATE_LOG_SECONDS}\\n` +
+          `\\$ printf 'no newline'\\nno newline\\nexit 0 after ${GATE_LOG_SECONDS}\\n` +
+          `gate attempt 1 passed\\n$`,
+      ),
+    );
+    // Kept after the attempt, and outside the checkout directory.
+    assert.isFalse(NodeFS.existsSync(out._tag === "pass" ? out.dir : ""));
+    // Private to the factory's user: the file and its run directory.
+    assert.strictEqual(NodeFS.statSync(gateLogPath(dataDir, run, 1)).mode & 0o777, 0o600);
+    assert.strictEqual(
+      NodeFS.statSync(NodePath.dirname(gateLogPath(dataDir, run, 1))).mode & 0o777,
+      0o700,
+    );
+    assert.isFalse(gateLogPath(dataDir, run, 1).startsWith(NodePath.join(dataDir, "gate") + "/"));
+  }).pipe(provided),
+);
+
+it.live("a failing attempt ends its gate log with the failure, and a timeout says so", () =>
+  Effect.gen(function* () {
+    const remote = makeRemote("gate-log-fail");
+    const dataDir = tempDir("gate-log-fail-data");
+    const run = newRunId(REPO, "10", 1);
+    const sha = remote.push([["README", "pushed\n"]]);
+    Ledger.create(dataDir, run, { clock: ticking(T0, 1000) }).close();
+    const gate = yield* FactoryGate;
+    const failed = yield* gate.run({
+      ...baseInput(remote, dataDir, run, sha, sha),
+      gate: ["echo boom; exit 1", "echo never"],
+    });
+    assert.strictEqual(failed._tag, "fail");
+    assert.match(
+      NodeFS.readFileSync(gateLogPath(dataDir, run, 1), "utf8"),
+      new RegExp(
+        `^\\$ echo boom; exit 1\\nboom\\nexit 1 after ${GATE_LOG_SECONDS}\\ngate attempt 1 failed\\n$`,
+      ),
+    );
+
+    const run2 = newRunId(REPO, "10", 2);
+    Ledger.create(dataDir, run2, { clock: ticking(T0, 1000) }).close();
+    const input = baseInput(remote, dataDir, run2, sha, sha);
+    const timedOut = yield* gate.run({
+      ...input,
+      gate: ["sleep 60"],
+      options: { ...input.options, commandTimeoutMs: 300 },
+    });
+    assert.strictEqual(timedOut._tag, "fail");
+    assert.match(
+      NodeFS.readFileSync(gateLogPath(dataDir, run2, 1), "utf8"),
+      new RegExp(
+        `^\\$ sleep 60\\ntimed out after ${GATE_LOG_SECONDS}\\ngate attempt 1 failed\\n$`,
+      ),
+    );
+  }).pipe(provided),
+);
+
+it.live("a repeat of an attempt number starts its gate log fresh", () =>
+  Effect.gen(function* () {
+    const remote = makeRemote("gate-log-repeat");
+    const dataDir = tempDir("gate-log-repeat-data");
+    const run = newRunId(REPO, "10", 1);
+    const sha = remote.push([["README", "pushed\n"]]);
+    Ledger.create(dataDir, run, { clock: ticking(T0, 1000) }).close();
+    const logPath = gateLogPath(dataDir, run, 1);
+    NodeFS.mkdirSync(NodePath.dirname(logPath), { recursive: true });
+    NodeFS.writeFileSync(logPath, "left by a dead server\n");
+    const gate = yield* FactoryGate;
+    yield* gate.run({ ...baseInput(remote, dataDir, run, sha, sha), gate: ["true"] });
+    assert.notInclude(NodeFS.readFileSync(logPath, "utf8"), "left by a dead server");
+  }).pipe(provided),
+);
+
+it.live("onStart runs once, after the checkout and before the first provision command", () =>
+  Effect.gen(function* () {
+    const remote = makeRemote("gate-onstart");
+    const dataDir = tempDir("gate-onstart-data");
+    const run = newRunId(REPO, "10", 1);
+    const sha = remote.push([["README", "pushed\n"]]);
+    Ledger.create(dataDir, run, { clock: ticking(T0, 1000) }).close();
+    const marker = NodePath.join(dataDir, "started");
+    const seen = NodePath.join(dataDir, "seen");
+    let calls = 0;
+    const gate = yield* FactoryGate;
+    const out = yield* gate.run({
+      ...baseInput(remote, dataDir, run, sha, sha),
+      provision: [`if test -f '${marker}'; then echo yes; else echo no; fi > '${seen}'`],
+      gate: ["true"],
+      onStart: Effect.sync(() => {
+        calls += 1;
+        // The log already exists and the checkout is there when the terminal would open.
+        assert.isTrue(NodeFS.existsSync(gateLogPath(dataDir, run, 1)));
+        assert.isTrue(NodeFS.existsSync(NodePath.join(gateRoot(dataDir, run), "1", "README")));
+        NodeFS.writeFileSync(marker, "");
+      }),
+    });
+    assert.strictEqual(out._tag, "pass");
+    assert.strictEqual(calls, 1);
+    assert.strictEqual(NodeFS.readFileSync(seen, "utf8"), "yes\n");
+  }).pipe(provided),
+);
+
+it.live("onStart does not run on a merge conflict or a checkout that fails", () =>
+  Effect.gen(function* () {
+    const remote = makeRemote("gate-onstart-none");
+    const dataDir = tempDir("gate-onstart-none-data");
+    const run = newRunId(REPO, "10", 1);
+    const pr = remote.pushOn("pr", "main", [["README", "pr\n"]]);
+    const base = remote.pushOn("main", "main", [["README", "base\n"]]);
+    Ledger.create(dataDir, run, { clock: ticking(T0, 1000) }).close();
+    let calls = 0;
+    const onStart = Effect.sync(() => {
+      calls += 1;
+    });
+    const gate = yield* FactoryGate;
+    const conflict = yield* gate.run({
+      ...baseInput(remote, dataDir, run, pr, base),
+      gate: ["true"],
+      onStart,
+    });
+    assert.strictEqual(conflict._tag, "conflict");
+    const failed = yield* gate
+      .run({ ...baseInput(remote, dataDir, run, "main", base), onStart })
+      .pipe(Effect.flip);
+    assert.strictEqual(failed._tag, "WorkspaceUnexpectedError");
+    assert.strictEqual(calls, 0);
+  }).pipe(provided),
+);
+
+it.live("a gate log that cannot be made leaves a pass a pass and a fail a fail", () =>
+  Effect.gen(function* () {
+    const remote = makeRemote("gate-log-blocked");
+    const dataDir = tempDir("gate-log-blocked-data");
+    const sha = remote.push([["README", "pushed\n"]]);
+    // A regular file where the logs directory should be: nothing under it can be made.
+    NodeFS.writeFileSync(NodePath.join(dataDir, "gate-logs"), "in the way");
+    const gate = yield* FactoryGate;
+    const commandsOf = (run: GateInput["run"]) =>
+      entries(dataDir, run)
+        .filter((l) => l.event === "gate_command")
+        .map((l) => [
+          (l.data as { command: string }).command,
+          (l.data as { exit_code: number }).exit_code,
+        ]);
+
+    const run1 = newRunId(REPO, "10", 1);
+    Ledger.create(dataDir, run1, { clock: ticking(T0, 1000) }).close();
+    const passed = yield* gate.run({
+      ...baseInput(remote, dataDir, run1, sha, sha),
+      gate: ["echo one", "true"],
+    });
+    assert.strictEqual(passed._tag, "pass");
+    assert.deepStrictEqual(commandsOf(run1), [
+      ["echo one", 0],
+      ["true", 0],
+    ]);
+
+    const run2 = newRunId(REPO, "10", 2);
+    Ledger.create(dataDir, run2, { clock: ticking(T0, 1000) }).close();
+    const failed = yield* gate.run({
+      ...baseInput(remote, dataDir, run2, sha, sha),
+      gate: ["true", "exit 2"],
+    });
+    assert.strictEqual(failed._tag, "fail");
+    if (failed._tag !== "fail") return;
+    assert.strictEqual(failed.failure.exitCode, 2);
+    assert.deepStrictEqual(commandsOf(run2), [
+      ["true", 0],
+      ["exit 2", 2],
+    ]);
+  }).pipe(provided),
+);
+
+it.live("an attempt that ends in an error ends its gate log with errored", () =>
+  Effect.gen(function* () {
+    const remote = makeRemote("gate-log-errored");
+    const dataDir = tempDir("gate-log-errored-data");
+    const run = newRunId(REPO, "10", 1);
+    const sha = remote.push([["README", "pushed\n"]]);
+    Ledger.create(dataDir, run, { clock: ticking(T0, 1000) }).close();
+    const gate = yield* FactoryGate;
+    const error = yield* gate
+      .run({ ...baseInput(remote, dataDir, run, sha, sha), gate: ["true", "true"] })
+      .pipe(Effect.flip);
+    assert.strictEqual(error._tag, "GateCommandSpawnError");
+    assert.match(
+      NodeFS.readFileSync(gateLogPath(dataDir, run, 1), "utf8"),
+      new RegExp(`^\\$ true\\nexit 0 after ${GATE_LOG_SECONDS}\\n\\$ true\\ngate attempt 1 errored\\n$`),
+    );
+  }).pipe(Effect.provide(gateLayer.pipe(Layer.provide(failingShellLayer(2))))),
+);
+
+it.live("a pass whose ledger lines cannot be written is errored in the gate log, not passed", () =>
+  Effect.gen(function* () {
+    const remote = makeRemote("gate-log-record-error");
+    const dataDir = tempDir("gate-log-record-error-data");
+    const run = newRunId(REPO, "10", 1);
+    const sha = remote.push([["README", "pushed\n"]]);
+    Ledger.create(dataDir, run, { clock: ticking(T0, 1000) }).close();
+    const input = baseInput(remote, dataDir, run, sha, sha);
+    const error = yield* (yield* FactoryGate)
+      .run({
+        ...input,
+        gate: ["true"],
+        options: { ...input.options, ledgerIo: failingLedgerIo({ write: 2 }) },
+      })
+      .pipe(Effect.flip);
+    // The attempt errored, whichever of the ledger's errors it was.
+    assert.match(error._tag, /^(GateRecordError|Ledger)/);
+    const log = NodeFS.readFileSync(gateLogPath(dataDir, run, 1), "utf8");
+    assert.match(log, /gate attempt 1 errored\n$/);
+    assert.notInclude(log, "passed");
+  }).pipe(provided),
 );
