@@ -56,6 +56,13 @@ it("a missing global --json is named", () => {
   assert.deepStrictEqual(checkSchema(schema).missing, ["--json"]);
 });
 
+it("a missing terminals create --command is named", () => {
+  const schema = editing("terminals create", (list, at) => {
+    list[at].options = list[at].options.filter((option: any) => option.name !== "command");
+  });
+  assert.deepStrictEqual(checkSchema(schema).missing, ["terminals create --command"]);
+});
+
 it("an answer that is not a schema misses everything, at version unknown", () => {
   const result = checkSchema("2.0.9");
   assert.strictEqual(result.version, "unknown");
@@ -76,6 +83,7 @@ it("the list is the spec's table", () => {
     "agents read: local workspace terminal",
     "terminals send: local workspace terminal text keys",
     "terminals close: local workspace terminal",
+    "terminals create: local workspace command",
     "snapshot: workspace",
     "auth whoami: ",
     "pages publish: page title visibility label no-watch workspace",
