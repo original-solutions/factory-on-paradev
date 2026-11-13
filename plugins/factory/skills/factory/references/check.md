@@ -28,7 +28,7 @@ When that Make is green, commit the cycle (`references/commits.md`, `fix:`) **be
 
 ## 4. Cycle
 
-Before each cycle, `git fetch origin`; when `origin/<base>` moved (another PR landed), `git merge origin/<base>`, re-run tests and commit, so reviewers and the gate see the merged tree rather than a conflict on the files every change touches. The fetch runs as `SKILL.md` § GitHub account says when Read picked a login other than the active one.
+Before each cycle, `git fetch origin`; when `origin/<base>` moved (another PR landed), `git merge origin/<base>`, re-run tests and commit, so reviewers and the gate see the merged tree rather than a conflict on the files every change touches. The fetch runs as `SKILL.md` § GitHub account says when Read picked a login other than the active one, or picked its account by a push dry run.
 
 Cycle starts at 1 after the first review. Score 5 → the mutation pass (`references/review.md` § 6), then § 5 Live, then Gate. Else review again.
 
