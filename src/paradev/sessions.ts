@@ -828,6 +828,48 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     return explained.state === "none" ? null : explained.lastEventAt;
   }, (effect) => effect.pipe(Effect.mapError(failWith("last-activity"))));
 
+  // ---- showGateLog --------------------------------------------------------------------------
+
+  /** `value` as one word for `sh`: in single quotes, each `'` closed, escaped and reopened. */
+  const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+
+  /**
+   * One terminal per attempt that follows the gate log. It runs `terminals create` once, with no
+   * retry (a second try could make a second terminal), and reads only its exit code. Nothing here
+   * may fail the gate that called it: every failure is one warning.
+   */
+  const showGateLog = (threadId: string, attempt: number, logPath: string) =>
+    Effect.gen(function* () {
+      const workspaceId = workspaceIdOf(threadId);
+      const record = workspaceId === null ? null : yield* local(readThread(dataDir, workspaceId));
+      if (record === null) return yield* fail("the thread has no record");
+      const shown = record.gateLogAttempts ?? [];
+      if (shown.includes(attempt)) return;
+      yield* call(
+        cli,
+        [
+          "terminals",
+          "create",
+          "--local",
+          "--workspace",
+          record.workspaceId,
+          "--command",
+          `tail -n +1 -F ${shellQuote(logPath)}`,
+        ],
+        30_000,
+      ).pipe(
+        // Exit 0 with an answer the runner cannot parse still made the terminal.
+        Effect.catchIf((error) => error.kind === "PARADEV_SHAPE", () => Effect.void),
+      );
+      yield* save({ ...record, gateLogAttempts: [...shown, attempt] });
+    }).pipe(
+      Effect.catch((error) => Effect.fail(error.message)),
+      Effect.catchDefect((defect) => Effect.fail(String(defect))),
+      Effect.catch((message) =>
+        Effect.logWarning(`could not show the gate log of ${threadId} attempt ${attempt}: ${message}`),
+      ),
+    );
+
   const worktreesDirectory = Effect.fn("ParadevSessions.worktreesDirectory")(function* (defaultDir: string) {
     const records = yield* local(listThreads(dataDir));
     const newest = records
@@ -1101,6 +1143,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     runningThreads,
     worktreeCheckout,
     lastActivity,
+    showGateLog,
     worktreesDirectory,
   } satisfies ParadevSessions;
 });
