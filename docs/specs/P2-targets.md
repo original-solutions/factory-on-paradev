@@ -37,7 +37,7 @@ Settled 2026-11-14. U1 was Tom's; the rest took the smallest option that the spi
 | U2 | Who the agent is on GitHub, per target | As the spikes found, with no normalising: local PRs by this Mac's active `gh` login, host PRs by the account `gh` sees in a Paradev terminal there (`rawphp` on the Trilogy Mac), cloud PRs by the Paradev GitHub App bot (`app/superset-app`). The runner's own writes (claims, labels, comments, ready) use `gh_config_dir` as in P1, so the issue trail reads the same whatever opened the PR. A host must have a git `user.email` set, or `hosts check` fails: an auto-detected email links to no GitHub user, which the host spike's PR #16 shows |
 | U3 | How agents reach Claude | Every target goes through the CLI Proxy API on the Trilogy Mac. This Mac and hosts carry `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` in their own `~/.claude/settings.json` `env` (hosts get nothing from the org's connection: X9 host). Cloud gets `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL` from `connections agents set` through the Tailscale Funnel (C0). The Funnel stays on while `cloud` is in the config; the runner never turns it on or off. Before each cloud launch it checks the proxy answers 401 to an unkeyed `GET /v1/models` through the Funnel: up and guarded. Anything else makes cloud no candidate this pass |
 | U4 | Host prerequisites | Read-only. `factory-runner hosts check` reads each host over SSH and prints what is missing with the command that fixes it. The runner writes nothing into a host's dotfiles. Trusting the clone, the proxy env, the git identity and the gh login are the person's, done once per host |
-| U5 | The Team plan trial | Hosts land first, cloud second. The cloud smoke (#I) runs before 2026-12-13, when the trial ends, and its result decides whether the plan stays. Until then `cloud.max_runs` is 1 |
+| U5 | The Team plan trial | Hosts land first, cloud second. The cloud smoke (#59) runs before 2026-12-13, when the trial ends, and its result decides whether the plan stays. Until then `cloud.max_runs` is 1 |
 | U6 | The channel to a host | SSH, `BatchMode=yes`, `ConnectTimeout=10`, read-only commands only: load, process list, the session store's listing, and the check. `hosts add` already needs SSH, so it adds no new requirement. No command writes to a host |
 | U7 | Where the gate runs | This Mac, for every target, on a fresh checkout from GitHub as in P1. The gate's log terminal (`showGateLog`) is local only: a host or cloud workspace cannot read this Mac's log file |
 | U8 | The ledger | Unchanged. The target is the thread id's prefix (`local:`, `host:<machineId>:`, `cloud:`), already reserved in P1, so `factory-runner retro` reads both phases' ledgers as they are |
@@ -129,9 +129,9 @@ Every P1 method keeps its contract. What changes is the flag each call carries, 
 
 ### Host
 
-- `launch`: P1's steps with `--host <id>` on `workspaces create`, `workspaces get`, `snapshot`, `agents create`. P1's base fetch into this Mac's bare repo stays the source of truth for the base commit. `[Assumption]` X8 holds on a host as on local: `--base-branch` does not fetch there either. So the base check compares the host worktree's HEAD, read over SSH, with that commit, and on a mismatch with no agent in the worktree runs `git fetch origin <baseRef>` and `git reset --hard <commit>` in the host's worktree over SSH, with the host's own credentials. This is the one SSH command that writes, and it writes only inside a worktree the runner created. #H records whether the mismatch happens on a host at all.
+- `launch`: P1's steps with `--host <id>` on `workspaces create`, `workspaces get`, `snapshot`, `agents create`. P1's base fetch into this Mac's bare repo stays the source of truth for the base commit. `[Assumption]` X8 holds on a host as on local: `--base-branch` does not fetch there either. So the base check compares the host worktree's HEAD, read over SSH, with that commit, and on a mismatch with no agent in the worktree runs `git fetch origin <baseRef>` and `git reset --hard <commit>` in the host's worktree over SSH, with the host's own credentials. This is the one SSH command that writes, and it writes only inside a worktree the runner created. #58 records whether the mismatch happens on a host at all.
 - `status`, `thread`, `send`, `archive`, `showGateLog`: `--host <id>`. `showGateLog` is a no-op with one log line (U7).
-- The liveness check: the same process lookup over SSH: `pgrep -x claude` then `lsof -a -d cwd -p <pid>`, on the host, timeout 10 s. A failed SSH read keeps the run `running`, as a long tool call would; after three passes of failed reads the host is `host-unreachable` and the run stays as it is. `[Assumption]` A killed host agent reads as L5b did on local (explain stuck at `working`, the terminal alive at a shell prompt): H5 stopped the service, not the agent, so #H kills one agent and records it.
+- The liveness check: the same process lookup over SSH: `pgrep -x claude` then `lsof -a -d cwd -p <pid>`, on the host, timeout 10 s. A failed SSH read keeps the run `running`, as a long tool call would; after three passes of failed reads the host is `host-unreachable` and the run stays as it is. `[Assumption]` A killed host agent reads as L5b did on local (explain stuck at `working`, the terminal alive at a shell prompt): H5 stopped the service, not the agent, so #58 kills one agent and records it.
 - Resume: the session id is the newest `*.jsonl` under the host's `~/.claude/projects/<worktreePath with every character other than a letter or digit as ->/`, read over SSH with `ls -t`, never through a Paradev terminal (`terminals read` wraps at the terminal's width and cut the id in the spike: `terminals-read-host-sessions.json`). Then `agents create --host <id> --resume-session <sid>` (`agents-create-host-resume.json`, 1.1 s; the new terminal was `working` 3 s later).
 - `removeWorktree(path)`: a no-op for a host: Paradev removed the folder at archive, and the path is not on this Mac.
 - Errors: `Host is not online` is `PARADEV_OFFLINE` (`agents-explain-host-offline.meta.json`, in the adapter since PR #49). The hold is per host: claims for a repo whose only candidates are that host wait; other targets go on. `hosts list` says `online: no` meanwhile (`hosts-list-host-offline.json`) and `yes` within 5 s of the service's return (`hosts-list-host-online.json`), with the same terminal ids `working` (`agents-explain-host-after-restart.json`).
@@ -140,14 +140,14 @@ Every P1 method keeps its contract. What changes is the flag each call carries, 
 
 - `launch`: 1. `workspaces create --host cloud --environment <env> --machine-size <size> --name <title cut to 80> --base-branch <baseRef> --tag factory` with no `--agent` and no `--branch`: a cloud create takes no `--branch` and answers `status: provisioning` with no terminal (`ws-create-cloud.json`). 2. Write the launch file and the record at once: a cloud create is not idempotent by branch, because Paradev names the branch `superset/<name slug>-<first 8 of the workspace id>` (`superset/fac-3-divide-a2bc69cb`), so a repeat create would make a second workspace. The launch file is the only thing that stops that. 3. Poll `workspaces get <id> --host cloud` every 5 s until `status: ready` (`ws-get-cloud-provisioning.json`, `ws-get-cloud-ready.json`: 16 to 22 s), 300 s at most; past it the workspace is archived and `launch` fails. 4. `agents create --host cloud --workspace <id> --agent <preset> --prompt <message>`, and the terminal id is its `sessionId`, as on local (`agents-create-cloud-resume.json` has the shape). 5. The record's `branch` is `workspace.branch` from the create answer; `worktreePath` is `/workspace` and is never used on this Mac.
 - The workspace name is `fac/<issue>-<attempt>` from P1's branch rule, so the branch Paradev picks is `superset/fac-<issue>-<attempt>-<id8>`. `isLaunchBranch` also accepts `^superset/fac-(\d+|x)-[0-9a-f-]+-[0-9a-f]{8}$` with any `worktreePath`, and `launchBranchOf` answers null for a cloud path: the core relaunches from the record's branch, which the adapter answers in `thread`.
-- The base check: none. Paradev cuts a cloud branch from the repository's branch on GitHub (`--base-branch` "the branch the workspace's new branch is cut from"), so there is no stale local base. `[Assumption]` The cut is from GitHub's current tip; #I compares the first commit's parent with `origin/<baseRef>` at launch time.
+- The base check: none. Paradev cuts a cloud branch from the repository's branch on GitHub (`--base-branch` "the branch the workspace's new branch is cut from"), so there is no stale local base. `[Assumption]` The cut is from GitHub's current tip; #59 compares the first commit's parent with `origin/<baseRef>` at launch time.
 - `status`, `send`, `archive`, `showGateLog`: `--host cloud`. `showGateLog` is a no-op (U7). `terminals send --host cloud` delivered a gate failure as one User chunk (`terminals-send-cloud.json`, 30 s).
 - The liveness check: no SSH. When a cloud run has been `working` with no hook for 10 minutes: `terminals create --host cloud --workspace <w> --command 'pgrep -c claude; echo FACTORY-ALIVE-DONE'`, then `terminals wait --match FACTORY-ALIVE-DONE --timeout 30` and `terminals read --max-lines 5`, the X3 pattern (`terminals-create-cloud-gate.json`, `terminals-wait-cloud-gate-pass.json`, `terminals-read-cloud-gate-long.json`). A count of 0 is `interrupted`. The helper terminal is closed after the read. One such read per 10 minutes per run at most.
 - Resume: the session id from the same pattern, `ls -t /home/ubuntu/.claude/projects/-workspace/*.jsonl | head -1`, read back with `--max-lines 5`: the sandbox's path is `/workspace`, so the folder is `-workspace` (`terminals-read-cloud-6-sessions.json`). Then `agents create --host cloud --resume-session <sid>` (`agents-create-cloud-resume.json`, 0.8 s; the transcript held the old conversation, `agents-read-cloud-resume.json`). Never `workspaces sleep`: a slept box's agent does not come back on wake (C5).
 - `archive`: `workspaces archive <id> --host cloud` answers `deleted` in about a second (`ws-archive-cloud.json`); `workspaces get` afterwards says `status: deleted` (`ws-get-cloud-6-archived.json`), which the adapter reads as archived. The runner archives every cloud workspace itself when its run ends: Paradev did not stop a box idle for 65 minutes (C6), and an idle box bills.
-- The orphan sweep, once per pass: every cloud workspace from `workspaces list --host cloud` with the tag `factory` and no thread record, created over 10 minutes ago, is archived with one log line. That covers a crash between step 1 and step 2 of the launch. `[Assumption]` `workspaces list --host cloud` lists tags, or `--tag` filters; `ws-list-noflag-after-cloud.json` shows the cloud list's rows, and #C records which.
+- The orphan sweep, once per pass: every cloud workspace from `workspaces list --host cloud` with the tag `factory` and no thread record, created over 10 minutes ago, is archived with one log line. That covers a crash between step 1 and step 2 of the launch. `[Assumption]` `workspaces list --host cloud` lists tags, or `--tag` filters; `ws-list-noflag-after-cloud.json` shows the cloud list's rows, and #53 records which.
 - The proxy check, before placement considers cloud: `GET <cloud.proxy>/v1/models` with no key, timeout 10 s, expecting HTTP 401. The host spike saw the proxy answer 401 to an unkeyed call (`proxy log`, and C0 for the Funnel). 200 means the key check is off, so cloud is dropped too, with an attention item that says so: a cloud agent would be a free client of the proxy.
-- Identity: `gh auth status` in the sandbox shows `superset-app[bot]` through `GH_TOKEN`, `gh api user` answers 403, the repo's `permissions` object reads all-false, and yet `git push` works and the draft PR is by `app/superset-app` (`terminals-read-cloud-whoami.json`, PR #15). The `/factory` skill's Read step must not refuse on that object (#G).
+- Identity: `gh auth status` in the sandbox shows `superset-app[bot]` through `GH_TOKEN`, `gh api user` answers 403, the repo's `permissions` object reads all-false, and yet `git push` works and the draft PR is by `app/superset-app` (`terminals-read-cloud-whoami.json`, PR #15). The `/factory` skill's Read step must not refuse on that object (#57).
 
 ### Status mapping
 
@@ -194,8 +194,8 @@ Nothing new runs. The runner still needs the Paradev app open on this Mac. A hos
 |---|---|---|
 | Runner restart or crash | As P1: records and the ledger carry on; a placement already made is in the thread id | As host. The orphan sweep catches a workspace created before its record |
 | The host's service stops | Agents keep running in `pty-daemon`; every call for that host is `PARADEV_OFFLINE`; claims for that host hold; the same terminal ids answer within 5 s of its return (H5) | n/a |
-| The host reboots | Not tested (H0: FileVault with no auto-login holds the Mac offline until someone types the password). Expected: agents die, the host reads offline, then resume by session id once it is back, which #H's kill test covers short of the reboot | n/a |
-| The agent process dies | `[Assumption]` as L5b; #H records it | The X3-pattern liveness read counts 0 processes: `interrupted`, then resume from `/home/ubuntu/.claude/projects/-workspace/` (C5) |
+| The host reboots | Not tested (H0: FileVault with no auto-login holds the Mac offline until someone types the password). Expected: agents die, the host reads offline, then resume by session id once it is back, which #58's kill test covers short of the reboot | n/a |
+| The agent process dies | `[Assumption]` as L5b; #58 records it | The X3-pattern liveness read counts 0 processes: `interrupted`, then resume from `/home/ubuntu/.claude/projects/-workspace/` (C5) |
 | The box sleeps | n/a | The agent does not come back on wake (C5). The runner never sleeps a box; a person who does gets a resume on the next `send` |
 | The proxy or the Funnel is down | Hosts fail their turn with `idle` + `Failed` and the 401 text (X2); the core's trouble path applies | Same for a running agent; no new cloud launch while the check fails |
 
@@ -225,35 +225,35 @@ Unit tests: the config's new keys and each refusal; `isLaunchBranch` on the clou
 
 Each runs the spike repo's three cases (done, needs-info, gate fails once) with the runner installed, as #27 did, on one target, then one placement case:
 
-- Host (#H): `repos[].hosts` names the Trilogy Mac. While a run works, `kill -9` its `claude` on the host: records whether explain sticks at `working` and the resume path runs. Then `max_runs: 0` on this Mac for one issue, so placement must choose the host.
-- Cloud (#I): `repos[].cloud` names the spike environment, `cloud.max_runs: 1`, local `max_runs: 0` for one issue. Pass: the three cases, the archive on each end, and the first commit's parent equals `origin/main` at launch. Run before 2026-12-13 (U5).
-- Spread (#J): clockwork lists both this Mac and the Trilogy Mac for a week; the retro compares against P1's runs.
+- Host (#58): `repos[].hosts` names the Trilogy Mac. While a run works, `kill -9` its `claude` on the host: records whether explain sticks at `working` and the resume path runs. Then `max_runs: 0` on this Mac for one issue, so placement must choose the host.
+- Cloud (#59): `repos[].cloud` names the spike environment, `cloud.max_runs: 1`, local `max_runs: 0` for one issue. Pass: the three cases, the archive on each end, and the first commit's parent equals `origin/main` at launch. Run before 2026-12-13 (U5).
+- Spread (#60): clockwork lists both this Mac and the Trilogy Mac for a week; the retro compares against P1's runs.
 
 ## Issues, in order
 
-Filed on `original-solutions/factory-on-paradev` after this file's PR opened. Each body is the build contract; where a body and this spec differ, the body wins. Numbers are filled in by the PR that lands this file.
+Filed 2026-11-14 on `original-solutions/factory-on-paradev`, all `factory:proposed`. Each body is the build contract; where a body and this spec differ, the body wins.
 
 | Issue | Title | Depends on | Kind |
 |---|---|---|---|
-| #A | chore: land the P2 spec | PR #49 | tracking, closed by the PR that adds this file |
-| #B | feat: targets in the config, and thread records that carry their target | #A | factory, M |
-| #C | feat: the adapter runs every call against the thread's target, with the cloud launch, liveness, resume and orphan sweep | #B | factory, L |
-| #D | feat: host readings over SSH, and factory-runner hosts check | #B | factory, M |
-| #E | feat: placement by load at launch, with per-target slots and the cloud proxy check | #C, #D | factory, M |
-| #F | feat: status and the belt show each target and where each run is | #E | factory, S |
-| #G | fix: the factory skill trusts a push dry run over GitHub's permissions object | none | factory, S |
-| #H | test: live smoke of the runner on the Trilogy Mac host | #E, #F | hands-on |
-| #I | test: live smoke of the runner in Paradev Cloud, before 2026-12-13 | #E, #F, #G | hands-on |
-| #J | chore: clockwork runs on this Mac and the Trilogy Mac for a week | #H | hands-on |
+| #51 | chore: land the P2 spec | PR #49 | tracking, closed by the PR that adds this file |
+| #52 | feat: targets in the config, and thread records that carry their target | #51 | factory, M |
+| #53 | feat: the adapter runs every call against the thread's target, with the cloud launch, liveness, resume and orphan sweep | #52 | factory, L |
+| #54 | feat: host readings over SSH, and factory-runner hosts check | #52 | factory, M |
+| #55 | feat: placement by load at launch, with per-target slots and the cloud proxy check | #53, #54 | factory, M |
+| #56 | feat: status and the belt show each target and where each run is | #55 | factory, S |
+| #57 | fix: the factory skill trusts a push dry run over GitHub's permissions object | none | factory, S |
+| #58 | test: live smoke of the runner on the Trilogy Mac host | #55, #56 | hands-on |
+| #59 | test: live smoke of the runner in Paradev Cloud, before 2026-12-13 | #55, #56, #57 | hands-on |
+| #60 | chore: clockwork runs on this Mac and the Trilogy Mac for a week | #58 | hands-on |
 
 ## Assumptions
 
-1. X8 holds on a host: `--base-branch` does not fetch there either. #H records it.
-2. A killed host agent reads as L5b: explain stuck at `working`, terminal alive. #H records it.
-3. `workspaces list --host cloud` shows tags or filters by `--tag`. #C records which.
-4. A cloud branch is cut from GitHub's current tip of the base. #I records it.
+1. X8 holds on a host: `--base-branch` does not fetch there either. #58 records it.
+2. A killed host agent reads as L5b: explain stuck at `working`, terminal alive. #58 records it.
+3. `workspaces list --host cloud` shows tags or filters by `--tag`. #53 records which.
+4. A cloud branch is cut from GitHub's current tip of the base. #59 records it.
 5. `placement` is a new machine-log event type the ledger reader accepts without a version bump.
-6. One SSH read per host per pass, and one `snapshot` per target per pass, keep a 30-second pass cheap. #H measures it.
+6. One SSH read per host per pass, and one `snapshot` per target per pass, keep a 30-second pass cheap. #58 measures it.
 
 ## Asks for Paradev that would remove workarounds
 
