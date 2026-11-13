@@ -2291,6 +2291,12 @@ it.live("a passing attempt writes its commands, their output and the verdict to 
     );
     // Kept after the attempt, and outside the checkout directory.
     assert.isFalse(NodeFS.existsSync(out._tag === "pass" ? out.dir : ""));
+    // Private to the factory's user: the file and its run directory.
+    assert.strictEqual(NodeFS.statSync(gateLogPath(dataDir, run, 1)).mode & 0o777, 0o600);
+    assert.strictEqual(
+      NodeFS.statSync(NodePath.dirname(gateLogPath(dataDir, run, 1))).mode & 0o777,
+      0o700,
+    );
     assert.isFalse(gateLogPath(dataDir, run, 1).startsWith(NodePath.join(dataDir, "gate") + "/"));
   }).pipe(provided),
 );
@@ -2402,5 +2408,90 @@ it.live("onStart does not run on a merge conflict or a checkout that fails", () 
       .pipe(Effect.flip);
     assert.strictEqual(failed._tag, "WorkspaceUnexpectedError");
     assert.strictEqual(calls, 0);
+  }).pipe(provided),
+);
+
+it.live("a gate log that cannot be made leaves a pass a pass and a fail a fail", () =>
+  Effect.gen(function* () {
+    const remote = makeRemote("gate-log-blocked");
+    const dataDir = tempDir("gate-log-blocked-data");
+    const sha = remote.push([["README", "pushed\n"]]);
+    // A regular file where the logs directory should be: nothing under it can be made.
+    NodeFS.writeFileSync(NodePath.join(dataDir, "gate-logs"), "in the way");
+    const gate = yield* FactoryGate;
+    const commandsOf = (run: GateInput["run"]) =>
+      entries(dataDir, run)
+        .filter((l) => l.event === "gate_command")
+        .map((l) => [
+          (l.data as { command: string }).command,
+          (l.data as { exit_code: number }).exit_code,
+        ]);
+
+    const run1 = newRunId(REPO, "10", 1);
+    Ledger.create(dataDir, run1, { clock: ticking(T0, 1000) }).close();
+    const passed = yield* gate.run({
+      ...baseInput(remote, dataDir, run1, sha, sha),
+      gate: ["echo one", "true"],
+    });
+    assert.strictEqual(passed._tag, "pass");
+    assert.deepStrictEqual(commandsOf(run1), [
+      ["echo one", 0],
+      ["true", 0],
+    ]);
+
+    const run2 = newRunId(REPO, "10", 2);
+    Ledger.create(dataDir, run2, { clock: ticking(T0, 1000) }).close();
+    const failed = yield* gate.run({
+      ...baseInput(remote, dataDir, run2, sha, sha),
+      gate: ["true", "exit 2"],
+    });
+    assert.strictEqual(failed._tag, "fail");
+    if (failed._tag !== "fail") return;
+    assert.strictEqual(failed.failure.exitCode, 2);
+    assert.deepStrictEqual(commandsOf(run2), [
+      ["true", 0],
+      ["exit 2", 2],
+    ]);
+  }).pipe(provided),
+);
+
+it.live("an attempt that ends in an error ends its gate log with errored", () =>
+  Effect.gen(function* () {
+    const remote = makeRemote("gate-log-errored");
+    const dataDir = tempDir("gate-log-errored-data");
+    const run = newRunId(REPO, "10", 1);
+    const sha = remote.push([["README", "pushed\n"]]);
+    Ledger.create(dataDir, run, { clock: ticking(T0, 1000) }).close();
+    const gate = yield* FactoryGate;
+    const error = yield* gate
+      .run({ ...baseInput(remote, dataDir, run, sha, sha), gate: ["true", "true"] })
+      .pipe(Effect.flip);
+    assert.strictEqual(error._tag, "GateCommandSpawnError");
+    assert.match(
+      NodeFS.readFileSync(gateLogPath(dataDir, run, 1), "utf8"),
+      new RegExp(`^\\$ true\\nexit 0 after ${GATE_LOG_SECONDS}\\n\\$ true\\ngate attempt 1 errored\\n$`),
+    );
+  }).pipe(Effect.provide(gateLayer.pipe(Layer.provide(failingShellLayer(2))))),
+);
+
+it.live("a pass whose ledger lines cannot be written is errored in the gate log, not passed", () =>
+  Effect.gen(function* () {
+    const remote = makeRemote("gate-log-record-error");
+    const dataDir = tempDir("gate-log-record-error-data");
+    const run = newRunId(REPO, "10", 1);
+    const sha = remote.push([["README", "pushed\n"]]);
+    Ledger.create(dataDir, run, { clock: ticking(T0, 1000) }).close();
+    const input = baseInput(remote, dataDir, run, sha, sha);
+    const error = yield* (yield* FactoryGate)
+      .run({
+        ...input,
+        gate: ["true"],
+        options: { ...input.options, ledgerIo: failingLedgerIo({ write: 2 }) },
+      })
+      .pipe(Effect.flip);
+    assert.strictEqual(error._tag, "GateRecordError");
+    const log = NodeFS.readFileSync(gateLogPath(dataDir, run, 1), "utf8");
+    assert.match(log, /gate attempt 1 errored\n$/);
+    assert.notInclude(log, "passed");
   }).pipe(provided),
 );
