@@ -1,0 +1,18 @@
+{
+  "id": "c8f29e4f-86aa-4e6f-83cb-301a9d0460f4",
+  "name": "fac gate probe",
+  "branch": "superset/fac-gate-probe-c8f29e4f",
+  "status": "ready",
+  "visibility": "org",
+  "agentStatus": null,
+  "description": null,
+  "environmentId": "edad9805-e48d-40f3-a06c-e19a4105f974",
+  "createdByUserId": "8bccd4e3-aa91-4913-afe4-cb4dce8edfbf",
+  "createdAt": "2026-11-13T10:09:54.211Z",
+  "archivedAt": null,
+  "repositories": "original-solutions/factory-paradev-spike",
+  "tasks": null,
+  "labels": null,
+  "url": "superset://v2-workspace/c8f29e4f-86aa-4e6f-83cb-301a9d0460f4",
+  "webUrl": "https://app.superset.sh/workspaces/c8f29e4f-86aa-4e6f-83cb-301a9d0460f4"
+}

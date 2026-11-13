@@ -1,0 +1,6 @@
+{
+  "terminalId": "9cca8a38-a80b-44c6-8ffb-40e2a5432778",
+  "cols": 120,
+  "rows": 32,
+  "text": "❯ echo MEM=$SUPERSET_SANDBOX_MEMORY_MB VCPUS=$SUPERSET_SANDBOX_VCPUS; nproc; free -m | head -2; df -h / | tail -1; echo \nSIZE-END\nMEM=4096 VCPUS=2\n2\n               total        used        free      shared  buff/cache   available\nMem:            4284         744        3247           0         500        3539\n/dev/vdb         64G  6.9G   58G  11% /\nSIZE-END\n❯ "
+}

@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "agents",
+    "read",
+    "--host",
+    "cloud",
+    "--workspace",
+    "b4b0e881-16c4-48b5-afbc-dc146d7fee7f",
+    "--terminal",
+    "abcd1342-7f2e-4650-8548-ef86eb4dacf2",
+    "--json"
+  ],
+  "exit": 1,
+  "startedAt": 1794565014900,
+  "durationMs": 379,
+  "stderr": "Error: No transcript for that terminal\nHint: Its agent either keeps none where Paradev can read it, or the terminal is not an agent's\n"
+}

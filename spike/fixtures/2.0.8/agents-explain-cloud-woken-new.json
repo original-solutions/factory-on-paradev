@@ -1,0 +1,10 @@
+{
+  "terminalId": "abcd1342-7f2e-4650-8548-ef86eb4dacf2",
+  "state": "none",
+  "agentId": null,
+  "headline": "No such terminal running.",
+  "because": "there is no live terminal with this id and no agent was ever recorded for it. Check the id with `superset terminals list`",
+  "details": [],
+  "lastEventType": null,
+  "lastEventAt": null
+}

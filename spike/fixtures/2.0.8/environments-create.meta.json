@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "environments",
+    "create",
+    "--name",
+    "factory-spike",
+    "--repo",
+    "original-solutions/factory-paradev-spike",
+    "--scope",
+    "personal",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794562427486,
+  "durationMs": 1556,
+  "stderr": ""
+}

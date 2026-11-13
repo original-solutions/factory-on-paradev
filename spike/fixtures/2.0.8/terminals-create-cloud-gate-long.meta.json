@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "terminals",
+    "create",
+    "--host",
+    "cloud",
+    "--workspace",
+    "c8f29e4f-86aa-4e6f-83cb-301a9d0460f4",
+    "--command",
+    "seq 1 5000; echo FACTORY-GATE-EXIT=$?",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794564670596,
+  "durationMs": 476,
+  "stderr": ""
+}

@@ -1,0 +1,22 @@
+{
+  "workspaces": [
+    {
+      "id": "a2bc69cb-10d6-4c73-adf9-a9efae0372a2",
+      "name": "workspace",
+      "project": "project",
+      "branch": "superset/fac-3-divide-a2bc69cb",
+      "terminals": [
+        {
+          "id": "c66509a3-aea9-40f5-b34d-f9a40170963e",
+          "title": "◑ Claude Code",
+          "agent": {
+            "id": "claude",
+            "state": "working"
+          }
+        }
+      ],
+      "layout": null,
+      "layoutError": null
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "id": "a2bc69cb-10d6-4c73-adf9-a9efae0372a2",
+  "name": "fac #3 divide",
+  "branch": "superset/fac-3-divide-a2bc69cb",
+  "status": "ready",
+  "visibility": "org",
+  "agentStatus": "working",
+  "description": null,
+  "environmentId": "edad9805-e48d-40f3-a06c-e19a4105f974",
+  "createdByUserId": "8bccd4e3-aa91-4913-afe4-cb4dce8edfbf",
+  "createdAt": "2026-11-13T10:07:49.822Z",
+  "archivedAt": null,
+  "repositories": "original-solutions/factory-paradev-spike",
+  "tasks": null,
+  "labels": null,
+  "url": "superset://v2-workspace/a2bc69cb-10d6-4c73-adf9-a9efae0372a2",
+  "webUrl": "https://app.superset.sh/workspaces/a2bc69cb-10d6-4c73-adf9-a9efae0372a2"
+}

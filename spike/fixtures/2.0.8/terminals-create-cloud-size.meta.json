@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "terminals",
+    "create",
+    "--host",
+    "cloud",
+    "--workspace",
+    "c8f29e4f-86aa-4e6f-83cb-301a9d0460f4",
+    "--command",
+    "echo MEM=$SUPERSET_SANDBOX_MEMORY_MB VCPUS=$SUPERSET_SANDBOX_VCPUS; nproc; free -m | head -2; df -h / | tail -1; echo SIZE-END",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794564672216,
+  "durationMs": 662,
+  "stderr": ""
+}

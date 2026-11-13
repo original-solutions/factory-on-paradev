@@ -1,0 +1,28 @@
+{
+  "id": "edad9805-e48d-40f3-a06c-e19a4105f974",
+  "organizationId": "fef625a4-1dbc-451b-b0e1-1c285c61a68e",
+  "name": "factory-spike",
+  "provider": "vercel",
+  "sourceKind": "image",
+  "sourceRef": "superset-hostsvc",
+  "region": "syd1",
+  "bundleSha": "161d18ee8d84faae84fcca4fceb6b1f86f08a18288fdc5f09808ff4c25296dc1",
+  "primaryRepositoryId": "3117ea7c-0183-4bd8-918a-fcaa40479e51",
+  "scope": "personal",
+  "machineSize": null,
+  "createdByUserId": "8bccd4e3-aa91-4913-afe4-cb4dce8edfbf",
+  "archivedAt": null,
+  "createdAt": "2026-11-13T09:33:48.556Z",
+  "updatedAt": "2026-11-13T09:33:48.592Z",
+  "repositories": [
+    {
+      "id": "3117ea7c-0183-4bd8-918a-fcaa40479e51",
+      "fullName": "original-solutions/factory-paradev-spike",
+      "owner": "original-solutions",
+      "name": "factory-paradev-spike",
+      "defaultBranch": "main"
+    }
+  ],
+  "projectIds": [],
+  "url": "https://app.superset.sh/environments/edad9805-e48d-40f3-a06c-e19a4105f974"
+}

@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "terminals",
+    "create",
+    "--host",
+    "cloud",
+    "--workspace",
+    "a2bc69cb-10d6-4c73-adf9-a9efae0372a2",
+    "--command",
+    "gh api user --jq .login; git config user.email; git remote -v; echo WHOAMI-END",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794564524981,
+  "durationMs": 534,
+  "stderr": ""
+}

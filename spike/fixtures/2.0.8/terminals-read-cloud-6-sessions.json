@@ -1,0 +1,6 @@
+{
+  "terminalId": "a3cea19f-5b5e-4eb5-a710-36c0a3d05c38",
+  "cols": 120,
+  "rows": 32,
+  "text": "❯ echo WP=$SUPERSET_WORKSPACE_PATH; ls -t ~/.claude/projects/*/*.jsonl 2>/dev/null | head -3; pgrep -x claude || echo NO\n-CLAUDE-PROCESS; git -C $SUPERSET_WORKSPACE_PATH status --short | head -5; git -C $SUPERSET_WORKSPACE_PATH log --oneline\n -3; echo SESS-END\nWP=/workspace\n/home/ubuntu/.claude/projects/-workspace/a02764cc-54fe-4a88-968a-b5fb3e45f24f.jsonl\nNO-CLAUDE-PROCESS\nf3e2fec (grafted, HEAD -> superset/fac-6-range-b4b0e881, origin/main, origin/HEAD, main) chore: a gate step that fails t\nhe factory-runner gate once, for the smoke\nSESS-END\n❯ "
+}

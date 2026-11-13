@@ -1,0 +1,442 @@
+[
+  {
+    "fullName": "original-solutions/repo-1",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-2",
+    "defaultBranch": "master",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-3",
+    "defaultBranch": "master",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-4",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-5",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-6",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-7",
+    "defaultBranch": "master",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-8",
+    "defaultBranch": "master",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-9",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-10",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-11",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-12",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-13",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-14",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-15",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-16",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-17",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-18",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-19",
+    "defaultBranch": "master",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-20",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-21",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-22",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/factory-paradev-spike",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-23",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-24",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-25",
+    "defaultBranch": "master",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-26",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-27",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-28",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-29",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-30",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-31",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-32",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-33",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-34",
+    "defaultBranch": "master",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-35",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-36",
+    "defaultBranch": "master",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-37",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-38",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-39",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-40",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-41",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-42",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-43",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-44",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-45",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-46",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-47",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-48",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-49",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-50",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-51",
+    "defaultBranch": "master",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-52",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-53",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-54",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-55",
+    "defaultBranch": "master",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-56",
+    "defaultBranch": "master",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-57",
+    "defaultBranch": "master",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-58",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-59",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-60",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-61",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-62",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-63",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-64",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-65",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-66",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-67",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-68",
+    "defaultBranch": "master",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-69",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-70",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-71",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-72",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-73",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-74",
+    "defaultBranch": "main",
+    "visibility": "public"
+  },
+  {
+    "fullName": "original-solutions/repo-75",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-76",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-77",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-78",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-79",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-80",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-81",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-82",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-83",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-84",
+    "defaultBranch": "master",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-85",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-86",
+    "defaultBranch": "main",
+    "visibility": "private"
+  },
+  {
+    "fullName": "original-solutions/repo-87",
+    "defaultBranch": "main",
+    "visibility": "private"
+  }
+]

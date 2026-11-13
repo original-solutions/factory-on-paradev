@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "environments",
+    "repos",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794562426818,
+  "durationMs": 567,
+  "stderr": ""
+}

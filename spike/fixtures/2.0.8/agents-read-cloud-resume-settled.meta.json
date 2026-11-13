@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "agents",
+    "read",
+    "--host",
+    "cloud",
+    "--workspace",
+    "b4b0e881-16c4-48b5-afbc-dc146d7fee7f",
+    "--terminal",
+    "aeec4149-6f09-40cd-85bd-b93cbe72b264",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794565095529,
+  "durationMs": 532,
+  "stderr": ""
+}

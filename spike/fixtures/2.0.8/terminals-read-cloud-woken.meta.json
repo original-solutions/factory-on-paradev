@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "terminals",
+    "read",
+    "--host",
+    "cloud",
+    "--workspace",
+    "b4b0e881-16c4-48b5-afbc-dc146d7fee7f",
+    "--terminal",
+    "abcd1342-7f2e-4650-8548-ef86eb4dacf2",
+    "--max-lines",
+    "40",
+    "--json"
+  ],
+  "exit": 1,
+  "startedAt": 1794565013293,
+  "durationMs": 437,
+  "stderr": "Error: Terminal session \"abcd1342-7f2e-4650-8548-ef86eb4dacf2\" has ended; create a new terminal id.\n"
+}

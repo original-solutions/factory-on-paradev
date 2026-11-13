@@ -12,6 +12,8 @@ const SEEN: ReadonlyArray<readonly [string, CliErrorKind]> = [
   ["Host service for this machine isn't running", "PARADEV_OFFLINE"],
   ["Not logged in", "PARADEV_SIGNED_OUT"],
   ["Workspace not found on host ", "NOT_FOUND"],
+  ['Terminal session "', "UNKNOWN"],
+  ["No transcript for that terminal", "NO_TRANSCRIPT"],
   ["A stored value is at most 65536 bytes", "TOO_LARGE"],
 ];
 

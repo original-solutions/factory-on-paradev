@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "connections",
+    "agents",
+    "list",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794564442428,
+  "durationMs": 497,
+  "stderr": ""
+}

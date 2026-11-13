@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "agents",
+    "create",
+    "--host",
+    "cloud",
+    "--workspace",
+    "b4b0e881-16c4-48b5-afbc-dc146d7fee7f",
+    "--agent",
+    "claude",
+    "--resume-session",
+    "a02764cc-54fe-4a88-968a-b5fb3e45f24f",
+    "--prompt",
+    "The session was interrupted. Continue from where you were and end with a result line as before.",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794565058636,
+  "durationMs": 845,
+  "stderr": ""
+}
