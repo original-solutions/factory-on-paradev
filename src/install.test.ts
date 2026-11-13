@@ -559,3 +559,42 @@ describe("install", () => {
     expect(f.outs.filter((line) => line.includes("removed"))).toEqual([]);
   });
 });
+
+describe("install and the hosts", () => {
+  const WITH_HOST = `repos: []
+hosts:
+  - id: h1
+    name: mini
+    ssh: me@mini
+    max_runs: 2
+paradev:
+  cli: /opt/superset
+  agent: claude
+  belt:
+    enabled: false
+`;
+
+  it("checks each configured host after the login check, prints the lines, and still installs", async () => {
+    const f = makeFixture();
+    write(NodePath.join(f.dataDir, "config.yml"), WITH_HOST);
+    expect(await install(f.env)).toBe(0);
+    expect(f.outs).toContain("mini (me@mini)");
+    expect(f.outs.some((line) => line.startsWith("  online: "))).toBe(true);
+    expect(f.outs.some((line) => line.startsWith("  ssh: "))).toBe(true);
+    expect(f.outs).toContain(
+      "host mini is not ready; the runner gives it no run until a reload passes factory-runner hosts check mini",
+    );
+    const login = f.calls.findIndex((call) => call[1] === "auth");
+    const firstSsh = f.calls.findIndex((call) => call[0] === "ssh");
+    const firstLaunchctl = f.calls.findIndex((call) => call[0] === "/bin/launchctl");
+    expect(login).toBeGreaterThanOrEqual(0);
+    expect(firstSsh).toBeGreaterThan(login);
+    expect(firstSsh).toBeLessThan(firstLaunchctl);
+  });
+
+  it("makes no ssh call when the config has no hosts", async () => {
+    const f = makeFixture();
+    expect(await install(f.env)).toBe(0);
+    expect(f.calls.some((call) => call[0] === "ssh")).toBe(false);
+  });
+});

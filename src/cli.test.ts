@@ -8,6 +8,16 @@ import { describe, expect, it } from "vitest";
 
 import { readAttentionFile } from "./attention.ts";
 import { runCli, type CliIo } from "./cli.ts";
+import type { CommandResult } from "./install.ts";
+import {
+  CLAUDE_VERSION,
+  GH_AUTH_STATUS,
+  GIT_EMAIL,
+  PROXY_ENV_READ,
+  remoteUrl,
+  trustRead,
+  TRUE_COMMAND,
+} from "./paradev/ssh.ts";
 import { PAUSE_FILE } from "./claims.ts";
 import { formatTs } from "./ledger/time.ts";
 import { makeCause, type RunEvent } from "./ledger/events.ts";
@@ -47,7 +57,12 @@ const seed = (dir: string, events: ReadonlyArray<RunEvent> = BUILDING) => {
   }
 };
 
-const setup = (options: { isRunner?: (pid: number) => boolean } = {}) => {
+const setup = (
+  options: {
+    isRunner?: (pid: number) => boolean;
+    run?: (command: string, args: ReadonlyArray<string>, timeoutMs: number) => CommandResult;
+  } = {},
+) => {
   const dataDir = tempDir("cli");
   const packageRoot = tempDir("pkg");
   NodeFS.writeFileSync(NodePath.join(packageRoot, "package.json"), '{"version":"9.9.9"}');
@@ -68,6 +83,11 @@ const setup = (options: { isRunner?: (pid: number) => boolean } = {}) => {
     gh: () => {
       throw new Error("gh is not under test here");
     },
+    run:
+      options.run ??
+      (() => {
+        throw new Error("no command is under test here");
+      }),
   };
   return { dataDir, packageRoot, machineConfigPath, outs, errs, io };
 };
@@ -257,5 +277,130 @@ describe("usage", () => {
     const s = setup();
     expect(await runCli(["frobnicate"], s.io)).toBe(2);
     expect(s.errs.join("\n")).toContain("usage: factory-runner run | install | uninstall");
+  });
+});
+
+describe("hosts check", () => {
+  const CONFIG = `repos:
+  - repo: acme/app
+    path: /Users/tom/app
+    hosts:
+      - id: h1
+        path: /Users/me/app
+hosts:
+  - id: h1
+    name: mini
+    ssh: me@mini
+    max_runs: 2
+  - id: h2
+    name: studio
+    ssh: me@studio
+    max_runs: 2
+paradev:
+  cli: /opt/superset
+  agent: claude
+  belt:
+    enabled: false
+`;
+  const SECRET = "sk-secret-value";
+  const good = (stdout: string): CommandResult => ({ status: 0, stdout, stderr: "" });
+
+  /** A machine where every check passes on both hosts; `answers` replaces what one ssh command prints. */
+  const hostsRun = (answers: Record<string, CommandResult> = {}) => {
+    const calls: Array<string> = [];
+    const ssh: Record<string, CommandResult> = {
+      [TRUE_COMMAND]: good(""),
+      [remoteUrl("/Users/me/app")]: good("git@github.com:acme/app.git\n"),
+      [trustRead("/Users/me/app")]: good("yes\n"),
+      [PROXY_ENV_READ]: good(""),
+      [GIT_EMAIL]: good("me@example.com\n"),
+      [GH_AUTH_STATUS]: good("ok"),
+      [CLAUDE_VERSION]: good("2.1.0"),
+      ...answers,
+    };
+    const run = (command: string, args: ReadonlyArray<string>): CommandResult => {
+      if (command === "ssh") {
+        calls.push(`ssh ${args.at(-2)}`);
+        return ssh[args.at(-1) ?? ""] ?? { status: 1, stdout: "", stderr: "no answer" };
+      }
+      calls.push(`${command} ${args.join(" ")}`);
+      const key = args.filter((arg) => arg !== "--json").join(" ");
+      if (key === "hosts list") {
+        return good(JSON.stringify([{ id: "h1", name: "mini", online: "yes" }, { id: "h2", name: "studio", online: "yes" }]));
+      }
+      if (key.startsWith("projects list --host")) {
+        return good(JSON.stringify([{ id: "p", name: "app", path: "/Users/me/app", repo: "acme/app" }]));
+      }
+      return { status: 1, stdout: "", stderr: "unknown" };
+    };
+    return { run, calls };
+  };
+
+  const seedConfig = (s: ReturnType<typeof setup>, text = CONFIG) =>
+    NodeFS.writeFileSync(s.machineConfigPath, text);
+
+  it("prints ok for every line and exits 0 when each host is ready", async () => {
+    const h = hostsRun();
+    const s = setup({ run: h.run });
+    seedConfig(s);
+    expect(await runCli(["hosts", "check"], s.io)).toBe(0);
+    expect(s.outs.filter((line) => !line.startsWith("  "))).toEqual(["mini (me@mini)", "studio (me@studio)"]);
+    expect(s.outs.filter((line) => line.startsWith("  ")).every((line) => line.endsWith(": ok"))).toBe(true);
+    expect(s.outs).toContain("  online: ok");
+    expect(s.errs).toEqual([]);
+  });
+
+  it("prints the fix of each failing line and exits 1", async () => {
+    const h = hostsRun({ [GH_AUTH_STATUS]: { status: 1, stdout: "", stderr: "not logged in" } });
+    const s = setup({ run: h.run });
+    seedConfig(s);
+    expect(await runCli(["hosts", "check"], s.io)).toBe(1);
+    expect(s.outs).toContain("  gh: gh auth login on the host");
+  });
+
+  it("checks only the host a name picks", async () => {
+    const h = hostsRun();
+    const s = setup({ run: h.run });
+    seedConfig(s);
+    expect(await runCli(["hosts", "check", "studio"], s.io)).toBe(0);
+    expect(s.outs[0]).toBe("studio (me@studio)");
+    expect(s.outs.filter((line) => !line.startsWith("  "))).toEqual(["studio (me@studio)"]);
+    expect(h.calls.some((call) => call.startsWith("ssh me@mini"))).toBe(false);
+    expect(h.calls.some((call) => call.startsWith("ssh me@studio"))).toBe(true);
+  });
+
+  it("says so, and exits 1, for a name that is no host", async () => {
+    const h = hostsRun();
+    const s = setup({ run: h.run });
+    seedConfig(s);
+    expect(await runCli(["hosts", "check", "nope"], s.io)).toBe(1);
+    expect(s.errs).toEqual(["no host nope in the machine config"]);
+    expect(h.calls).toEqual([]);
+  });
+
+  it("says there are no hosts, and exits 0, when the config has none", async () => {
+    const s = setup();
+    seedConfig(s, CONFIG.replace(/hosts:\n {2}- id: h1\n {4}name[\s\S]*?(?=paradev:)/, "").replace(/ {4}hosts:\n {6}- id: h1\n {8}path: .*\n/, ""));
+    expect(await runCli(["hosts", "check"], s.io)).toBe(0);
+    expect(s.outs).toEqual(["no hosts in the machine config"]);
+  });
+
+  it("exits 1 when there is no machine config", async () => {
+    const s = setup();
+    expect(await runCli(["hosts", "check"], s.io)).toBe(1);
+    expect(s.errs.length).toBe(1);
+  });
+
+  it("never prints the proxy token's value", async () => {
+    for (const answer of [good(SECRET), good(`ANTHROPIC_AUTH_TOKEN\n${SECRET}`), { status: 1, stdout: SECRET, stderr: SECRET }]) {
+      const h = hostsRun({ [PROXY_ENV_READ]: answer });
+      const s = setup({ run: h.run });
+      seedConfig(s);
+      expect(await runCli(["hosts", "check"], s.io)).toBe(1);
+      expect(s.outs.join("\n") + s.errs.join("\n")).not.toContain(SECRET);
+      expect(s.outs).toContain(
+        "  proxy env: add ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN to env in ~/.claude/settings.json on the host",
+      );
+    }
   });
 });
