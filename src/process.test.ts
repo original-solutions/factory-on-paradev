@@ -522,3 +522,61 @@ it.live("a command already nicer than the niceness asked for keeps its own, with
     assert.deepStrictEqual(logs, []);
   }),
 );
+
+it.live("a logFile holds the output while the command still runs, and tail is unchanged", () =>
+  withTempDir((dir) =>
+    Effect.gen(function* () {
+      const logFile = NodePath.join(dir, "out.log");
+      const fiber = yield* Effect.forkChild(
+        run({ command: `printf 'first\\n'; sleep 1; printf 'second\\n'`, shell: true, logFile }),
+      );
+      yield* Effect.promise(() =>
+        vi.waitFor(() => assert.strictEqual(NodeFS.readFileSync(logFile, "utf8"), "first\n"), {
+          timeout: 5_000,
+          interval: 20,
+        }),
+      );
+      assert.isUndefined(fiber.pollUnsafe());
+      const result = yield* Fiber.join(fiber);
+      assert.strictEqual(result.tail, "first\nsecond\n");
+      assert.strictEqual(NodeFS.readFileSync(logFile, "utf8"), "first\nsecond\n");
+    }),
+  ),
+);
+
+it.live("a logFile gets stderr too, also when stderr is kept apart", () =>
+  withTempDir((dir) =>
+    Effect.gen(function* () {
+      const logFile = NodePath.join(dir, "out.log");
+      const result = yield* run({
+        command: `echo out; sleep 0.3; echo err >&2`,
+        shell: true,
+        separateStderr: true,
+        logFile,
+      });
+      assert.strictEqual(result.tail, "out\n");
+      assert.strictEqual(result.stderrTail, "err\n");
+      assert.strictEqual(NodeFS.readFileSync(logFile, "utf8"), "out\nerr\n");
+    }),
+  ),
+);
+
+it.live("a logFile that cannot be opened is a warning and the command runs the same", () =>
+  withTempDir((dir) =>
+    Effect.gen(function* () {
+      const logs: Array<string> = [];
+      const capture = Logger.make(({ logLevel, message }) => {
+        logs.push(`${logLevel} ${String(Array.isArray(message) ? message[0] : message)}`);
+      });
+      const result = yield* run({
+        command: "echo ran",
+        shell: true,
+        logFile: NodePath.join(dir, "missing", "out.log"),
+      }).pipe(Effect.provide(Logger.layer([capture], { mergeWithExisting: false })));
+      assert.strictEqual(result.exitCode, 0);
+      assert.strictEqual(result.tail, "ran\n");
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.match(logs[0]!, /^Warn /);
+    }),
+  ),
+);

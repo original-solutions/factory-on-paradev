@@ -76,6 +76,7 @@ it("the list is the spec's table", () => {
     "agents read: local workspace terminal",
     "terminals send: local workspace terminal text keys",
     "terminals close: local workspace terminal",
+    "terminals create: local workspace command",
     "snapshot: workspace",
     "auth whoami: ",
     "pages publish: page title visibility label no-watch workspace",

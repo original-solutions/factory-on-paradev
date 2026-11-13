@@ -7,6 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as TestClock from "effect/testing/TestClock";
 
 import { useTempDirs } from "../ledger/testSupport.ts";
@@ -1547,6 +1548,73 @@ describe("worktreesDirectory", () => {
         }),
       );
       assert.strictEqual(yield* t.run((s) => s.worktreesDirectory("/default/dir")), "/Users/me/.paradev/worktrees");
+    }),
+  );
+});
+
+describe("showGateLog", () => {
+  const WS = L1_WS;
+  const created = (path: string) => [
+    "terminals",
+    "create",
+    "--local",
+    "--workspace",
+    WS,
+    "--command",
+    `tail -n +1 -F ${path}`,
+  ];
+  const saved = (data: string) => readThread(data, WS).pipe(Effect.provide(NodeServices.layer));
+  const thread = `local:${WS}`;
+
+  it.live("opens one terminal per attempt, quotes the path, and leaves terminals alone", () =>
+    Effect.gen(function* () {
+      const logPath = "/data/gate-logs/it's a run/1.log";
+      const t = rig([
+        { argv: created(`'/data/gate-logs/it'\\''s a run/1.log'`), answer: { id: "t-1" } },
+        { argv: created("/data/gate-logs/r/2.log"), answer: { id: "t-2" } },
+      ]);
+      yield* seed(t.data, record());
+      yield* t.run((s) => s.showGateLog(thread, 1, logPath));
+      assert.deepStrictEqual(t.calls.length, 1);
+      const after = (yield* saved(t.data))!;
+      assert.deepStrictEqual(after.gateLogAttempts, [1]);
+      assert.deepStrictEqual(after.terminals, [L1_TERM]);
+      // The same attempt again: no call (the fake dies on an unexpected argv).
+      yield* t.run((s) => s.showGateLog(thread, 1, logPath));
+      assert.strictEqual(t.calls.length, 1);
+      yield* t.run((s) => s.showGateLog(thread, 2, "/data/gate-logs/r/2.log"));
+      assert.strictEqual(t.calls.length, 2);
+      assert.deepStrictEqual((yield* saved(t.data))!.gateLogAttempts, [1, 2]);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("a failing terminals create is one warning and records nothing", () =>
+    Effect.gen(function* () {
+      const logs: Array<string> = [];
+      const capture = Logger.make(({ logLevel, message }) => {
+        logs.push(`${logLevel} ${(Array.isArray(message) ? message : [message]).join(" ")}`);
+      });
+      const t = rig([{ argv: created("/g/1.log"), fail: "boom" }]);
+      yield* seed(t.data, record());
+      yield* t
+        .run((s) => s.showGateLog(thread, 1, "/g/1.log"))
+        .pipe(Effect.provide(Logger.layer([capture], { mergeWithExisting: false })));
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.match(logs[0]!, /^Warn /);
+      assert.include(logs[0]!, thread);
+      assert.include(logs[0]!, "boom");
+      assert.isUndefined((yield* saved(t.data))!.gateLogAttempts);
+    }),
+  );
+
+  it.live("an archived or unknown thread makes no call", () =>
+    Effect.gen(function* () {
+      const t = rig([]);
+      yield* seed(t.data, record({ archivedAt: 5 }));
+      yield* t.run((s) => s.showGateLog(thread, 1, "/g/1.log"));
+      yield* t.run((s) => s.showGateLog("t3-thread-1", 1, "/g/1.log"));
+      assert.deepStrictEqual(t.calls, []);
     }),
   );
 });

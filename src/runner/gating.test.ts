@@ -23,6 +23,7 @@ import {
   GateCommandSpawnError,
   WorkspaceSpawnError,
   WorkspaceUnexpectedError,
+  gateLogPath,
   gateRoot,
   type CommandResult,
   type GateError,
@@ -539,6 +540,9 @@ class FakeT3 {
     return this.failAt === index ? sessionsFailure(operation) : null;
   }
 
+  /** What `showGateLog` was called with: thread, attempt and path. */
+  readonly gateLogs: Array<string> = [];
+
   readonly sessions: GateContext["sessions"] = {
     findProject: (path) => {
       const failed = this.call(`findProject ${path}`, "find-project");
@@ -599,6 +603,10 @@ class FakeT3 {
       return Effect.succeed(this.checkout);
     },
     lastActivity: () => Effect.succeed(null),
+    showGateLog: (threadId, attempt, logPath) => {
+      this.gateLogs.push(`${threadId} ${attempt} ${logPath}`);
+      return Effect.void;
+    },
   };
 }
 
@@ -652,6 +660,8 @@ class FakeGate {
   removeFails = false;
   /** Every call of `run`, whatever it answered. */
   runs = 0;
+  /** The input of every call of `run`. */
+  readonly inputs: Array<GateInput> = [];
   /** When set, every call answers `queued`, as the real gate does at `max_concurrent_gates`, before it makes anything. */
   queued: { readonly running: number; readonly max: number } | null = null;
 
@@ -706,6 +716,7 @@ class FakeGate {
       }
     };
     this.runs += 1;
+    this.inputs.push(input);
     if (this.queued !== null) return Effect.succeed({ _tag: "queued", ...this.queued });
     return Effect.suspend((): Effect.Effect<GateResult, GateError> => {
       NodeFS.mkdirSync(root, { recursive: true });
@@ -1096,6 +1107,20 @@ describe("gate: the session's PR becomes ready, or it does not", () => {
       rig.project = { ...rig.project, gate: ["make check"] };
       yield* gateIn(rig);
       assert.strictEqual(rig.ws.calls[1], `gate ${checkoutDir(rig, 1)} make check`);
+    }),
+  );
+
+  it.effect("the gate gets an onStart that shows the attempt's log in the session's workspace", () =>
+    Effect.gen(function* () {
+      const rig = yield* readyForGate();
+      yield* gateIn(rig);
+      const input = rig.ws.inputs[0]!;
+      assert.isDefined(input.onStart);
+      assert.deepStrictEqual(rig.t3.gateLogs, []);
+      yield* input.onStart!;
+      assert.deepStrictEqual(rig.t3.gateLogs, [
+        `thread-1 1 ${gateLogPath(rig.dataDir, rig.run, 1)}`,
+      ]);
     }),
   );
 
