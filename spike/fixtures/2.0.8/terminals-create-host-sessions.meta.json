@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "terminals",
+    "create",
+    "--host",
+    "c9c39956e0c1756e30d6bb9f4f907ff1",
+    "--workspace",
+    "4cfac496-5143-4598-a385-41086ef5bd65",
+    "--command",
+    "ls -t ~/.claude/projects/-Users-tomk--paradev-worktrees-factory-paradev-spike-fac-11-2/*.jsonl; pgrep -fl \"claude --dangerously\" | grep -v pgrep | wc -l; echo FACTORY-SESSIONS-DONE",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794604511980,
+  "durationMs": 1124,
+  "stderr": ""
+}

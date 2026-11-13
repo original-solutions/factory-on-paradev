@@ -1,0 +1,13 @@
+{
+  "workspaces": [
+    {
+      "id": "4cfac496-5143-4598-a385-41086ef5bd65",
+      "name": "fac #11 greet",
+      "project": "factory-paradev-spike",
+      "branch": "fac/11-2",
+      "terminals": [],
+      "layout": null,
+      "layoutError": null
+    }
+  ]
+}

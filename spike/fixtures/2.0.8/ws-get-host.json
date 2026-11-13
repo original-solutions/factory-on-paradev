@@ -1,0 +1,16 @@
+{
+  "id": "f0f5d9c4-965a-4cc0-a503-f9d998a8cc92",
+  "name": "fac #11 greet",
+  "branch": "fac/11-1",
+  "type": "worktree",
+  "projectId": "380b9715-2ff5-4d8b-8e97-616b218ae450",
+  "projectName": "factory-paradev-spike",
+  "hostId": "c9c39956e0c1756e30d6bb9f4f907ff1",
+  "hostName": "trilogy-mac",
+  "taskId": null,
+  "worktreePath": "/Users/tomk/.paradev/worktrees/factory-paradev-spike/fac/11-1",
+  "worktreeExists": true,
+  "createdAt": "2026-11-13T21:02:37.056Z",
+  "url": "superset://v2-workspace/f0f5d9c4-965a-4cc0-a503-f9d998a8cc92",
+  "webUrl": "https://app.superset.sh/workspaces/f0f5d9c4-965a-4cc0-a503-f9d998a8cc92"
+}

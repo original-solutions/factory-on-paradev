@@ -1,0 +1,6 @@
+{
+  "terminalId": "4d901aa2-6514-4e01-812f-a002fba1335d",
+  "cols": 120,
+  "rows": 32,
+  "text": "'claude' '--dangerously-skip-permissions' '/factory original-solutions/factory-paradev-spike#11                         \n\nThe factory launched this session unattended, in a workspace it created for you. Nobody is in the chat. The factory owns\n➜  11-1 'claude' '--dangerously-skip-permissions' '/factory original-solutions/factory-paradev-spike#11\nquote> \nquote then then> The factory launched this session unattended, in a workspace it created for you. Nobody is in the chat.\n The factory owns the issue'\\''s labels and comments and runs its own gate after your draft PR.'\n\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n Accessing workspace:\n\n /Users/tomk/.paradev/worktrees/factory-paradev-spike/fac/11-1\n\n Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source\n project, or work from your team). If not, take a moment to review what's in this folder first.\n\n Claude Code'll be able to read, edit, and execute files here.\n\n Security guide\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel"
+}

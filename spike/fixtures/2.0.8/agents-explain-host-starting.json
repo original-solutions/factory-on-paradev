@@ -1,0 +1,10 @@
+{
+  "terminalId": "4d901aa2-6514-4e01-812f-a002fba1335d",
+  "state": "starting",
+  "agentId": null,
+  "headline": "No agent hook from this terminal yet.",
+  "because": "something may be running in the terminal, but no agent hook has reached Paradev. It is a program that is not an agent, an agent still starting, or an agent whose hooks are not installed",
+  "details": [],
+  "lastEventType": null,
+  "lastEventAt": null
+}

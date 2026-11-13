@@ -1,0 +1,10 @@
+{
+  "terminalId": "4d901aa2-6514-4e01-812f-a002fba1335d",
+  "state": "exited",
+  "agentId": "claude",
+  "headline": "claude has exited.",
+  "because": "claude ended 2 seconds ago because the terminal was closed on purpose",
+  "details": [],
+  "lastEventType": "Failed",
+  "lastEventAt": 1794604113331
+}

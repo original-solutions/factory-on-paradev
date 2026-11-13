@@ -1,0 +1,28 @@
+{
+  "workspace": {
+    "id": "80b50ae5-efab-4a32-a7b6-ed78a1ff94fd",
+    "organizationId": "fef625a4-1dbc-451b-b0e1-1c285c61a68e",
+    "projectId": "380b9715-2ff5-4d8b-8e97-616b218ae450",
+    "hostId": "c9c39956e0c1756e30d6bb9f4f907ff1",
+    "name": "fac #5 clamp",
+    "branch": "fac/5-1",
+    "type": "worktree",
+    "createdByUserId": "8bccd4e3-aa91-4913-afe4-cb4dce8edfbf",
+    "taskId": null,
+    "createdAt": "2026-11-13T21:17:37.491Z",
+    "updatedAt": "2026-11-13T21:17:37.491Z"
+  },
+  "terminals": [],
+  "agents": [
+    {
+      "ok": true,
+      "kind": "terminal",
+      "sessionId": "57be9902-cd2c-4c58-b5fa-46d77355336b",
+      "label": "Claude"
+    }
+  ],
+  "alreadyExists": false,
+  "txid": null,
+  "url": "superset://v2-workspace/80b50ae5-efab-4a32-a7b6-ed78a1ff94fd",
+  "webUrl": "https://app.superset.sh/workspaces/80b50ae5-efab-4a32-a7b6-ed78a1ff94fd"
+}

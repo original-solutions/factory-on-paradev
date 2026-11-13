@@ -1,0 +1,14 @@
+{
+  "sessions": [
+    {
+      "terminalId": "4d901aa2-6514-4e01-812f-a002fba1335d",
+      "workspaceId": "f0f5d9c4-965a-4cc0-a503-f9d998a8cc92",
+      "createdAt": 1794603757093,
+      "exited": false,
+      "exitCode": 0,
+      "attached": false,
+      "title": "'claude' '--dangerously-skip-permissions'",
+      "customTitle": null
+    }
+  ]
+}

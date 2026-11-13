@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "agents",
+    "wait",
+    "--host",
+    "c9c39956e0c1756e30d6bb9f4f907ff1",
+    "--workspace",
+    "f0f5d9c4-965a-4cc0-a503-f9d998a8cc92",
+    "--terminal",
+    "4d901aa2-6514-4e01-812f-a002fba1335d",
+    "--until",
+    "working",
+    "--timeout",
+    "300",
+    "--json"
+  ],
+  "exit": 1,
+  "startedAt": 1794604112553,
+  "durationMs": 129367,
+  "stderr": "Error: No agent is running in terminal 4d901aa2-6514-4e01-812f-a002fba1335d\nHint: It exited, or the terminal was closed\n"
+}
