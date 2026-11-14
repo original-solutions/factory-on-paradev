@@ -49,6 +49,13 @@ interface Answers {
   npm: "ok" | "fail";
   /** The version the staged tree's `status --json` reports, or a failed run. */
   smoke: string | "fail";
+  /** What else that report says: an idle reason, or output longer than the tail kept. */
+  smokeReason: string | null;
+  smokeTruncated: boolean;
+  /** Whether the clone's HEAD carries the tag; false is a clone that took a branch of that name. */
+  tagAtHead: boolean;
+  /** Gate calls this process is running now. */
+  gates: number;
 }
 
 interface Fixture {
@@ -82,7 +89,15 @@ const fixture = (underVersions = true): Fixture => {
     dataDir: NodePath.join(home, "data"),
     packageRoot,
     calls: [],
-    answers: { refs: [], npm: "ok", smoke: "0.2.0" },
+    answers: {
+      refs: [],
+      npm: "ok",
+      smoke: "0.2.0",
+      smokeReason: null,
+      smokeTruncated: false,
+      tagAtHead: true,
+      gates: 0,
+    },
     logs: [],
   };
 };
@@ -110,6 +125,13 @@ const fakeProcess = (f: Fixture) =>
         }
         if (input.command === "git") {
           const args = input.args ?? [];
+          if (args.includes("--points-at")) {
+            const dir = args[args.indexOf("-C") + 1]!;
+            const { version } = JSON.parse(NodeFS.readFileSync(NodePath.join(dir, "package.json"), "utf8")) as {
+              version: string;
+            };
+            return result(0, f.answers.tagAtHead ? `v${version}\n` : "");
+          }
           const tag = args[args.indexOf("--branch") + 1]!;
           fakeClone(args.at(-1)!, tag.slice(1));
           return result(0);
@@ -120,9 +142,15 @@ const fakeProcess = (f: Fixture) =>
           return result(0, "added 3 packages");
         }
         if (input.command === EXEC_PATH) {
-          return f.answers.smoke === "fail"
-            ? result(1, "", "Error: Cannot find module 'yaml'")
-            : result(0, JSON.stringify({ state: "idle", version: f.answers.smoke }));
+          if (f.answers.smoke === "fail") return result(1, "", "Error: Cannot find module 'yaml'");
+          const report =
+            f.answers.smokeReason === null
+              ? { state: "running", version: f.answers.smoke }
+              : { state: "idle", reason: f.answers.smokeReason, version: f.answers.smoke };
+          const json = JSON.stringify(report);
+          return f.answers.smokeTruncated
+            ? { ...result(0, json.slice(json.length / 2)), truncated: true, tailTruncated: true }
+            : result(0, json);
         }
         throw new Error(`unexpected command ${input.command}`);
       }),
@@ -153,6 +181,7 @@ const withUpdater = <A, E>(
         packageRoot: f.packageRoot,
         execPath: EXEC_PATH,
         ghConfigDir: () => GH_DIR,
+        gatesRunning: () => f.answers.gates,
       });
       yield* Effect.forkScoped(update.run(enabled), { startImmediately: true });
       return yield* body(update);
@@ -260,7 +289,7 @@ describe("self-update", () => {
         expect(loud(f)[0]!.text).toContain("HTTP 502: Bad Gateway");
         f.answers.refs = ["refs/tags/v0.2.0"];
         yield* TestClock.adjust(TEN_MINUTES);
-        expect(commands(f)).toEqual(["gh", "gh", "git", "npm", EXEC_PATH]);
+        expect(commands(f)).toEqual(["gh", "gh", "git", "git", "npm", EXEC_PATH]);
       }),
     );
   });
@@ -271,11 +300,12 @@ describe("self-update", () => {
     return withUpdater(f, true, () =>
       Effect.gen(function* () {
         yield* TestClock.adjust(TEN_MINUTES);
-        const [, clone, npm, smoke] = f.calls;
+        const [, clone, tagCheck, npm, smoke] = f.calls;
         const dir = clone!.args!.at(-1)!;
         expect(NodePath.dirname(dir)).toBe(installPathsOf(f.home).versions);
         expect(clone!.env).toMatchObject({ GH_CONFIG_DIR: GH_DIR });
         expect(clone!.args).toEqual(expect.arrayContaining(["credential.helper=!gh auth git-credential"]));
+        expect(tagCheck).toMatchObject({ command: "git", args: ["-C", dir, "tag", "--points-at", "HEAD"] });
         expect(npm).toMatchObject({ command: "npm", args: ["ci", "--omit=dev"], cwd: dir });
         expect(npm!.env!["PATH"]!.split(":")[0]).toBe("/opt/node/bin");
         expect(smoke).toMatchObject({
@@ -301,7 +331,7 @@ describe("self-update", () => {
         expect(loud(f)[0]!.text).toContain("npm ci");
         expect(loud(f)[0]!.text).toContain("npm ERR! last line");
         yield* TestClock.adjust(TEN_MINUTES);
-        expect(commands(f)).toEqual(["gh", "git", "npm", "gh"]);
+        expect(commands(f)).toEqual(["gh", "git", "git", "npm", "gh"]);
         expect(currentTarget(f)).toBe(NodePath.join(installPathsOf(f.home).versions, "0.1.0"));
       }),
     );
@@ -318,6 +348,7 @@ describe("self-update", () => {
         expect(loud(f).map((log) => log.level)).toEqual(["Warn"]);
         expect(loud(f)[0]!.text).toContain("v0.3.0");
         expect(loud(f)[0]!.text).toContain("smoke");
+        expect(loud(f)[0]!.text).toContain('"version":"0.2.9"');
         f.answers.refs = ["refs/tags/v0.2.0", "refs/tags/v0.3.0", "refs/tags/v0.4.0"];
         f.answers.smoke = "fail";
         yield* TestClock.adjust(TEN_MINUTES);
@@ -325,7 +356,19 @@ describe("self-update", () => {
         expect(loud(f).map((log) => log.level)).toEqual(["Warn", "Warn"]);
         expect(loud(f)[1]!.text).toContain("Cannot find module 'yaml'");
         yield* TestClock.adjust(TEN_MINUTES);
-        expect(commands(f)).toEqual(["gh", "git", "npm", EXEC_PATH, "gh", "git", "npm", EXEC_PATH, "gh"]);
+        expect(commands(f)).toEqual([
+          "gh",
+          "git",
+          "git",
+          "npm",
+          EXEC_PATH,
+          "gh",
+          "git",
+          "git",
+          "npm",
+          EXEC_PATH,
+          "gh",
+        ]);
       }),
     );
   });
@@ -353,7 +396,71 @@ describe("self-update", () => {
         expect(yield* Deferred.isDone(update.stopped)).toBe(false);
         // Staged once: later periods read nothing more.
         yield* TestClock.adjust(TEN_MINUTES);
-        expect(commands(f)).toEqual(["gh", "git", "npm", EXEC_PATH]);
+        expect(commands(f)).toEqual(["gh", "git", "git", "npm", EXEC_PATH]);
+      }),
+    );
+  });
+
+  it.effect("a clone whose HEAD is not the tag (a branch of the same name) is removed and not tried again", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.tagAtHead = false;
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(versionDirs(f)).toEqual(["0.1.0"]);
+        expect(loud(f).map((log) => log.level)).toEqual(["Warn"]);
+        expect(loud(f)[0]!.text).toContain("not the tag v0.2.0");
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual(["gh", "git", "git", "gh"]);
+      }),
+    );
+  });
+
+  it.effect("a smoke whose report is cut short, or says the machine config does not load, fails", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.smokeTruncated = true;
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(loud(f).map((log) => log.level)).toEqual(["Warn"]);
+        expect(loud(f)[0]!.text).toContain("longer than");
+        f.answers.refs = ["refs/tags/v0.2.0", "refs/tags/v0.3.0"];
+        f.answers.smoke = "0.3.0";
+        f.answers.smokeTruncated = false;
+        f.answers.smokeReason = "the machine config does not load";
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(loud(f).map((log) => log.level)).toEqual(["Warn", "Warn"]);
+        expect(loud(f)[1]!.text).toContain("the machine config does not load");
+        expect(versionDirs(f)).toEqual(["0.1.0"]);
+      }),
+    );
+  });
+
+  it.effect("removes a clone folder an earlier runner left half done", () => {
+    const f = fixture();
+    const stale = NodePath.join(installPathsOf(f.home).versions, ".clone-0.2.0-abc123");
+    write(NodePath.join(stale, "package.json"), "{}");
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        expect(versionDirs(f)).toEqual(["0.1.0"]);
+      }),
+    );
+  });
+
+  it.effect("the restart waits while a gate call is in flight with no lock file", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.gates = 1;
+    return withUpdater(f, true, (update) =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        yield* update.afterPass;
+        expect(yield* Deferred.isDone(update.stopped)).toBe(false);
+        f.answers.gates = 0;
+        yield* update.afterPass;
+        expect(yield* Deferred.isDone(update.stopped)).toBe(true);
       }),
     );
   });

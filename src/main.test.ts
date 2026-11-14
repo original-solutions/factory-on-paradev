@@ -4230,3 +4230,35 @@ describe("liveWorld: the hosts", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 });
+
+describe("self-update wiring", () => {
+  it.effect("forks the self-update once with self_update, checks it after every pass, and stopped follows it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const stop = yield* Deferred.make<void>();
+        const runs: Array<boolean> = [];
+        let afterPasses = 0;
+        const selfUpdate = {
+          run: (enabled: boolean) =>
+            Effect.sync(() => {
+              runs.push(enabled);
+            }),
+          afterPass: Effect.sync(() => {
+            afterPasses += 1;
+          }),
+          stopped: stop,
+        };
+        const { loop, factoryDir } = yield* started(`${VALID}self_update: false\n`, noGhProcess, {
+          selfUpdate,
+        });
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* onePassMore(loop, factoryDir);
+        assert.deepStrictEqual(runs, [false]);
+        assert.strictEqual(afterPasses, 2);
+        const waiting = yield* Effect.forkChild(loop.stopped, { startImmediately: true });
+        yield* Deferred.succeed(stop, undefined);
+        yield* Fiber.join(waiting);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
