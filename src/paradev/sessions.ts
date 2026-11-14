@@ -2,7 +2,7 @@
  * `FactorySessions` over Paradev's `superset` CLI: one workspace per thread, one factory agent per
  * workspace, and the adapter's own records in `state.ts`. A thread runs on its record's target,
  * this Mac, a Paradev host or Paradev Cloud, and every call for it carries that target's flag
- * ({@link at}). This file answers every method of the core's `FactorySessions`.
+ * (`ParadevTarget.at`). This file answers every method of the core's `FactorySessions`.
  */
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -12,7 +12,6 @@ import * as Exit from "effect/Exit";
 import type { PlatformError } from "effect/PlatformError";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -52,17 +51,7 @@ import { launchBranch, worktreesRootOf } from "./branches.ts";
 import { call, callWithRetry, decodeAnswer } from "./call.ts";
 import { type CliError, SupersetCli } from "./cli.ts";
 import { listProjects, listProjectsAt, type ParadevProject, projectAt } from "./projects.ts";
-import {
-  agentLookup,
-  hostGit,
-  LOOKUP_MARK,
-  newestSessionList,
-  pathExists,
-  shellQuote,
-  type SshError,
-  type SshRunner,
-  sshRunner,
-} from "./ssh.ts";
+import { shellQuote, type SshError, type SshRunner, sshRunner } from "./ssh.ts";
 import {
   listThreads,
   readLaunch,
@@ -79,33 +68,31 @@ import {
   writePlacement,
   writeThread,
 } from "./state.ts";
+import { CLOUD_WORKTREE, getCloudWorkspace, makeCloudTarget } from "./targets/cloud.ts";
+import { makeHostTarget } from "./targets/host.ts";
+import { makeLocalTarget } from "./targets/local.ts";
+import {
+  fail,
+  type GitOptions,
+  gitOkOf,
+  type GitRepo,
+  isNotFound,
+  MINUTE,
+  ParadevAdapterError,
+  type ParadevTarget,
+  SILENT_WORKING_MS,
+  STARTING_GRACE_MS,
+} from "./targets/target.ts";
 import { lastAssistantMessage } from "./transcript.ts";
 
-const MINUTE = 60_000;
-/**
- * Right after `agents create`, explain says `none` until the agent's first hook. On a host, a
- * `starting` agent this long at `Attached` gets its screen read for Claude Code's trust dialog.
- */
-const STARTING_GRACE_MS = 5 * MINUTE;
-/**
- * A `working` agent this long without a hook gets the process lookup. A cloud run gets it at most
- * this often, since each look starts a terminal in the sandbox.
- */
-const SILENT_WORKING_MS = 10 * MINUTE;
+export { ParadevAdapterError } from "./targets/target.ts";
+
 /** A tagged cloud workspace with no thread record this old is an orphan: its launch died before the record. */
 const ORPHAN_AGE_MS = 10 * MINUTE;
 const NAME_MAX = 80;
 /** How often a cloud launch reads its workspace while it provisions, and for how long at most. */
 const CLOUD_READY_POLL_MS = 5_000;
 const CLOUD_READY_MAX_MS = 300_000;
-/** What Claude Code's trust dialog shows, the one answer the adapter never gives (U4). */
-const TRUST_DIALOG = "Yes, I trust this folder";
-/** Where a cloud sandbox keeps Claude's sessions: its worktree is `/workspace`. */
-const CLOUD_SESSIONS_DIR = "/home/ubuntu/.claude/projects/-workspace";
-const CLOUD_WORKTREE = "/workspace";
-/** The end marks of the helper terminals' commands. */
-const ALIVE_MARK = "FACTORY-ALIVE-DONE";
-const SESSION_MARK = "FACTORY-SESSION-DONE";
 /** A Paradev project's `repo`: a GitHub repository URL. */
 const GITHUB_REPO = /^https:\/\/github\.com\/([A-Za-z0-9-]+\/[A-Za-z0-9._-]+?)(?:\.git)?\/?$/;
 
@@ -113,11 +100,8 @@ const Created = Schema.Struct({
   workspace: Schema.Struct({ id: Schema.String, branch: Schema.String }),
   alreadyExists: Schema.Boolean,
 });
-const Got = Schema.Struct({ worktreePath: Schema.NullOr(Schema.String), branch: Schema.String });
 /** A cloud create answers the workspace itself, still `provisioning`, with the branch Paradev named. */
 const CloudCreated = Schema.Struct({ id: Schema.String, branch: Schema.String });
-/** A cloud workspace has no worktree path on this Mac; its `status` goes `provisioning`, `ready`, `deleted`. */
-const CloudGot = Schema.Struct({ status: Schema.String, branch: Schema.String });
 /** A listed workspace's tag: a name, or `{ name }`; the recorded list shows only an empty `tags`. */
 const Tag = Schema.Union([Schema.String, Schema.Struct({ name: Schema.String })]);
 const CloudRows = Schema.Array(
@@ -129,8 +113,6 @@ const CloudRows = Schema.Array(
     tags: Schema.optional(Schema.NullOr(Schema.Array(Tag))),
   }),
 );
-const TerminalCreated = Schema.Struct({ terminalId: Schema.String });
-const Screen = Schema.Struct({ text: Schema.String });
 const Snapshot = Schema.Struct({
   workspaces: Schema.Array(
     Schema.Struct({
@@ -154,25 +136,8 @@ const Explained = Schema.Struct({
   lastEventType: Schema.NullOr(Schema.String),
   lastEventAt: Schema.NullOr(Schema.Number),
 });
-type Explanation = typeof Explained.Type;
+export type Explanation = typeof Explained.Type;
 const Transcript = Schema.Struct({ text: Schema.String });
-const Archived = Schema.Struct({
-  deleted: Schema.Array(Schema.String),
-  notFound: Schema.Array(Schema.String),
-  failed: Schema.Array(Schema.Unknown),
-});
-/** A Claude session id: the name of its `.jsonl`, passed on as `--resume-session`. */
-const SESSION_ID = /^[A-Za-z0-9-]+$/;
-
-/** A launch or read the adapter cannot carry out, with what it found. */
-export class ParadevAdapterError extends Schema.TaggedError<ParadevAdapterError>()(
-  "ParadevAdapterError",
-  { what: Schema.String },
-) {
-  override get message(): string {
-    return this.what;
-  }
-}
 
 export class AgentLookupError extends Schema.TaggedError<AgentLookupError>()(
   "ParadevAgentLookupError",
@@ -360,38 +325,12 @@ const failWith =
   (cause: unknown): SessionsError =>
     new SessionsError({ operation, cause });
 
-const isNotFound = (error: CliError) => error.kind === "NOT_FOUND";
-
-/**
- * The location flag of every call against `target`: the one place the adapter writes `--local`.
- * Cloud is the host Paradev calls `cloud`.
- */
-const at = (target: Target | ThreadTarget): ReadonlyArray<string> =>
-  target.kind === "local" ? ["--local"] : ["--host", target.kind === "host" ? target.machineId : "cloud"];
-
-/** `snapshot` on this Mac takes no location flag, as P1 recorded it; elsewhere it takes the target's. */
-const snapshotAt = (target: Target | ThreadTarget): ReadonlyArray<string> =>
-  target.kind === "local" ? [] : at(target);
-
-/** `mark` as a helper command echoes it: split by an empty quote, so the echoed command line does not match it. */
-const echoed = (mark: string): string => mark.replace(/-([^-]*)$/, "-''$1");
-
-/** The trimmed line just before the last line that is `mark`; null when there is none. */
-const lineBefore = (text: string, mark: string): string | null => {
-  const lines = text.split("\n").map((line) => line.trim());
-  const end = lines.lastIndexOf(mark);
-  return end > 0 ? lines[end - 1]! : null;
-};
-
 /** The tag that marks a cloud workspace as made by the runner of this id. */
 const runnerTag = (id: string): string => `factory-${id}`;
 
 /** Whether a listed workspace carries `name` as a tag. */
 const hasTag = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined, name: string): boolean =>
   (tags ?? []).some((tag) => (typeof tag === "string" ? tag : tag.name) === name);
-
-/** Claude's folder for a worktree's sessions: the path with every character but a letter or digit as `-`. */
-const claudeProjectFolder = (worktreePath: string): string => worktreePath.replace(/[^A-Za-z0-9]/g, "-");
 
 export const make = Effect.fn("ParadevSessions.make")(function* (config: ParadevSessionsConfig) {
   const cli = yield* SupersetCli;
@@ -440,23 +379,6 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   // ---- git ----------------------------------------------------------------------------------
 
-  type GitOptions = {
-    readonly fetch?: boolean;
-    readonly timeoutMs?: number;
-    readonly pre?: ReadonlyArray<string>;
-    readonly env?: Readonly<Record<string, string>>;
-    readonly tailBytes?: number;
-  };
-
-  /** A repository git runs in: `git` answers the call, `gitOk` its stdout when it exited 0. */
-  type GitRepo = {
-    readonly git: (args: ReadonlyArray<string>, options?: GitOptions) => Effect.Effect<RunResult, RunSpawnError | SshError>;
-    readonly gitOk: (
-      args: ReadonlyArray<string>,
-      options?: GitOptions,
-    ) => Effect.Effect<string, RunSpawnError | SshError | ParadevAdapterError>;
-  };
-
   /**
    * One git call, hardened as the gate's are: a session can write the clone's config and hooks.
    * The invariant: no git call the adapter runs in the clone or a worktree that can run a filter,
@@ -502,41 +424,16 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       timeoutMs: options.timeoutMs ?? 30_000,
     });
 
-  /** A git call's stdout, trimmed, when it exited 0; else what it did. */
-  const gitOkOf = (args: ReadonlyArray<string>) => (result: RunResult) =>
-    result.exitCode === 0 && !result.timedOut
-      ? Effect.succeed(result.tail.trim())
-      : Effect.fail(
-          new ParadevAdapterError({
-            what: `git ${args.join(" ")} ${result.timedOut ? "timed out" : `exited ${result.exitCode}`}: ${result.stderrTail.trim()}`,
-          }),
-        );
-
   /** `git` that must exit 0: its stdout, trimmed. */
   const gitOk = (dir: string, args: ReadonlyArray<string>, options?: GitOptions) =>
     git(dir, args, options).pipe(Effect.flatMap(gitOkOf(args)));
 
   // ---- CLI calls ----------------------------------------------------------------------------
 
-  /** `workspaces get` of a workspace with a worktree: on this Mac or a host. */
-  const getWorkspace = (target: Target, workspaceId: string) => {
-    const argv = ["workspaces", "get", workspaceId, ...at(target)];
-    return callWithRetry(cli, argv, 30_000).pipe(
-      Effect.flatMap((answer) => decodeAnswer(Got, answer, argv)),
-    );
-  };
-
-  const getCloudWorkspace = (workspaceId: string) => {
-    const argv = ["workspaces", "get", workspaceId, ...at({ kind: "cloud" })];
-    return callWithRetry(cli, argv, 30_000).pipe(
-      Effect.flatMap((answer) => decodeAnswer(CloudGot, answer, argv)),
-    );
-  };
-
   const snapshot = (target: Target | ThreadTarget, workspaceId?: string): Effect.Effect<SnapshotAnswer, CliError> => {
     const argv = [
       "snapshot",
-      ...snapshotAt(target),
+      ...targetFor(target).snapshotAt,
       ...(workspaceId === undefined ? [] : ["--workspace", workspaceId]),
     ];
     return callWithRetry(cli, argv, 30_000).pipe(
@@ -545,7 +442,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   };
 
   /** `--host <id>` or `--host cloud` (or `--local`) and `--workspace`: where a record's terminal calls go. */
-  const inWorkspace = (record: ThreadRecord) => [...at(record.target), "--workspace", record.workspaceId];
+  const inWorkspace = (record: ThreadRecord) => [...targetFor(record.target).at, "--workspace", record.workspaceId];
 
   const explain = (record: ThreadRecord, terminal: string) => {
     const argv = ["agents", "explain", ...inWorkspace(record), "--terminal", terminal];
@@ -626,7 +523,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const targetsByPath = new Map<string, Target>();
   const remember = (record: ThreadRecord) => {
     const path = record.worktreePath;
-    if (path !== null && targetsByPath.get(path)?.kind !== "local") targetsByPath.set(path, record.target);
+    if (path === null) return;
+    const known = targetsByPath.get(path);
+    if (known === undefined || !targetFor(known).onThisMac) targetsByPath.set(path, record.target);
   };
   /** Drops the liveness and trust reads of the record's terminals other than its current one. */
   const forget = (record: ThreadRecord) => {
@@ -650,8 +549,6 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     );
 
   // ---- launch -----------------------------------------------------------------------------
-
-  const fail = (what: string) => Effect.fail(new ParadevAdapterError({ what }));
 
   /** The configured host of `machineId`; a thread or a placement naming another fails. */
   const hostOf = (machineId: string) => {
@@ -746,24 +643,19 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     });
 
   /**
-   * `git` and `gitOk` in a worktree on a host, over SSH with the host's own git and credentials.
-   * The pins of {@link sessionRepo} do not reach a host: what a session there could run, it runs
-   * as the same user that runs it.
+   * The location flag of every call against `target`: the one place the adapter writes `--local`.
+   * Cloud is the host Paradev calls `cloud`. With {@link targetFor} below, the one place the
+   * adapter tells this Mac, a host and cloud apart; each module takes its flag from here.
    */
-  const hostRepo = (machineId: string, dir: string) =>
-    Effect.gen(function* () {
-      const destination = (yield* hostOf(machineId)).ssh;
-      const run = (args: ReadonlyArray<string>, given: GitOptions = {}) =>
-        ssh.run(destination, hostGit(dir, args, given.pre), { timeoutMs: given.timeoutMs ?? 30_000 });
-      return {
-        git: run,
-        gitOk: (args: ReadonlyArray<string>, given?: GitOptions) => run(args, given).pipe(Effect.flatMap(gitOkOf(args))),
-      } satisfies GitRepo;
-    });
+  const at = (target: Target | ThreadTarget): ReadonlyArray<string> =>
+    target.kind === "local" ? ["--local"] : ["--host", target.kind === "host" ? target.machineId : "cloud"];
+  const localTarget = makeLocalTarget({ cli, at: at({ kind: "local" }), fs, processes, commandOf, claudeProjectsDir, sessionRepo, git, gitOk });
+  const cloudTarget = makeCloudTarget({ cli, at: at({ kind: "cloud" }), commandOf, aliveReads: cloudAliveReads });
+  const hostDeps = { cli, at: (machineId: string) => at({ kind: "host", machineId }), ssh, hostOf, commandOf, trustReads };
 
-  /** The worktree's repository where it lives: on this Mac with the session pins, or on its host. */
-  const worktreeRepo = (record: ThreadRecord, dir: string) =>
-    record.target.kind === "host" ? hostRepo(record.target.machineId, dir) : sessionRepo(dir);
+  /** The module of a target: the one place the adapter tells this Mac, a host and cloud apart. */
+  const targetFor = (target: Target | ThreadTarget): ParadevTarget =>
+    target.kind === "local" ? localTarget : target.kind === "cloud" ? cloudTarget : makeHostTarget(hostDeps, target.machineId);
 
   /**
    * Paradev does not fetch the base, and builds a worktree from the clone's own refs: a local
@@ -837,11 +729,13 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    */
   const startAgent = (record: ThreadRecord, request: LaunchRequest, base: string, snapshotDone: boolean) =>
     Effect.gen(function* () {
-      const got = yield* getWorkspace(record.target, record.workspaceId);
-      if (got.worktreePath === null) return yield* fail(`workspace ${record.workspaceId} has no worktree`);
+      const got = yield* targetFor(record.target).readWorkspace(record);
+      if (got === null || got.worktreePath === null) {
+        return yield* fail(`workspace ${record.workspaceId} has no worktree`);
+      }
       const placed: ThreadRecord = { ...record, worktreePath: got.worktreePath };
       yield* save(placed);
-      const repo = yield* worktreeRepo(placed, got.worktreePath);
+      const repo = yield* targetFor(placed.target).worktreeRepo(got.worktreePath);
       const checked = yield* baseCheck(repo, base);
       // The reset waits for the snapshot: an agent an earlier attempt started works there.
       if (!snapshotDone) {
@@ -855,11 +749,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         );
       }
       if (checked.state === "behind") {
-        // The base was fetched on this Mac; a host's clone fetches it for itself, with its own
-        // credentials, before the reset to the commit fetched here.
-        if (record.target.kind === "host") {
-          yield* repo.gitOk(["fetch", "--quiet", "origin", request.baseRef], { timeoutMs: 120_000 });
-        }
+        yield* repo.fetchBase(request.baseRef);
         yield* checked.reset;
       }
       return yield* withAgent(placed, yield* createOrFind(placed, request), request);
@@ -896,7 +786,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     Effect.gen(function* () {
       const started = yield* Clock.currentTimeMillis;
       for (;;) {
-        const got = yield* getCloudWorkspace(record.workspaceId);
+        const got = yield* getCloudWorkspace(cli, cloudTarget.at, record.workspaceId);
         if (got.status === "ready") return;
         if (got.status === "deleted") {
           return yield* fail(`cloud workspace ${record.workspaceId} was deleted while it provisioned`);
@@ -972,7 +862,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const hostProject = (machineId: string, path: string) =>
     Effect.gen(function* () {
       const trim = (p: string) => p.replace(/\/+$/, "");
-      const project = (yield* local(listProjectsAt(at({ kind: "host", machineId })))).find(
+      const project = (yield* local(listProjectsAt(targetFor({ kind: "host", machineId }).at))).find(
         (p) => trim(p.path) === trim(path),
       );
       return project ?? (yield* fail(`no Paradev project at ${path} on host ${machineId}`));
@@ -1011,7 +901,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       if (found !== null && "unclear" in found) return yield* noAgentYet(earlier);
       if (found !== null) return launched(yield* withAgent(earlier, found.terminal, request));
       // A host record's project is the host's; the base is fetched through this Mac's.
-      const project = earlier.target.kind === "local" ? earlier.projectId : request.projectId;
+      const project = targetFor(earlier.target).onThisMac ? earlier.projectId : request.projectId;
       const base = yield* fetchBase(yield* projectOf(project), request.baseRef);
       return launched(yield* startAgent(earlier, request, base, true));
     }
@@ -1038,7 +928,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
       // 3. The workspace, with no agent: a repeat create with `--agent` starts a second one (X7).
       const argv = [
-        "workspaces", "create", ...at(target), "--project", projectId,
+        "workspaces", "create", ...targetFor(target).at, "--project", projectId,
         "--name", request.title.slice(0, NAME_MAX),
         "--branch", launchBranch(request.commandId), "--skip-branch-prefix",
         "--base-branch", request.baseRef, "--tag", "factory",
@@ -1082,7 +972,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       // 1. Not retried: a cloud create is not idempotent by branch, so a repeat makes a second
       // workspace. One that failed after making its workspace is left to the orphan sweep.
       const argv = [
-        "workspaces", "create", ...at(target), "--environment", placed.environmentId,
+        "workspaces", "create", ...targetFor(target).at, "--environment", placed.environmentId,
         "--machine-size", placed.machineSize, "--name", launchBranch(request.commandId),
         "--base-branch", request.baseRef, "--tag", "factory", "--tag", yield* mine,
       ];
@@ -1113,125 +1003,6 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   // ---- status -------------------------------------------------------------------------------
 
-  /** The helper command's output: the end mark, echoed so the echoed command line does not match it. */
-  const helperRead = (record: ThreadRecord, command: string, mark: string) =>
-    Effect.gen(function* () {
-      const where = inWorkspace(record);
-      const createArgv = ["terminals", "create", ...where, "--command", `${command}; echo ${echoed(mark)}`];
-      const created = yield* decodeAnswer(TerminalCreated, yield* call(cli, createArgv, 30_000), createArgv);
-      const terminal = ["--terminal", created.terminalId];
-      const closeArgv = ["terminals", "close", ...where, ...terminal];
-      return yield* Effect.gen(function* () {
-        yield* call(cli, ["terminals", "wait", ...where, ...terminal, "--match", mark, "--timeout", "30"], 45_000);
-        const readArgv = ["terminals", "read", ...where, ...terminal, "--max-lines", "5"];
-        return (yield* decodeAnswer(Screen, yield* call(cli, readArgv, 30_000), readArgv)).text;
-      }).pipe(
-        Effect.ensuring(
-          call(cli, closeArgv, 30_000).pipe(
-            Effect.catch((error) => Effect.logWarning(`could not close the helper terminal: ${error.message}`)),
-          ),
-        ),
-      );
-    });
-
-  /**
-   * Whether a cloud run's agent is alive: `pgrep -c` in a helper terminal; a count of 0 is dead.
-   * Null when the read failed or answered nothing to count. For `status` (`fresh` false) it reads
-   * at most once per 10 minutes per agent; a send always reads, since it types on the answer.
-   */
-  const cloudAgentAlive = (record: ThreadRecord, now: number, fresh: boolean) =>
-    Effect.gen(function* () {
-      const key = `${record.threadId}/${record.terminals.at(-1) ?? ""}`;
-      const last = cloudAliveReads.get(key);
-      if (!fresh && last !== undefined && now - last.at < SILENT_WORKING_MS) return last.alive;
-      const alive = yield* helperRead(record, `pgrep -c ${shellQuote(commandOf(record))}`, ALIVE_MARK).pipe(
-        Effect.map((text) => {
-          const count = lineBefore(text, ALIVE_MARK);
-          return count !== null && /^\d+$/.test(count) ? Number(count) > 0 : null;
-        }),
-        Effect.catch((error) =>
-          Effect.logWarning(`could not read whether ${record.threadId}'s agent is alive: ${error.message}`).pipe(
-            Effect.as(null),
-          ),
-        ),
-      );
-      cloudAliveReads.set(key, { at: now, alive });
-      return alive;
-    });
-
-  /**
-   * Whether a host run's agent is alive: the local lookup's `pgrep -x` and `lsof` over SSH, in `sh`
-   * whatever the host's login shell, comparing each working directory with the worktree's path as
-   * given and as the host resolves it. Null when SSH did not answer, or the lookup did not finish:
-   * no `lsof`, a `pgrep` error, no end mark.
-   */
-  const hostAgentAlive = (machineId: string, record: ThreadRecord, worktreePath: string) =>
-    Effect.gen(function* () {
-      const destination = (yield* hostOf(machineId)).ssh;
-      return yield* ssh.run(destination, agentLookup(commandOf(record), worktreePath)).pipe(
-        Effect.map((result) => {
-          const lines = result.tail.split("\n").map((line) => line.trim());
-          const last = lines.filter((line) => line !== "").at(-1) ?? "";
-          if (result.exitCode !== 0 || last !== LOOKUP_MARK) return { unfinished: result.exitCode, last } as const;
-          const resolved = lines.find((line) => line.startsWith("W"))?.slice(1) ?? "";
-          return lines.some((line) => line === `n${worktreePath}` || (resolved !== "" && line === `n${resolved}`));
-        }),
-        // Exit 3: no `lsof` on the host's PATH, or `pgrep` failed. Said each time, as nothing else shows it.
-        Effect.flatMap((answer) =>
-          typeof answer === "boolean"
-            ? Effect.succeed(answer)
-            : Effect.logWarning(
-                `the agent lookup of ${record.threadId} on host ${machineId} did not finish (exit ${answer.unfinished}${
-                  answer.last === "" ? "" : `, last line ${answer.last}`
-                }); is lsof on the PATH of a non-interactive ssh?`,
-              ).pipe(Effect.as(null)),
-        ),
-        Effect.catch((error) =>
-          Effect.logWarning(`could not read whether ${record.threadId}'s agent is alive: ${error.message}`).pipe(
-            Effect.as(null),
-          ),
-        ),
-      );
-    });
-
-  /**
-   * Whether the record's agent process is alive where it runs; null when that could not be read,
-   * which a status takes as alive and a send as a reason to type nothing.
-   */
-  const agentAlive = (record: ThreadRecord, now: number, fresh: boolean) =>
-    Effect.gen(function* () {
-      const path = record.worktreePath;
-      switch (record.target.kind) {
-        case "local":
-          return path !== null && (yield* processes.find(commandOf(record), path)) !== null;
-        case "host":
-          return path === null ? false : yield* hostAgentAlive(record.target.machineId, record, path);
-        case "cloud":
-          return yield* cloudAgentAlive(record, now, fresh);
-      }
-    });
-
-  /**
-   * Whether the host terminal's screen shows Claude Code's trust dialog. The screen is read once
-   * per terminal; a read that failed is tried again next time.
-   */
-  const trustDialogShown = (record: ThreadRecord, terminal: string) =>
-    Effect.gen(function* () {
-      const key = `${record.workspaceId}/${terminal}`;
-      const known = trustReads.get(key);
-      if (known !== undefined) return known;
-      const argv = ["terminals", "read", ...inWorkspace(record), "--terminal", terminal, "--max-lines", "40"];
-      const shown = yield* callWithRetry(cli, argv, 30_000).pipe(
-        Effect.flatMap((answer) => decodeAnswer(Screen, answer, argv)),
-        Effect.map(({ text }) => text.includes(TRUST_DIALOG)),
-        Effect.catch((error) =>
-          Effect.logWarning(`could not read the screen of ${record.threadId}: ${error.message}`).pipe(Effect.as(null)),
-        ),
-      );
-      if (shown !== null) trustReads.set(key, shown);
-      return shown === true;
-    });
-
   /**
    * The run's status from explain, the newest turn and, for a silent `working`, the process lookup.
    * `alive` is set when the run needed the process lookup, so a send that asked for a `fresh` one
@@ -1251,21 +1022,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const newest = record.turns.at(-1)?.at ?? null;
       switch (explained.state) {
         case "starting": {
-          // Held at `Attached` this long on a host: Claude Code's trust dialog may hold the prompt.
-          const target = record.target;
-          if (
-            target.kind === "host" &&
-            explained.lastEventType === "Attached" &&
-            explained.lastEventAt !== null &&
-            now - explained.lastEventAt > STARTING_GRACE_MS &&
-            (yield* trustDialogShown(record, terminal))
-          ) {
-            return yield* new SessionsError({
-              operation: "status",
-              cause: new ParadevAdapterError({
-                what: `the host's clone is not trusted by Claude Code; run factory-runner hosts check ${target.name}`,
-              }),
-            });
+          const held = yield* targetFor(record.target).startingHeld(record, terminal, explained, now);
+          if (held !== null) {
+            return yield* new SessionsError({ operation: "status", cause: new ParadevAdapterError({ what: held }) });
           }
           return { run: "starting" as RunStatus, completedAt: null };
         }
@@ -1278,7 +1037,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
           const silent = explained.lastEventAt === null || now - explained.lastEventAt > SILENT_WORKING_MS;
           if (!silent) return { run: "running" as RunStatus, completedAt: null };
           // A read that failed keeps the run running, as a long tool call would.
-          const alive = yield* agentAlive(record, now, fresh);
+          const alive = yield* targetFor(record.target).agentAlive(record, now, fresh);
           return { run: (alive === false ? "interrupted" : "running") as RunStatus, completedAt: null, alive };
         }
         case "blocked":
@@ -1350,18 +1109,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     const recorded = { worktreePath: record.worktreePath, branch: record.branch, archived: true };
     if (record.archivedAt !== null) return recorded;
     // A cloud workspace has no worktree here, and reads `deleted` once it is archived.
-    const read =
-      record.target.kind === "cloud"
-        ? getCloudWorkspace(record.workspaceId).pipe(
-            Effect.map((got) =>
-              got.status === "deleted"
-                ? recorded
-                : { worktreePath: record.worktreePath, branch: got.branch, archived: false },
-            ),
-          )
-        : getWorkspace(record.target, record.workspaceId).pipe(
-            Effect.map((got) => ({ worktreePath: got.worktreePath, branch: got.branch, archived: false })),
-          );
+    const read = targetFor(record.target).readWorkspace(record).pipe(
+      Effect.map((got) => (got === null ? recorded : { worktreePath: got.worktreePath, branch: got.branch, archived: false })),
+    );
     return yield* read.pipe(
       Effect.catchIf(isNotFound, () => Effect.succeed(recorded)),
       Effect.mapError(failWith("thread")),
@@ -1378,10 +1128,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         let running = 0;
         for (const record of records) {
           const terminal = record.terminals.at(-1);
-          const there =
-            target.kind === "host"
-              ? record.target.kind === "host" && record.target.machineId === target.machineId
-              : record.target.kind === target.kind;
+          const there = threadIdOf(record.target, record.workspaceId) === threadIdOf(target, record.workspaceId);
           if (!there || record.archivedAt !== null || terminal === undefined) continue;
           const state = answer.workspaces
             .find((ws) => ws.id === record.workspaceId)
@@ -1423,7 +1170,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       for (const { target, result } of read) {
         if (Result.isSuccess(result)) running += result.success;
         // This Mac is the one count the pass cannot do without; a host or cloud that cannot be read waits.
-        else if (target.kind === "local") return Effect.fail(result.failure);
+        else if (targetFor(target).onThisMac) return Effect.fail(result.failure);
       }
       return Effect.succeed(running);
     }),
@@ -1444,17 +1191,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     });
 
   const worktreeCheckout = Effect.fn("ParadevSessions.worktreeCheckout")(function* (path: string) {
-    const target = yield* whereIs(path);
-    // A cloud sandbox's `/workspace` is not on this Mac; its run binds through the record's branch.
-    if (target.kind === "cloud") return null;
-    const repo: GitRepo =
-      target.kind === "host"
-        ? yield* hostRepo(target.machineId, path)
-        : { git: (args, options) => git(path, args, options), gitOk: (args, options) => gitOk(path, args, options) };
-    if (target.kind === "host") {
-      const destination = (yield* hostOf(target.machineId)).ssh;
-      if ((yield* ssh.run(destination, pathExists(`${path}/.git`))).exitCode !== 0) return null;
-    } else if (!(yield* fs.exists(`${path}/.git`))) return null;
+    const repo = yield* targetFor(yield* whereIs(path)).checkoutRepo(path);
+    if (repo === null) return null;
     const head = yield* repo.gitOk(["rev-parse", "--verify", "HEAD^{commit}"]);
     if (!isCommitId(head)) {
       return yield* fail(`HEAD is not a commit id: ${head}`);
@@ -1486,9 +1224,10 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const record = yield* local(recordNamed(threadId));
       if (record === null) return yield* fail("the thread has no record");
       // The gate runs on this Mac (U7): a host or cloud workspace cannot read its log file.
-      if (record.target.kind !== "local") {
+      const where = targetFor(record.target);
+      if (!where.onThisMac) {
         return yield* Effect.logInfo(
-          `the gate log of ${threadId} attempt ${attempt} stays on this Mac, at ${logPath}: a ${record.target.kind} workspace cannot follow it`,
+          `the gate log of ${threadId} attempt ${attempt} stays on this Mac, at ${logPath}: a ${where.label} workspace cannot follow it`,
         );
       }
       const shown = record.gateLogAttempts ?? [];
@@ -1520,7 +1259,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     const records = yield* local(listThreads(dataDir));
     // A host's or a cloud sandbox's worktree is not on this Mac.
     const newest = records
-      .filter((record) => record.target.kind === "local" && record.worktreePath !== null)
+      .filter((record) => targetFor(record.target).onThisMac && record.worktreePath !== null)
       .sort((a, b) => (b.turns.at(-1)?.at ?? 0) - (a.turns.at(-1)?.at ?? 0))[0];
     return (newest === undefined ? null : worktreesRootOf(newest.worktreePath!, newest.branch)) ?? defaultDir;
   }, (effect) => effect.pipe(Effect.mapError(failWith("worktrees-directory"))));
@@ -1543,64 +1282,6 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     });
 
   /**
-   * The id of the newest session Claude keeps for `worktreePath`: the newest `*.jsonl` under its
-   * projects folder, named as Claude names it: the path with every character other than a letter or
-   * digit as `-`. Null when there is none.
-   */
-  const newestSession = (worktreePath: string) =>
-    Effect.gen(function* () {
-      const folder = `${claudeProjectsDir}/${claudeProjectFolder(worktreePath)}`;
-      const names = yield* fs.readDirectory(folder).pipe(
-        Effect.catchIf((error) => error.reason._tag === "NotFound", () => Effect.succeed([] as ReadonlyArray<string>)),
-      );
-      let newest: { readonly id: string; readonly at: number } | null = null;
-      for (const name of names) {
-        const id = name.endsWith(".jsonl") ? name.slice(0, -".jsonl".length) : "";
-        if (!SESSION_ID.test(id)) continue;
-        const info = yield* fs.stat(`${folder}/${name}`);
-        const at = Option.getOrUndefined(info.mtime)?.getTime() ?? 0;
-        if (info.type === "File" && (newest === null || at > newest.at)) newest = { id, at };
-      }
-      return newest?.id ?? null;
-    });
-
-  /**
-   * {@link newestSession} on a host: `ls -t` of the same folder under the host's `~/.claude/projects`,
-   * over SSH, never through a Paradev terminal, whose read wraps at the terminal's width.
-   */
-  const newestHostSession = (machineId: string, worktreePath: string) =>
-    Effect.gen(function* () {
-      const destination = (yield* hostOf(machineId)).ssh;
-      const listed = yield* ssh.run(destination, newestSessionList(claudeProjectFolder(worktreePath)));
-      const newest = listed.tail.trim().split("/").at(-1) ?? "";
-      const id = newest.endsWith(".jsonl") ? newest.slice(0, -".jsonl".length) : "";
-      return listed.exitCode === 0 && SESSION_ID.test(id) ? id : null;
-    });
-
-  /** {@link newestSession} in a cloud sandbox, through a helper terminal: its worktree is `/workspace`. */
-  const newestCloudSession = (record: ThreadRecord) =>
-    Effect.gen(function* () {
-      const text = yield* helperRead(record, `ls -t ${CLOUD_SESSIONS_DIR}/*.jsonl | head -1`, SESSION_MARK);
-      const line = lineBefore(text, SESSION_MARK) ?? "";
-      const id = line.startsWith(`${CLOUD_SESSIONS_DIR}/`) && line.endsWith(".jsonl")
-        ? line.slice(CLOUD_SESSIONS_DIR.length + 1, -".jsonl".length)
-        : "";
-      return SESSION_ID.test(id) ? id : null;
-    });
-
-  /** The newest Claude session of the record's agent, where it runs. */
-  const sessionOf = (record: ThreadRecord, worktreePath: string) => {
-    switch (record.target.kind) {
-      case "local":
-        return newestSession(worktreePath);
-      case "host":
-        return newestHostSession(record.target.machineId, worktreePath);
-      case "cloud":
-        return newestCloudSession(record);
-    }
-  };
-
-  /**
    * Starts the dead agent's Claude session again in a new terminal, with `text` as its prompt.
    * The dead terminal is closed first when the snapshot still lists it, since its agent reads
    * `working` for ever. The resume is recorded as pending before `agents create`, which is not
@@ -1612,7 +1293,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         const dead = record.terminals.at(-1)!;
         yield* call(cli, ["terminals", "close", ...inWorkspace(record), "--terminal", dead], 30_000);
       }
-      const session = yield* sessionOf(record, worktreePath);
+      const session = yield* targetFor(record.target).newestSession(record, worktreePath);
       if (session === null) return yield* new ThreadNotFoundError({ threadId: record.threadId });
       const pending: ThreadRecord = { ...record, pendingResume: commandId };
       yield* save(pending);
@@ -1688,7 +1369,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         // A terminal with no agent of the preset: one starting has a process. With none, the
         // resume started nothing; with no agent process, the steps below resume again, and that
         // resume writes its own pendingResume. A process that could not be looked for may be there.
-        if ((yield* agentAlive(record, yield* Clock.currentTimeMillis, true)) !== false) {
+        if ((yield* targetFor(record.target).agentAlive(record, yield* Clock.currentTimeMillis, true)) !== false) {
           return yield* fail(
             `a resume of ${pending} is pending and terminal ${other.unclear.join(", ")} shows no ${record.agent} agent yet; nothing was started`,
           );
@@ -1712,7 +1393,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
           ? false
           : looked !== undefined
             ? looked
-            : yield* agentAlive(record, yield* Clock.currentTimeMillis, true);
+            : yield* targetFor(record.target).agentAlive(record, yield* Clock.currentTimeMillis, true);
       // Its terminal is a shell once the agent is gone: text typed there would run.
       if (alive === null) {
         return yield* fail(`whether the agent of ${threadId} is alive could not be read; nothing was typed`);
@@ -1781,31 +1462,10 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   // ---- archive, removeWorktree --------------------------------------------------------------
 
-  /** `workspaces archive` of the workspace; succeeds when Paradev answers it deleted or unknown. */
-  const archiveWorkspace = (target: Target | ThreadTarget, workspaceId: string) =>
-    Effect.gen(function* () {
-      const argv = ["workspaces", "archive", workspaceId, ...at(target)];
-      const gone = yield* callWithRetry(cli, argv, 120_000).pipe(
-        Effect.flatMap((answer) => decodeAnswer(Archived, answer, argv)),
-        Effect.map((answer) =>
-          answer.deleted.includes(workspaceId) || answer.notFound.includes(workspaceId) ? null : answer,
-        ),
-        Effect.catchIf(isNotFound, () => Effect.succeed(null)),
-      );
-      // A cloud workspace that `workspaces get` reads as `deleted` is archived, whatever archive said.
-      if (gone !== null && target.kind === "cloud") {
-        const got = yield* getCloudWorkspace(workspaceId).pipe(Effect.catchIf(isNotFound, () => Effect.succeed(null)));
-        if (got === null || got.status === "deleted") return;
-      }
-      if (gone !== null) {
-        return yield* fail(`workspaces archive did not archive ${workspaceId}: ${JSON.stringify(gone.failed)}`);
-      }
-    });
-
   /** Archives the record's workspace and sets its `archivedAt`. */
   const archiveRecord = (record: ThreadRecord) =>
     Effect.gen(function* () {
-      yield* archiveWorkspace(record.target, record.workspaceId);
+      yield* targetFor(record.target).archiveWorkspace(record.workspaceId);
       yield* save({ ...record, archivedAt: record.archivedAt ?? (yield* Clock.currentTimeMillis) });
     });
 
@@ -1829,7 +1489,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    */
   const sweepOrphans = Effect.gen(function* () {
     const tag = yield* mine;
-    const argv = ["workspaces", "list", ...at({ kind: "cloud" })];
+    const argv = ["workspaces", "list", ...cloudTarget.at];
     const rows = yield* callWithRetry(cli, argv, 30_000).pipe(
       Effect.flatMap((answer) => decodeAnswer(CloudRows, answer, argv)),
     );
@@ -1856,7 +1516,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         );
         continue;
       }
-      yield* archiveWorkspace({ kind: "cloud" }, row.id).pipe(
+      yield* cloudTarget.archiveWorkspace(row.id).pipe(
         Effect.andThen(
           Effect.logInfo(
             `archived cloud workspace ${row.id} (${row.name ?? "no name"}): tagged ${tag}, created ${row.createdAt}, and no thread record`,
@@ -1872,7 +1532,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   /** `git worktree remove --force` in the clone the worktree belongs to; its branch stays. */
   const removeWorktree = Effect.fn("ParadevSessions.removeWorktree")(function* (path: string) {
     // A host's or a cloud sandbox's worktree is not on this Mac: Paradev removed it at archive.
-    if ((yield* whereIs(path)).kind !== "local") return;
+    if (!targetFor(yield* whereIs(path)).onThisMac) return;
     if (!(yield* fs.exists(path))) return;
     const common = yield* gitOk(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
     const clone = common.endsWith("/.git") ? common.slice(0, -"/.git".length) : common;

@@ -3114,6 +3114,21 @@ describe("status on a host", () => {
       assert.strictEqual((yield* silent({ tail: `W${H5_PATH}\n` })).run, "running");
     }),
   );
+
+  it.effect("a host record with no worktree path reads its silent agent as gone, with no SSH call", () =>
+    Effect.gen(function* () {
+      const ssh = fakeSsh(() => ({ tail: lookupAnswer(H5_PATH, `n${H5_PATH}`) }));
+      const t = rig(
+        [recorded("agents-explain-host-5-working"), { argv: argvIs("agents", "read"), answer: { text: "" } }],
+        { config: { ssh: ssh.runner, hosts: HOSTS } },
+      );
+      yield* seed(t.data, hostRecord({ worktreePath: null }));
+      yield* TestClock.setTime(lastEventAt("agents-explain-host-5-working") + 11 * MINUTE);
+      const status = yield* t.run((s) => s.status(`host:${HOST}:${H5_WS}`));
+      assert.strictEqual(status.run, "interrupted");
+      assert.deepStrictEqual(ssh.calls, []);
+    }),
+  );
 });
 
 describe("status in the cloud (the liveness check through a helper terminal)", () => {
