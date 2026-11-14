@@ -145,8 +145,8 @@ const trackerFailure = (): PassError => ({
   message: "`gh issue list` exited with status 1: boom",
 });
 
-const noRoom = (): StartError =>
-  new SessionsError({ operation: "launch", cause: new NoTargetHasRoom() });
+const noRoom = (pinned?: string): StartError =>
+  new SessionsError({ operation: "launch", cause: new NoTargetHasRoom({ pinned }) });
 
 const githubFailure = (): StartError =>
   new GitHubFailed({ args: ["issue", "list"], status: 1, stderr: "boom" });
@@ -1849,6 +1849,21 @@ describe("runs that are confirmed and still in triage", () => {
         fake.events.filter((e) => e.event === "claim_skipped"),
         [{ event: "claim_skipped", data: { repo: REPO, reason: "no-room" } }],
       );
+    }),
+  );
+
+  it.effect("a run refused on its one pinned target waits, and the repo's ready issues are still claimed", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.ready[REPO] = [1];
+      fake.pushStart(`${REPO}#12`, noRoom("mini: not ready: claude is not trusted"));
+      fake.pushStart(`${REPO}#1`, started(1));
+      const { report, lines } = yield* pass(fake, [REPO], 5);
+      assert.deepEqual(starts(fake), [`resume ${REPO}#12`, `start ${REPO}#1`]);
+      assert.equal(report.errors, 0);
+      assert.ok(runLine(lines, "rawphp/softfac#12 triage:").includes("waits: no target has room"), lines.join("\n"));
+      assert.deepEqual(fake.events.filter((e) => e.event === "claim_skipped"), []);
     }),
   );
 
