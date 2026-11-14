@@ -117,6 +117,21 @@ const fit = (payload: BeltV2): BeltV2 => {
   return { ...payload, runs: payload.runs.filter((_, index) => !dropped.has(index)) };
 };
 
+/** What the belt says of a target whose own check did not pass, by its kind. */
+const NOT_READY: Readonly<Record<TargetRow["kind"], string>> = {
+  local: "this Mac's load or disk check holds claims; factory-runner status says why",
+  host: "its hosts check failed; factory-runner status says why",
+  cloud: "its proxy check did not pass; factory-runner status says why",
+};
+
+/**
+ * A target as the belt carries it. The reason of a target that is not ready can be a host check's
+ * failing line or a proxy error, which quote paths, users and addresses as an attention message
+ * can, so it says only which check failed; `status` has the line. A ready target's reason is
+ * placement's own words and numbers.
+ */
+const beltTarget = (row: TargetRow): TargetRow => (row.ready ? row : { ...row, reason: NOT_READY[row.kind] });
+
 export interface BeltInput {
   readonly nowMs: number;
   readonly runner: BeltV2["runner"];
@@ -138,7 +153,7 @@ export const beltPayload = (input: BeltInput): BeltV2 => {
   return fit({
     v: 2,
     updatedAt: new Date(input.nowMs).toISOString(),
-    runner: input.runner,
+    runner: { ...input.runner, targets: input.runner.targets.map(beltTarget) },
     counts: {
       triage: count("triage"),
       building: count("building"),

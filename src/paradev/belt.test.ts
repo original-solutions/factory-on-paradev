@@ -93,7 +93,8 @@ describe("beltPayload", () => {
     ]);
     assert.strictEqual(belt.v, 2);
     assert.strictEqual(belt.updatedAt, new Date(NOW).toISOString());
-    assert.deepStrictEqual(belt.runner, RUNNER);
+    // The runner comes through as given; its target rows are the belt's own (below).
+    assert.deepStrictEqual({ ...belt.runner, targets: [] }, { ...RUNNER, targets: [] });
     assert.deepStrictEqual(Object.keys(belt).sort(), ["attention", "counts", "runner", "runs", "updatedAt", "v"]);
     const [only] = belt.runs;
     assert.deepStrictEqual(Object.keys(only!).sort(), [
