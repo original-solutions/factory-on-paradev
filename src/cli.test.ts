@@ -374,7 +374,9 @@ ${PARADEV}`;
       }
       calls.push(`${command} ${args.join(" ")}`);
       // The runner's own login, read with its gh_config_dir.
-      if (command === "env" && args.includes("api")) return good("rawphp\n");
+      if (command === "env" && args.includes("api")) {
+        return args.includes("GH_CONFIG_DIR=/gh") ? good("rawphp\n") : { status: 1, stdout: "", stderr: "wrong gh dir" };
+      }
       const key = args.filter((arg) => arg !== "--json").join(" ");
       if (key === "hosts list") {
         return good(JSON.stringify([{ id: "h1", name: "mini", online: "yes" }, { id: "h2", name: "studio", online: "yes" }]));

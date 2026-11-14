@@ -84,16 +84,21 @@ import { MARKER } from "./tracker/github.ts";
  * The mocks of liveWorldBase.test.ts, hoisted for the whole file: each wrapped function calls
  * through to the real one, unless the test that wants to see a step's context has `stub.on` set.
  */
-const { bases, startContexts, stub, wrapped } = vi.hoisted(() => {
+const { bases, buildingHostLogins, startContexts, stub, wrapped } = vi.hoisted(() => {
   const stub = { on: false };
   const bases: Array<string> = [];
+  const buildingHostLogins: Array<unknown> = [];
   const wrapped = <F>(name: string, actual: F, stubbed: () => unknown): F =>
-    ((ctx: { readonly project: { readonly base: string } }, ...rest: Array<unknown>) => {
+    ((
+      ctx: { readonly project: { readonly base: string }; readonly hostLogins?: unknown },
+      ...rest: Array<unknown>
+    ) => {
       if (!stub.on) return (actual as unknown as (...args: Array<unknown>) => unknown)(ctx, ...rest);
       bases.push(`${name} ${ctx.project.base}`);
+      buildingHostLogins.push(ctx.hostLogins);
       return stubbed();
     }) as unknown as F;
-  return { bases, startContexts: [] as Array<unknown>, stub, wrapped };
+  return { bases, buildingHostLogins, startContexts: [] as Array<unknown>, stub, wrapped };
 });
 
 vi.mock("./runner/building.ts", async (importOriginal) => {
@@ -4281,7 +4286,7 @@ describe("liveWorld: the login a run acts as on each host", () => {
       return startContexts.at(-1) as StartContext;
     });
 
-  it.effect("the repo's override, else the host's gh_login, else the runner's, reach both contexts", () =>
+  it.effect("the repo's override, else the host's gh_login, else the runner's, reach the start and the building contexts", () =>
     Effect.gen(function* () {
       const watched = {
         ...baseRepo.watched,
@@ -4299,6 +4304,32 @@ describe("liveWorld: the login a run acts as on each host", () => {
       };
       const ctx = yield* started(machine, repo);
       assert.deepStrictEqual([...ctx.hostLogins], [
+        ["h1", "tomkaczocha"],
+        ["h2", "repo-bot"],
+        ["h3", "rawphp"],
+      ]);
+      // A building step (a relaunch, a resume, a feedback pass) gets the same logins.
+      const world = liveWorld(
+        machine,
+        "/factory-test/data",
+        noGh,
+        NodeServices.layer,
+        stubSessions,
+        () => T0,
+        "mac-mini",
+        noAttention,
+        baseLive(yield* Scope.make()),
+      );
+      buildingHostLogins.length = 0;
+      stub.on = true;
+      yield* Effect.ensuring(
+        world.advance(repo, newRunId("rawphp/softfac", "10", 1), "feature/x"),
+        Effect.sync(() => {
+          stub.on = false;
+        }),
+      );
+      assert.strictEqual(buildingHostLogins.length, 1);
+      assert.deepStrictEqual([...(buildingHostLogins[0] as ReadonlyMap<string, string>)], [
         ["h1", "tomkaczocha"],
         ["h2", "repo-bot"],
         ["h3", "rawphp"],
