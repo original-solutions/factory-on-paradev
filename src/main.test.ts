@@ -4208,7 +4208,6 @@ describe("liveWorld: the hosts", () => {
           model: { instanceId: "claude", model: "opus" },
         });
         const placer = placers[0]!;
-        placer.beginPass({ localHeld: null, proxy: null });
         // The first launch takes this Mac's one slot and stays in flight.
         assert.deepStrictEqual(yield* placer.place(request(1)), { kind: "local" });
         // The reload adds a host to a/b; the next listing fails, so only the kept listing knows a/b's project.
@@ -4218,7 +4217,6 @@ describe("liveWorld: the hosts", () => {
         assert.strictEqual(placers.length, 1);
         assert.strictEqual(worlds.length, 2);
         yield* idleAfter(loop, factoryDir, 2);
-        worlds[1]!.beginPlacement({ localHeld: null, proxy: null });
         const refused = yield* placer.place(request(2)).pipe(Effect.flip);
         assert.strictEqual(refused._tag, "FactoryNoTargetHasRoom");
         // The host of the new config is a candidate for a/b, and the launch in flight still holds this Mac's slot.

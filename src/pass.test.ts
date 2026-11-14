@@ -222,11 +222,14 @@ class Fake implements PassWorld {
     });
   /** What each `beginPlacement` call was told: why this Mac holds claims, and why cloud takes none, each or null. */
   placementBegins: Array<{ localHeld: string | null; proxy: string | null }> = [];
+  /** The machine config each `beginPlacement` call said its proxy check ran under. */
+  placementMachines: Array<MachineConfig> = [];
   /** Placement's calls and the launches (`start`, `resume`), in the order they happened. */
   order: Array<string> = [];
-  beginPlacement = (began: { localHeld: string | null; proxy: string | null }): void => {
+  beginPlacement = (began: { localHeld: string | null; proxy: string | null; machine: MachineConfig }): void => {
     this.order.push("beginPlacement");
-    this.placementBegins.push(began);
+    this.placementBegins.push({ localHeld: began.localHeld, proxy: began.proxy });
+    this.placementMachines.push(began.machine);
   };
   /** The `repos` of the machine config for the passes `pass` runs. */
   machineRepos: Array<WatchedRepo> = [];
@@ -3594,6 +3597,9 @@ describe("high load", () => {
       yield* pass(calm, [REPO], 5);
       assert.deepEqual(calm.placementBegins, [{ localHeld: null, proxy: null }]);
       assert.deepEqual(calm.order, ["beginPlacement", `start ${REPO}#1`]);
+      // It names the config its proxy check ran under: the pass's own, not whatever is loaded by then.
+      assert.strictEqual(calm.placementMachines.length, 1);
+      assert.strictEqual(calm.placementMachines[0]!.repos, calm.machineRepos);
 
       const busy = new Fake();
       busy.loadAvg = { oneMinute: 55.2, cores: 12 };
