@@ -1,20 +1,51 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import type { AttentionItem } from "../attention.ts";
-import { beltBytes, type BeltV1 } from "../belt.ts";
+import { beltBytes, type BeltV2 } from "../belt.ts";
 import type { RunSummary } from "../ledger/listRuns.ts";
 import { BELT_MAX_BYTES, beltPayload, type BeltRun } from "./belt.ts";
 
 const NOW = Date.UTC(2026, 10, 12, 9, 0, 0);
 
-const RUNNER: BeltV1["runner"] = {
+const RUNNER: BeltV2["runner"] = {
   host: "mac",
   version: "0.0.0",
   paradevCli: "2.0.8",
   claimsPaused: false,
   paradevOnline: true,
   lastPassAt: "2026-11-12T09:00:00.000Z",
+  targets: [
+    {
+      kind: "local",
+      name: "local",
+      online: true,
+      load: { oneMinute: 2.5, cores: 10 },
+      slots: { used: 1, max: 1 },
+      ready: true,
+      reason: "slots full: 1 of 1 running",
+    },
+    {
+      kind: "host",
+      name: "trilogy-mac",
+      online: true,
+      load: { oneMinute: 1, cores: 8 },
+      slots: { used: 0, max: 2 },
+      ready: true,
+      reason: null,
+    },
+    {
+      kind: "cloud",
+      name: "cloud",
+      online: true,
+      load: null,
+      slots: { used: 0, max: 1 },
+      ready: false,
+      reason: "the proxy check failed: down",
+    },
+  ],
 };
+
+const HOST_NAMES = new Map([["h1", "trilogy-mac"]]);
 
 const summary = (issue: number, over: Partial<RunSummary> = {}): RunSummary => ({
   id: { repo: "acme/widgets", issue: String(issue), attempt: 1 },
@@ -49,7 +80,7 @@ const finished = (issue: number): BeltRun =>
   });
 
 const payload = (runs: ReadonlyArray<BeltRun>, attention: ReadonlyArray<AttentionItem> = []) =>
-  beltPayload({ nowMs: NOW, runner: RUNNER, runs, attention });
+  beltPayload({ nowMs: NOW, runner: RUNNER, runs, attention, hostNames: HOST_NAMES });
 
 describe("beltPayload", () => {
   it("has the spec's fields for each run and nothing else", () => {
@@ -60,9 +91,10 @@ describe("beltPayload", () => {
         "local:ws-7",
       ),
     ]);
-    assert.strictEqual(belt.v, 1);
+    assert.strictEqual(belt.v, 2);
     assert.strictEqual(belt.updatedAt, new Date(NOW).toISOString());
-    assert.deepStrictEqual(belt.runner, RUNNER);
+    // The runner comes through as given; its target rows are the belt's own (below).
+    assert.deepStrictEqual({ ...belt.runner, targets: [] }, { ...RUNNER, targets: [] });
     assert.deepStrictEqual(Object.keys(belt).sort(), ["attention", "counts", "runner", "runs", "updatedAt", "v"]);
     const [only] = belt.runs;
     assert.deepStrictEqual(Object.keys(only!).sort(), [
@@ -75,6 +107,7 @@ describe("beltPayload", () => {
       "startedTs",
       "state",
       "step",
+      "target",
       "title",
       "totalMs",
       "workspaceId",
@@ -84,10 +117,77 @@ describe("beltPayload", () => {
     assert.strictEqual(only!.issue, 7);
     assert.strictEqual(only!.state, "stuck");
     assert.strictEqual(only!.workspaceId, "ws-7");
+    assert.strictEqual(only!.target, "local");
     assert.isAtMost(only!.title!.length, 120);
     assert.isAtMost(only!.step!.length, 120);
     assert.isAtMost(only!.reason!.length, 300);
     assert.isTrue(only!.title!.endsWith("…"));
+  });
+
+  it("carries the runner's target rows, and says where each run is and which workspace it has", () => {
+    const belt = payload([
+      run(1, {}, "local:ws-1"),
+      run(2, {}, "host:h1:ws-2"),
+      run(3, {}, "cloud:ws-3"),
+      run(4, {}, "host:gone:ws-4"),
+      run(5),
+    ]);
+    assert.deepStrictEqual(belt.runner.targets.slice(0, 2), RUNNER.targets.slice(0, 2));
+    assert.deepStrictEqual(
+      belt.runs.map((entry) => [entry.target, entry.workspaceId]),
+      [
+        ["local", "ws-1"],
+        ["trilogy-mac", "ws-2"],
+        ["cloud", "ws-3"],
+        // A host the config no longer lists shows by its id.
+        ["gone", "ws-4"],
+        [null, null],
+      ],
+    );
+  });
+
+  it("says only which check failed for a target that is not ready: its line can quote paths, users and addresses", () => {
+    const row = (kind: "local" | "host" | "cloud", reason: string) => ({
+      kind,
+      name: kind,
+      online: true,
+      load: null,
+      slots: { used: 0, max: 1 },
+      ready: false,
+      reason,
+    });
+    const belt = beltPayload({
+      nowMs: NOW,
+      runner: {
+        ...RUNNER,
+        targets: [
+          row("local", "this Mac holds claims: low disk"),
+          row("host", "not ready: clone /Users/tomk/app: clone it on the host: git clone https://github.com/acme/app /Users/tomk/app"),
+          row("cloud", "the proxy check failed: getaddrinfo ENOTFOUND trilogy-mac.tail459612.ts.net"),
+        ],
+      },
+      runs: [],
+      attention: [],
+      hostNames: HOST_NAMES,
+    });
+    assert.deepStrictEqual(
+      belt.runner.targets.map((target) => target.reason),
+      [
+        "this Mac's load or disk check holds claims; factory-runner status says why",
+        "its hosts check failed; factory-runner status says why",
+        "its proxy check has not passed; factory-runner status says why",
+      ],
+    );
+    const text = JSON.stringify(belt.runner.targets);
+    for (const leak of ["/Users/", "git clone", "ENOTFOUND", "ts.net"]) assert.notInclude(text, leak);
+  });
+
+  it("keeps the reason of a target that is ready: placement's own words, with no outside text", () => {
+    const belt = payload([]);
+    assert.deepStrictEqual(
+      belt.runner.targets.map((target) => target.reason),
+      ["slots full: 1 of 1 running", null, "its proxy check has not passed; factory-runner status says why"],
+    );
   });
 
   it("cuts a long title without splitting a character", () => {
@@ -222,16 +322,35 @@ describe("beltPayload", () => {
       .filter((entry) => entry.summary.finished)
       .map((entry) => Number(entry.summary.id.issue))
       .at(-kept.length - 1)!;
-    const withOneMore: BeltV1 = {
+    const withOneMore: BeltV2 = {
       ...belt,
       runs: [...payload([finished(oneMore)]).runs, ...belt.runs],
     };
     assert.isAbove(beltBytes(withOneMore), BELT_MAX_BYTES);
   });
 
+  it("with target rows and a target on every run, still drops only finished runs, oldest first", () => {
+    const runs = Array.from({ length: 500 }, (_, i) =>
+      i % 25 === 0 ? run(i + 1, {}, `host:h1:ws-${i}`) : { ...finished(i + 1), threadId: `cloud:ws-${i}` },
+    );
+    const belt = payload(runs);
+    assert.isAtMost(beltBytes(belt), BELT_MAX_BYTES);
+    assert.strictEqual(belt.runner.targets.length, 3);
+    const open = belt.runs.filter((entry) => !entry.finished);
+    assert.strictEqual(open.length, 20);
+    assert.isTrue(open.every((entry) => entry.target === "trilogy-mac"));
+    const kept = belt.runs.filter((entry) => entry.finished).map((entry) => entry.issue);
+    assert.isAbove(kept.length, 0);
+    const newest = runs
+      .filter((entry) => entry.summary.finished)
+      .map((entry) => Number(entry.summary.id.issue))
+      .slice(-kept.length);
+    assert.deepStrictEqual(kept, newest);
+  });
+
   it("cuts a belt that is only a little over 60 KiB", () => {
     const runs = Array.from({ length: 200 }, (_, i) => (i % 25 === 0 ? run(i + 1) : finished(i + 1)));
-    const whole: BeltV1 = { ...payload([]), runs: runs.map((entry) => payload([entry]).runs[0]!) };
+    const whole: BeltV2 = { ...payload([]), runs: runs.map((entry) => payload([entry]).runs[0]!) };
     // Between the cap and twice it.
     assert.isAbove(beltBytes(whole), BELT_MAX_BYTES);
     assert.isBelow(beltBytes(whole), 2 * BELT_MAX_BYTES);

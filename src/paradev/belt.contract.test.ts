@@ -10,7 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import type * as Path from "effect/Path";
 
-import type { BeltV1 } from "../belt.ts";
+import type { BeltV1, BeltV2 } from "../belt.ts";
 import { sha256 } from "../text.ts";
 import {
   BELT_HTML,
@@ -41,7 +41,14 @@ const oversizeBelt = (): BeltV1 => {
   return JSON.parse(argv[argv.indexOf("--set") + 1]!) as BeltV1;
 };
 
-const at = (belt: BeltV1, nowMs: number): BeltV1 => ({ ...belt, updatedAt: new Date(nowMs).toISOString() });
+/** A recorded v1 belt as the runner writes it now: v2, with no targets and no run's target known, at `nowMs`. */
+const at = (belt: BeltV1, nowMs: number): BeltV2 => ({
+  ...belt,
+  v: 2,
+  updatedAt: new Date(nowMs).toISOString(),
+  runner: { ...belt.runner, targets: [] },
+  runs: belt.runs.map((run) => ({ ...run, target: null })),
+});
 
 const isPublish = (argv: ReadonlyArray<string>) => argv[0] === "pages" && argv[1] === "publish";
 const isSet = (argv: ReadonlyArray<string>) => argv[0] === "pages" && argv[1] === "storage";
@@ -76,7 +83,7 @@ const timedOut: RunResult = {
 const withWriter = <A>(
   script: ReadonlyArray<Step>,
   body: (
-    write: (belt: BeltV1, nowMs: number) => Effect.Effect<void, never, FileSystem.FileSystem | Path.Path>,
+    write: (belt: BeltV2, nowMs: number) => Effect.Effect<void, never, FileSystem.FileSystem | Path.Path>,
     dataDir: string,
     fake: ReturnType<typeof fakeSuperset>,
     warnings: Array<string>,

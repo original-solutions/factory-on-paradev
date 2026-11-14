@@ -1,3 +1,6 @@
+import type { TargetRow } from "./targets.ts";
+
+/** The belt a runner from before targets wrote; the page still reads it. */
 export interface BeltV1 {
   readonly v: 1;
   readonly updatedAt: string; // ISO 8601
@@ -32,7 +35,25 @@ export interface BeltV1 {
   }>;
 }
 
+/** The belt the runner writes: V1 with the targets on the runner and where each run is. */
+export interface BeltV2 {
+  readonly v: 2;
+  readonly updatedAt: string; // ISO 8601
+  readonly runner: BeltV1["runner"] & {
+    /** One row per target, as `status` shows them. */
+    readonly targets: ReadonlyArray<TargetRow>;
+  };
+  readonly counts: BeltV1["counts"];
+  readonly runs: ReadonlyArray<
+    BeltV1["runs"][number] & {
+      /** "local", the host's name, or "cloud"; null when the run has no thread yet. */
+      readonly target: string | null;
+    }
+  >;
+  readonly attention: BeltV1["attention"];
+}
+
 /** UTF-8 byte length of the payload as stored: `JSON.stringify(payload)`. */
-export function beltBytes(payload: BeltV1): number {
+export function beltBytes(payload: BeltV1 | BeltV2): number {
   return Buffer.byteLength(JSON.stringify(payload), "utf8");
 }

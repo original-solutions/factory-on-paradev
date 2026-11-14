@@ -118,6 +118,8 @@ import {
 } from "./runner/start.ts";
 import { takeStopRequest } from "./runner/stop.ts";
 import * as Paths from "./paths.ts";
+import { hostNamesOf, TARGETS_FILE, targetsText } from "./targets.ts";
+import { writeFileAtomically } from "./files.ts";
 import { isNoTargetHasRoom, NO_TARGET_HAS_ROOM, type FactorySessions, type Model } from "./sessions.ts";
 import { type CliError, layer as cliLayer, SupersetCli } from "./paradev/cli.ts";
 import { afterPass as writeBeltAfterPass, newBeltMemo } from "./paradev/belt.ts";
@@ -904,7 +906,7 @@ const NO_PASS: Report = { runs: 0, claimed: 0, errors: 0, attention: 0 };
 interface Current {
   readonly machine: MachineConfig;
   readonly world: PassWorld;
-  /** Hands the pass's status to the belt writer; does nothing with the belt off. Never fails. */
+  /** Writes the pass's target rows for `status`, then hands the pass's status to the belt writer when the belt is on. Never fails. */
   readonly afterPass: Effect.Effect<void, never, FileSystem.FileSystem | Path.Path>;
   /** Archives orphaned cloud workspaces; does nothing when no repo names a cloud environment. Never fails. */
   readonly sweep: Effect.Effect<void>;
@@ -1056,7 +1058,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
   // The last belt written, and the run reads it was made from: kept across reloads.
   const beltMemo = newBeltMemo();
   const beltRuns: RunReadCache = new Map();
-  let beltWriting = false;
+  let afterPassRunning = false;
   let sweeping = false;
   let checkingHosts = false;
 
@@ -1098,18 +1100,18 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         Effect.forkIn(scope),
       );
     }
-    // The belt goes to Paradev beside the loop, one write at a time, so a hung Paradev holds up
-    // no pass and no shutdown. A pass that ends while a write is still going hands nothing over:
-    // the next one does.
-    const belt = Effect.suspend(() => {
-      if (beltWriting) return Effect.void;
-      beltWriting = true;
+    // The target rows and the belt go beside the loop, one write at a time, so a hung Paradev
+    // holds up no pass and no shutdown. A pass that ends while a write is still going hands
+    // nothing over: the next one does.
+    const afterPass = Effect.suspend(() => {
+      if (afterPassRunning) return Effect.void;
+      afterPassRunning = true;
       return current.afterPass.pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
         Effect.ensuring(
           Effect.sync(() => {
-            beltWriting = false;
+            afterPassRunning = false;
           }),
         ),
         Effect.interruptible,
@@ -1125,7 +1127,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         attention.passEnded(outcomeOf(exit, () => lastError)).pipe(
           // A pass that died hands the belt over too, so the page shows the failures; a pass
           // stopped by a shutdown or reload does not.
-          Effect.andThen(Exit.hasInterrupts(exit) ? Effect.void : belt),
+          Effect.andThen(Exit.hasInterrupts(exit) ? Effect.void : afterPass),
         ),
       ),
     );
@@ -1200,22 +1202,37 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       visibility: machine.paradev.belt.visibility,
       memo: beltMemo,
     };
-    const afterPass = machine.paradev.belt.enabled
-      ? Effect.gen(function* () {
-          const nowMs = Date.now();
-          yield* writeBeltAfterPass(
-            beltTarget,
-            {
-              nowMs,
-              paradevCli: cliVersion,
-              claimsPaused: loadHandPause(factoryDir) !== null,
-              paradevOnline,
-              attention: yield* attention.list(),
-            },
-            beltRuns,
-          );
-        })
-      : Effect.void;
+    const hostNames = hostNamesOf(machine.hosts);
+    // `status` shows the rows in the file as this runner's last pass. Rows a stopped runner left,
+    // or ones a failed write left behind, would read as that, so both are removed.
+    const targetsFile = path.join(factoryDir, TARGETS_FILE);
+    const removeTargets = fileSystem
+      .remove(targetsFile, { force: true })
+      .pipe(Effect.catch((error) => Effect.logWarning(`the stale target rows were not removed: ${error.message}`)));
+    // `status` reads only the data dir, so the pass's target rows go there whether the belt is on or not.
+    const afterPass = Effect.gen(function* () {
+      const nowMs = Date.now();
+      const targets = yield* placer.targets;
+      yield* writeFileAtomically(targetsFile, targetsText(targets)).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning(`the target rows were not written: ${error.message}`).pipe(Effect.andThen(removeTargets)),
+        ),
+      );
+      if (!machine.paradev.belt.enabled) return;
+      yield* writeBeltAfterPass(
+        beltTarget,
+        {
+          nowMs,
+          paradevCli: cliVersion,
+          claimsPaused: loadHandPause(factoryDir) !== null,
+          paradevOnline,
+          attention: yield* attention.list(),
+          targets,
+          hostNames,
+        },
+        beltRuns,
+      );
+    });
     // The loop is made after the world, so a gate that ends wakes whatever loop there is then.
     const base = liveWorld(
       machine,
@@ -1368,12 +1385,15 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         pollSeconds: machine.pollSeconds,
         maxConcurrentRuns: machine.maxConcurrentRuns,
         repos: state.watched,
+        hostNames,
       },
     };
     if (state.loop !== null) {
       yield* Effect.logInfo("factory config reloaded");
       return yield* state.loop.wake;
     }
+    // Rows in the data dir now are a stopped runner's: gone before this one's first pass writes its own.
+    yield* removeTargets;
     // The first pass runs at once, on the config just set.
     state.loop = yield* runLoop(
       onePass,
