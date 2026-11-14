@@ -26,7 +26,7 @@ import {
   type ParadevSessions,
   type ParadevSessionsConfig,
 } from "./sessions.ts";
-import { SshError, type SshRunner } from "./ssh.ts";
+import { isAllowed, SshError, type SshRunner } from "./ssh.ts";
 import { readLaunch, readPlacement, readThread, type ThreadRecord, writeLaunch, writePlacement, writeThread } from "./state.ts";
 
 const tempDir = useTempDirs();
@@ -2571,12 +2571,16 @@ const HELPER = "506a60d3-6dd2-4c12-b67d-dfd20151f16f";
 /** The argv a fixture was recorded with: the adapter must make the very same call. */
 const recorded = (fixture: string): Step => ({ argv: readFixture(fixture).argv, fixture });
 
-/** An ssh runner that answers each command from `answer`, and keeps every call. */
+/**
+ * An ssh runner that answers each command from `answer`, and keeps every call. A command outside
+ * the allowlist fails the test: `sshRunner` would refuse it.
+ */
 const fakeSsh = (answer: (command: string) => Partial<RunResult> | "unreachable") => {
   const calls: Array<readonly [string, string]> = [];
   const runner: SshRunner = {
     run: (destination, command) =>
       Effect.suspend(() => {
+        assert.isTrue(isAllowed(command), `the adapter sent a command outside the allowlist: ${command}`);
         calls.push([destination, command]);
         const answered = answer(command);
         if (answered === "unreachable") {
