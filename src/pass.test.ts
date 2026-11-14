@@ -213,6 +213,11 @@ class Fake implements PassWorld {
         ? { exitCode: 255, timedOut: false, stdout: "", stderr: "Connection refused\n" }
         : answer;
     });
+  /** What each `beginPlacement` call was told: why this Mac holds claims, or null. */
+  placementBegins: Array<string | null> = [];
+  beginPlacement = (localHeld: string | null): void => {
+    this.placementBegins.push(localHeld);
+  };
   hostMisses = new Map<string, number>();
   hostLoads = new Map<string, Load | null>();
   hostsNotReady = new Map<string, string>();
@@ -3481,6 +3486,24 @@ describe("high load", () => {
       fake.loadAvg = { oneMinute: 55.2, cores: 12 };
       yield* pass(fake, [REPO], 5);
       assert.deepEqual(gates(fake), [`gate ${REPO}#40`]);
+    }),
+  );
+
+  it.effect("a pass starts placement once, before any launch, and tells it why this Mac holds claims", () =>
+    Effect.gen(function* () {
+      const calm = new Fake();
+      yield* pass(calm, [REPO], 5);
+      assert.deepEqual(calm.placementBegins, [null]);
+
+      const busy = new Fake();
+      busy.loadAvg = { oneMinute: 55.2, cores: 12 };
+      yield* pass(busy, [REPO], 5);
+      assert.deepEqual(busy.placementBegins, ["high load"]);
+
+      const full = new Fake();
+      full.free = 1 * GIB;
+      yield* pass(full, [REPO], 5);
+      assert.deepEqual(full.placementBegins, ["low disk"]);
     }),
   );
 
