@@ -31,8 +31,9 @@ export interface StatusSettings {
 }
 
 /**
- * The idle reason of a live runner whose machine config does not load. Older runners' self-update
- * smoke matches this exact text in a newer version's `status --json`, so it must not change.
+ * The idle reason of a live runner whose machine config does not load. A newer version's
+ * `status --json` must report `state: running` to pass an older runner's self-update smoke; this
+ * text only shows in the warning that names why it did not.
  */
 export const CONFIG_NOT_LOADED_REASON = "the machine config does not load";
 
