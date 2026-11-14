@@ -53,7 +53,8 @@ const result = (exitCode: number, tail = "", stderrTail = ""): RunResult => ({
 
 /** What each faked command does; a test changes it between periods. */
 interface Answers {
-  refs: ReadonlyArray<string> | "fail" | "too-long";
+  /** The tag refs, or a failed read, a read cut short, or a spawn that throws. */
+  refs: ReadonlyArray<string> | "fail" | "too-long" | "throw";
   npm: "ok" | "fail" | "timeout" | "throw";
   /** The version the staged tree's `status --json` reports, or a failed run. */
   smoke: string | "fail";
@@ -165,6 +166,7 @@ const fakeProcess = (f: Fixture) =>
             return result(0, `${commitSha(version)}\n`);
           }
           if (f.answers.refs === "fail") return result(1, "", "HTTP 502: Bad Gateway");
+          if (f.answers.refs === "throw") throw new Error("EMFILE: too many open files");
           if (f.answers.refs === "too-long") {
             return { ...result(0, `refs/tags/v0.2.0 ${commitSha("0.2.0")} commit\n`), truncated: true, tailTruncated: true };
           }
@@ -379,6 +381,25 @@ describe("self-update", () => {
         expect(versionDirs(f)).toEqual(["0.1.0"]);
         expect(loud(f).map((log) => log.level)).toEqual(["Warn"]);
         expect(loud(f)[0]!.text).toContain("npm ci timed out");
+      }),
+    );
+  });
+
+  it.effect("a tag read that throws is one warning, and the next period reads again", () => {
+    const f = fixture();
+    f.answers.refs = "throw";
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual(["gh"]);
+        expect(loud(f)).toHaveLength(1);
+        expect(loud(f)[0]!.level).toBe("Warn");
+        expect(loud(f)[0]!.text).toContain("self-update check failed");
+        expect(loud(f)[0]!.text).toContain("EMFILE");
+        f.answers.refs = ["refs/tags/v0.2.0"];
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual(["gh", ...STAGING]);
+        expect(versionDirs(f)).toEqual(["0.1.0", "0.2.0"]);
       }),
     );
   });
