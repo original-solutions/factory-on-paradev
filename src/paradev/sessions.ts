@@ -53,6 +53,7 @@ import {
   listThreads,
   readLaunch,
   readThread,
+  runnerId,
   type Target,
   type ThreadRecord,
   type ThreadTarget,
@@ -343,9 +344,12 @@ const lineBefore = (text: string, mark: string): string | null => {
   return end > 0 ? lines[end - 1]! : null;
 };
 
-/** Whether a listed workspace carries the `factory` tag. */
-const taggedFactory = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined): boolean =>
-  (tags ?? []).some((tag) => (typeof tag === "string" ? tag : tag.name) === "factory");
+/** The tag that marks a cloud workspace as made by the runner of this id. */
+const runnerTag = (id: string): string => `factory-${id}`;
+
+/** Whether a listed workspace carries `name` as a tag. */
+const hasTag = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined, name: string): boolean =>
+  (tags ?? []).some((tag) => (typeof tag === "string" ? tag : tag.name) === name);
 
 /** Claude's folder for a worktree's sessions: the path with every character but a letter or digit as `-`. */
 const claudeProjectFolder = (worktreePath: string): string => worktreePath.replace(/[^A-Za-z0-9]/g, "-");
@@ -1009,7 +1013,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const argv = [
         "workspaces", "create", ...at(target), "--environment", placed.environmentId,
         "--machine-size", placed.machineSize, "--name", launchBranch(request.commandId),
-        "--base-branch", request.baseRef, "--tag", "factory",
+        "--base-branch", request.baseRef, "--tag", "factory", "--tag", runnerTag(yield* local(runnerId(dataDir))),
       ];
       const created = yield* decodeAnswer(CloudCreated, yield* call(cli, argv, 300_000), argv);
       if (!isPlainId(created.id)) return yield* fail(`cloud workspace id ${created.id} is not plain`);
@@ -1704,15 +1708,15 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   }, (effect) => effect.pipe(Effect.mapError(failWith("archive"))));
 
   /**
-   * Archives, once per pass, every cloud workspace tagged `factory` with no thread record file,
+   * Archives, once per pass, every cloud workspace with this runner's tag (`factory-<runner id>`,
+   * which only its own creates carry) and no thread record file,
    * whole or torn, created over 10 minutes ago: a launch that died between its create and its
    * record left it, and an idle box bills. A workspace with a record is the core's, whatever state
    * the record is in, unless the core can never reach it: the record has `pendingArchive` (its
    * launch failed and could not archive it), or it has no agent and no launch file names it (the
    * launch died between its record and its launch file, so a repeat of it creates another
    * workspace). A record with an agent is the core's whatever its launch file says. One log line
-   * each; a workspace that fails to archive is one warning, and the rest go on. The tag is the only mark of whose a workspace is, so this assumes one runner
-   * per Paradev organisation (P2's solo runner).
+   * each; a workspace that fails to archive is one warning, and the rest go on.
    */
   const sweepOrphans = Effect.gen(function* () {
     const argv = ["workspaces", "list", ...at({ kind: "cloud" })];
@@ -1720,8 +1724,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       Effect.flatMap((answer) => decodeAnswer(CloudRows, answer, argv)),
     );
     const now = yield* Clock.currentTimeMillis;
+    const mine = runnerTag(yield* local(runnerId(dataDir)));
     for (const row of rows) {
-      if (row.status === "deleted" || !taggedFactory(row.tags) || !isPlainId(row.id)) continue;
+      if (row.status === "deleted" || !hasTag(row.tags, mine) || !isPlainId(row.id)) continue;
       if (!(now - Date.parse(row.createdAt) > ORPHAN_AGE_MS)) continue;
       if (yield* local(threadFileExists(dataDir, row.id))) {
         const record = yield* local(readThread(dataDir, row.id));
@@ -1745,7 +1750,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       yield* archiveWorkspace({ kind: "cloud" }, row.id).pipe(
         Effect.andThen(
           Effect.logInfo(
-            `archived cloud workspace ${row.id} (${row.name ?? "no name"}): tagged factory, created ${row.createdAt}, and no thread record`,
+            `archived cloud workspace ${row.id} (${row.name ?? "no name"}): tagged ${mine}, created ${row.createdAt}, and no thread record`,
           ),
         ),
         Effect.catch((error) =>

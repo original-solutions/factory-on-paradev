@@ -155,6 +155,10 @@ const launchFile = (path: Path.Path, dataDir: string, commandId: string) =>
     `${sha256(commandId)}.json`,
   );
 
+const runnerIdFile = (path: Path.Path, dataDir: string) => path.join(dataDir, "paradev", "runner-id");
+
+const RUNNER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /** The file's text; null when it does not exist. */
 const readText = (file: string) =>
   Effect.gen(function* () {
@@ -234,4 +238,19 @@ export const writeLaunch = Effect.fn("ParadevState.writeLaunch")(function* (
 ) {
   const path = yield* Path.Path;
   yield* writeFileAtomically(launchFile(path, dataDir, commandId), `${JSON.stringify({ threadId })}\n`);
+});
+
+/**
+ * This runner's id: a random UUID written to `<data>/paradev/runner-id` on first use and read back
+ * after that. It marks the cloud workspaces this runner creates, so its orphan sweep archives no
+ * other runner's. A file that does not read back as an id is replaced, as a torn record is missing.
+ */
+export const runnerId = Effect.fn("ParadevState.runnerId")(function* (dataDir: string) {
+  const path = yield* Path.Path;
+  const file = runnerIdFile(path, dataDir);
+  const read = (yield* readText(file))?.trim();
+  if (read !== undefined && RUNNER_ID.test(read)) return read;
+  const id = crypto.randomUUID();
+  yield* writeFileAtomically(file, `${id}\n`);
+  return id;
 });
