@@ -2416,6 +2416,65 @@ status: () =>
     ).pipe(Effect.map((result) => ({ result, readings })));
   };
 
+  describe("the host check's runner login", () => {
+    const HOST = { id: "h1", name: "mini", ssh: "me@mini", maxRuns: 2, maxLoadPerCore: 1 };
+    const checked = (lastGood: Map<string, { trackerUser?: string }>) => {
+      const calls: Array<ReadonlyArray<string>> = [];
+      const process = FactoryProcess.of({
+        run: (input: RunInput) => {
+          calls.push(input.args ?? []);
+          return Effect.succeed({
+            exitCode: 1,
+            timedOut: false,
+            tail: "",
+            stderrTail: "gh: no",
+            truncated: false,
+            tailTruncated: false,
+          } satisfies RunResult);
+        },
+      });
+      const world = liveWorld(
+        { ...machine, hosts: [HOST] },
+        "/factory-test/data",
+        process,
+        NodeServices.layer,
+        stubSessions,
+        () => NOW,
+        "mac-mini",
+        noAttention,
+        {
+          gate: { run: () => Effect.succeed({ _tag: "running" as const }) },
+          wake: Effect.void,
+          scope: Scope.makeUnsafe(),
+          ssh: () => Effect.succeed({ exitCode: 0, timedOut: false, stdout: "", stderr: "" }),
+        },
+        undefined,
+        undefined,
+        { ...newShared(), lastGood },
+      );
+      return Effect.promise(() => Effect.runPromise(world.checkHost(HOST))).pipe(
+        Effect.map((lines) => ({ lines, calls })),
+      );
+    };
+
+    it.effect("a login the pass already read is the runner's, with no GitHub read of its own", () =>
+      Effect.gen(function* () {
+        const { lines, calls } = yield* checked(new Map([["a/b", { trackerUser: "rawphp" }]]));
+        assert.isTrue(lines.some((line) => line.check === "gh login rawphp" && line.ok), JSON.stringify(lines));
+        assert.deepStrictEqual(calls, []);
+      }),
+    );
+
+    it.effect("with none read yet, the login is read from GitHub, and a failed read is not invented as success", () =>
+      Effect.gen(function* () {
+        const { lines, calls } = yield* checked(new Map());
+        assert.isTrue(calls.length > 0);
+        const line = lines.find((l) => l.check === "gh login");
+        assert.deepStrictEqual([line?.ok, line?.text], [false, "not checked: the runner's gh login could not be read"]);
+      }),
+    );
+  });
+
   describe("with the machine's default_project", () => {
     const withDefault: MachineConfig = {
       ...machine,

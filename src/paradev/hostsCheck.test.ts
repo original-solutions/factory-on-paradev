@@ -332,16 +332,18 @@ describe("checkHost: gh login", () => {
     assert.deepStrictEqual([line.ok, line.text], [false, "gh auth login as rawphp on the host"]);
   });
 
-  it("a repo override adds a line after the host's, and a repeat of a login in another case adds none", async () => {
+  it("a repo override adds a line after the host's, a repeat of a login adds none, and a login in another case is its own line", async () => {
     const w = world();
     w.ssh.set(ghTokenCheck("tomkaczocha"), ok());
     w.ssh.set(ghTokenCheck("tomk-bot"), failed());
+    w.ssh.set(ghTokenCheck("TOMKACZOCHA"), ok());
     const h = { ...HOST, ghLogin: "tomkaczocha" };
     const machine = {
       ...machineOf([h]),
       repos: [
         { repo: "acme/app", path: "/Users/tom/app", hosts: [{ id: "h1", path: PATH, ghLogin: "tomk-bot" }] },
         { repo: "acme/two", path: "/Users/tom/two", hosts: [{ id: "h1", path: PATH, ghLogin: "TOMKACZOCHA" }] },
+        { repo: "acme/three", path: "/Users/tom/three", hosts: [{ id: "h1", path: PATH, ghLogin: "tomk-bot" }] },
       ],
     };
     const lines = ghLines(await Effect.runPromise(checkHost(w.io, machine, h)));
@@ -350,6 +352,7 @@ describe("checkHost: gh login", () => {
       [
         ["gh login tomkaczocha", true],
         ["gh login tomk-bot", false],
+        ["gh login TOMKACZOCHA", true],
       ],
     );
   });
