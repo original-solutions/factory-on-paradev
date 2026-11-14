@@ -3880,3 +3880,97 @@ describe("a save keeps the current terminal's liveness and trust reads", () => {
     }),
   );
 });
+
+describe("placement, once per command id (#55)", () => {
+  it.live("a launch sent twice with the same command id places once and starts nothing the second time", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      let placed = 0;
+      const t = rig(
+        [...launchScript(r), { argv: argvIs("agents", "explain"), fixture: "agents-explain-local-starting" }],
+        {
+          config: {
+            remoteBase: r.remoteBase,
+            place: () => Effect.sync(() => (placed += 1, { kind: "local" as const })),
+          },
+        },
+      );
+      const first = yield* t.run((s) => s.launch(request()));
+      const callsAfterFirst = t.calls.length;
+      const second = yield* t.run((s) => s.launch(request()));
+      assert.strictEqual(placed, 1);
+      assert.deepStrictEqual(second, first);
+      assert.strictEqual(t.calls.length, callsAfterFirst);
+    }),
+  );
+});
+
+describe("runningByTarget and runningThreads, per target (#55)", () => {
+  const withAll = { hosts: HOSTS, cloud: true } as const;
+  /** The L5b local snapshot: its first terminal reads `working`, its second `idle`. */
+  const localStep: Step = { argv: ["snapshot"], fixture: "snapshot-local-after-resume" };
+  const hostStep: Step = { argv: ["snapshot", "--host", HOST], fixture: "snapshot-host-after-restart" };
+  const cloudStep: Step = { argv: ["snapshot", "--host", "cloud"], fixture: "snapshot-cloud" };
+  const seedAll = (data: string) =>
+    seed(
+      data,
+      record({ threadId: `local:${L5_WS}`, workspaceId: L5_WS, terminals: [L5_DEAD] }),
+      hostRecord(),
+      cloudRecord(),
+    );
+
+  it.effect("counts this Mac, each host and cloud from one snapshot each, and sums them", () =>
+    Effect.gen(function* () {
+      const t = rig([localStep, hostStep, cloudStep, localStep, hostStep, cloudStep], { config: withAll });
+      yield* seedAll(t.data);
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 1 },
+        { target: { kind: "host", machineId: HOST }, running: 1 },
+        { target: { kind: "cloud" }, running: 1 },
+      ]);
+      assert.strictEqual(yield* t.run((s) => s.runningThreads), 3);
+      // Each target read once per call, with no --workspace.
+      assert.deepStrictEqual(t.calls.slice(0, 3).map((argv) => argv.join(" ")).sort(), [
+        "snapshot",
+        "snapshot --host c9c39956e0c1756e30d6bb9f4f907ff1",
+        "snapshot --host cloud",
+      ]);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.effect("a host that cannot be read is null and left out of the sum", () =>
+    Effect.gen(function* () {
+      const offline: Step = { argv: ["snapshot", "--host", HOST], fixture: "snapshot-host-offline" };
+      const t = rig([localStep, offline, cloudStep, localStep, offline, cloudStep], { config: withAll });
+      yield* seedAll(t.data);
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 1 },
+        { target: { kind: "host", machineId: HOST }, running: null },
+        { target: { kind: "cloud" }, running: 1 },
+      ]);
+      assert.strictEqual(yield* t.run((s) => s.runningThreads), 2);
+    }),
+  );
+
+  it.effect("fails runningThreads when this Mac's snapshot cannot be read", () =>
+    Effect.gen(function* () {
+      const t = rig([{ argv: ["snapshot"], fail: "boom" }, hostStep], { config: { hosts: HOSTS } });
+      yield* seedAll(t.data);
+      const error = yield* t.run((s) => s.runningThreads).pipe(Effect.flip);
+      assert.strictEqual(error.operation, "running-threads");
+    }),
+  );
+
+  it.effect("reads no cloud snapshot, and no host's, when none is configured", () =>
+    Effect.gen(function* () {
+      const t = rig([localStep, localStep]);
+      yield* seedAll(t.data);
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [{ target: { kind: "local" }, running: 1 }]);
+      assert.strictEqual(yield* t.run((s) => s.runningThreads), 1);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.length, 2);
+    }),
+  );
+});
