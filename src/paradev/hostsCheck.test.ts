@@ -136,20 +136,28 @@ describe("checkHost", () => {
     }
   });
 
-  it("online: a hosts list that fails says so, with the error text, not the add-it fix", async () => {
+  it("online: a hosts list that fails keeps the add-it fix as the text and puts the cause in the detail", async () => {
     const w = world();
     w.superset.set("hosts list", new Error("PARADEV_OFFLINE: not running"));
     const line = byCheck(await run(w), "online");
-    assert.deepStrictEqual([line.ok, line.text], [false, "superset hosts list failed: PARADEV_OFFLINE: not running"]);
+    assert.deepStrictEqual(
+      [line.ok, line.text, line.detail],
+      [
+        false,
+        "add it with superset hosts add me@mini --name mini, or start its host service (sh.superset.host)",
+        "superset hosts list failed: PARADEV_OFFLINE: not running",
+      ],
+    );
   });
 
   it("ssh: names the key to install and says why it failed; later ssh lines are not checked", async () => {
     const w = world();
     w.ssh.set(TRUE_COMMAND, failed("Permission denied (publickey).\n"));
     const lines = await run(w);
+    assert.strictEqual(byCheck(lines, "ssh").text, "install this Mac's ssh key on the host: ssh-copy-id me@mini");
     assert.strictEqual(
-      byCheck(lines, "ssh").text,
-      "install this Mac's ssh key on the host: ssh-copy-id me@mini (ssh -o BatchMode=yes me@mini true failed: exit 1: Permission denied (publickey).)",
+      byCheck(lines, "ssh").detail,
+      "ssh -o BatchMode=yes me@mini true failed: exit 1: Permission denied (publickey).",
     );
     for (const check of ["clone acme/app", "trusted acme/app", "proxy env", "git identity", "gh", "claude"]) {
       const line = byCheck(lines, check);
@@ -160,14 +168,15 @@ describe("checkHost", () => {
     assert.deepStrictEqual(w.commands, [TRUE_COMMAND]);
   });
 
-  it("cli: a projects list that fails gets the online fix, and project lines are not checked", async () => {
+  it("cli: a projects list that fails prints the add-it fix with the cause as detail, and project lines are not checked", async () => {
     const w = world();
     w.superset.set("projects list --host h1", new Error("PARADEV_OFFLINE"));
     const lines = await run(w);
     assert.strictEqual(
       byCheck(lines, "cli").text,
-      "superset projects list --host h1 failed: PARADEV_OFFLINE",
+      "add it with superset hosts add me@mini --name mini, or start its host service (sh.superset.host)",
     );
+    assert.strictEqual(byCheck(lines, "cli").detail, "superset projects list --host h1 failed: PARADEV_OFFLINE");
     assert.deepStrictEqual(
       [byCheck(lines, "project acme/app").ok, byCheck(lines, "project acme/app").text],
       [false, "not checked: superset projects list --host failed"],
@@ -268,13 +277,15 @@ describe("checkHost", () => {
     w.ssh.set(GH_AUTH_STATUS, { exitCode: 127, timedOut: false, stdout: "", stderr: "zsh:1: command not found: gh\n" });
     w.ssh.set(CLAUDE_VERSION, { exitCode: 127, timedOut: false, stdout: "", stderr: "zsh:1: command not found: claude\n" });
     const lines = await run(w);
+    assert.strictEqual(byCheck(lines, "gh").text, "gh auth login on the host");
     assert.strictEqual(
-      byCheck(lines, "gh").text,
-      "gh is not on the PATH of a non-interactive ssh shell; add its folder (e.g. /opt/homebrew/bin) to PATH in ~/.zshenv on the host",
+      byCheck(lines, "gh").detail,
+      "gh is not on the PATH of a non-interactive ssh shell; add its folder (e.g. /opt/homebrew/bin or ~/.local/bin) to PATH in ~/.zshenv on the host",
     );
+    assert.strictEqual(byCheck(lines, "claude").text, "install Claude Code on the host");
     assert.strictEqual(
-      byCheck(lines, "claude").text,
-      "claude is not on the PATH of a non-interactive ssh shell; add its folder (e.g. ~/.local/bin) to PATH in ~/.zshenv on the host",
+      byCheck(lines, "claude").detail,
+      "claude is not on the PATH of a non-interactive ssh shell; add its folder (e.g. /opt/homebrew/bin or ~/.local/bin) to PATH in ~/.zshenv on the host",
     );
   });
 
@@ -283,6 +294,15 @@ describe("checkHost", () => {
     assert.deepStrictEqual(
       lines.map((l) => l.check),
       ["online", "ssh", "cli", "proxy env", "git identity", "gh", "claude"],
+    );
+  });
+});
+
+describe("firstFailure", () => {
+  it("leaves the detail out, so an item does not change with an error's wording", () => {
+    assert.strictEqual(
+      firstFailure([{ check: "ssh", ok: false, text: "the fix", detail: "exit 255: Connection refused" }]),
+      "ssh: the fix",
     );
   });
 });
@@ -307,8 +327,9 @@ describe("formatHostCheck", () => {
       formatHostCheck(HOST, [
         { check: "ssh", ok: true, text: "ok" },
         { check: "gh", ok: false, text: "gh auth login on the host" },
+        { check: "cli", ok: false, text: "the fix", detail: "the cause" },
       ]),
-      ["mini (me@mini)", "  ssh: ok", "  gh: gh auth login on the host"],
+      ["mini (me@mini)", "  ssh: ok", "  gh: gh auth login on the host", "  cli: the fix (the cause)"],
     );
   });
 });

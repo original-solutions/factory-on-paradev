@@ -7,6 +7,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 
+import { trustFixCommand } from "./hostsCheck.ts";
 import { useTempDirs } from "../ledger/testSupport.ts";
 import { FactoryProcess, type RunInput, type RunResult } from "../process.ts";
 
@@ -346,6 +347,18 @@ describe("the host scripts, run for real", () => {
     const home = tempDir("trust-quote");
     writeJson(home, ".claude.json", { projects: { [odd]: { hasTrustDialogAccepted: true } } });
     assert.strictEqual(sh(trustRead(odd), home).stdout.trim(), "yes");
+  });
+
+  it("the printed trust fix, run on the host, makes the trust read answer yes and keeps the file's other keys", () => {
+    const home = tempDir("trust-fix");
+    writeJson(home, ".claude.json", { theme: "dark", projects: { "/other": { allowedTools: [1] } } });
+    const fix = sh(trustFixCommand(PATH), home);
+    assert.strictEqual(fix.status, 0, fix.stderr);
+    assert.strictEqual(sh(trustRead(PATH), home).stdout.trim(), "yes");
+    const after = JSON.parse(NodeFS.readFileSync(NodePath.join(home, ".claude.json"), "utf8"));
+    assert.strictEqual(after.theme, "dark");
+    assert.deepStrictEqual(after.projects["/other"], { allowedTools: [1] });
+    assert.strictEqual(after.projects[PATH].hasTrustDialogAccepted, true);
   });
 
   const TOKEN = "sk-secret-token-value";

@@ -6758,6 +6758,34 @@ describe("the host checks", () => {
     }),
   );
 
+  it.effect("the same failing check with other detail text keeps the open item", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.hosts = [host("a")];
+      const failing = (detail: string): ReadonlyArray<CheckLine> => [
+        { check: "ssh", ok: false, text: "install this Mac's ssh key on the host: ssh-copy-id me@a", detail },
+      ];
+      fake.checks["a"] = failing("exit 255: Connection refused");
+      yield* pass(fake, [REPO], 5);
+      const first = notReady(fake, "a")[0]!;
+      fake.now += HOST_RECHECK_EVERY_MS;
+      fake.checks["a"] = failing("exit 255: Connection timed out");
+      yield* pass(fake, [REPO], 5);
+      fake.now += HOST_RECHECK_EVERY_MS;
+      fake.checks["a"] = failing("no answer within 10 s");
+      yield* pass(fake, [REPO], 5);
+      assert.equal(checked(fake).length, 3);
+      const items = notReady(fake, "a");
+      assert.equal(items.length, 1);
+      // Cleared and raised again would carry the later clock as its first-seen time.
+      assert.equal(items[0]!.firstSeenMs, first.firstSeenMs);
+      assert.equal(
+        fake.hostsNotReady.get("a"),
+        "ssh: install this Mac's ssh key on the host: ssh-copy-id me@a",
+      );
+    }),
+  );
+
   it.effect("a check that never answers fails the host with `check: no answer within 60 s`", () =>
     Effect.gen(function* () {
       assert.equal(HOST_CHECK_TIMEOUT_MS, 60_000);

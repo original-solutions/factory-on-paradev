@@ -395,7 +395,7 @@ ${PARADEV}`;
     expect(s.errs.length).toBe(1);
   });
 
-  it("prints why a failing hosts list failed, not the add-it fix", async () => {
+  it("prints the add-it fix for a failing hosts list, with the cause in brackets after it", async () => {
     const h = hostsRun();
     const run = (command: string, args: ReadonlyArray<string>, timeoutMs: number): CommandResult =>
       command !== "ssh" && args[0] === "hosts"
@@ -404,7 +404,9 @@ ${PARADEV}`;
     const s = setup({ run });
     seedConfig(s);
     expect(await runCli(["hosts", "check", "mini"], s.io)).toBe(1);
-    expect(s.outs).toContain("  online: superset hosts list failed: PARADEV_OFFLINE: not running");
+    expect(s.outs).toContain(
+      "  online: add it with superset hosts add me@mini --name mini, or start its host service (sh.superset.host) (superset hosts list failed: PARADEV_OFFLINE: not running)",
+    );
   });
 
   it("prints the trust fix when the trust read fails over ssh", async () => {
