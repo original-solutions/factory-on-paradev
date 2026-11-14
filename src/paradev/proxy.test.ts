@@ -40,7 +40,8 @@ describe("checkProxy", () => {
     }),
   );
 
-  it.effect("no answer within the timeout is down", () =>
+  // The real clock: it.effect runs on a TestClock that the timeout would wait on forever.
+  it.live("no answer within the timeout is down", () =>
     Effect.gen(function* () {
       const never: ProxyGet = () => Effect.never;
       assert.deepStrictEqual(yield* checkProxy(never, "https://proxy.example", 20), {
