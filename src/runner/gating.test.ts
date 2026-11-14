@@ -37,6 +37,8 @@ import { readRun } from "../ledger/read.ts";
 import { runPath, type RunId } from "../ledger/runId.ts";
 import { T0, useTempDirs } from "../ledger/testSupport.ts";
 import {
+  isNoTargetHasRoom,
+  NoTargetHasRoom,
   SessionsError,
   ThreadNotFoundError,
   type Checkout,
@@ -522,6 +524,8 @@ class FakeT3 {
   readonly launches: Array<LaunchRequest> = [];
   /** The thread T3 made for each launch command id: a launch sent again under an id answers the thread it made. */
   readonly made = new Map<string, string>();
+  /** The next launch finds no target with room, once: nothing is started. */
+  noRoomOnce = false;
   /** The launch took effect and then the server died: the call never returns, as a crash would. */
   dieAfterLaunch = false;
   private readonly gh: FakeGh;
@@ -550,6 +554,10 @@ class FakeT3 {
     launch: (request) => {
       const failed = this.call(`launch ${request.commandId}`, "launch");
       if (failed !== null) return Effect.fail(failed);
+      if (this.noRoomOnce) {
+        this.noRoomOnce = false;
+        return Effect.fail(new SessionsError({ operation: "launch", cause: new NoTargetHasRoom() }));
+      }
       this.launches.push(request);
       const known = this.made.get(request.commandId);
       const threadId = known ?? `thread-${this.made.size + 2}`;
@@ -4440,6 +4448,26 @@ describe("regate: a re-gate pass waits for the required checks", () => {
         req.message,
       );
       assert.ok(req.message.includes("Check: gate"), req.message);
+      assertRelaunched(rig);
+    }),
+  );
+
+  it.effect("a relaunch that finds no room waits: the run is not stuck, and a later call sends the same relaunch", () =>
+    Effect.gen(function* () {
+      const rig = yield* prOpenRun();
+      rig.project = { ...rig.project, requiredChecks: ["gate"] };
+      scriptChecks(rig, [["failed"]]);
+      headMoved(rig);
+      rig.t3.noRoomOnce = true;
+      const refused = yield* Effect.flip(regateStep(rig));
+      assert.isTrue(isNoTargetHasRoom(refused));
+      assert.deepStrictEqual(rig.t3.launches, []);
+      assert.deepStrictEqual(eventsOf(rig, "stuck"), []);
+      assert.deepStrictEqual(eventsOf(rig, "session_launched").length, 1);
+      const first = rig.t3.calls.filter((call) => call.startsWith("launch ")).at(-1)!;
+      assert.deepStrictEqual(yield* regateStep(rig), { kind: "sent-back", attempt: 2 });
+      assert.strictEqual(rig.t3.calls.filter((call) => call.startsWith("launch ")).at(-1), first);
+      assert.deepStrictEqual(eventsOf(rig, "stuck"), []);
       assertRelaunched(rig);
     }),
   );
