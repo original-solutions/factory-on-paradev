@@ -1052,17 +1052,16 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       ghConfigDir: machine.ghConfigDir,
       hosts: machine.hosts,
     }).pipe(Effect.provide(paradev));
-    const environments = [...new Set(machine.repos.flatMap((entry) => (entry.cloud === undefined ? [] : [entry.cloud])))];
-    const sweep =
-      environments.length === 0
-        ? Effect.void
-        : sessions.sweepOrphans(environments).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning(
-                `the cloud orphan sweep failed: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
-              ),
+    // Only a repo that names a cloud environment can have a cloud run, and so an orphan.
+    const sweep = machine.repos.some((entry) => entry.cloud !== undefined)
+      ? sessions.sweepOrphans.pipe(
+          Effect.catch((error) =>
+            Effect.logWarning(
+              `the cloud orphan sweep failed: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
             ),
-          );
+          ),
+        )
+      : Effect.void;
     // The CLI check runs at start and on every reload, and again each pass until it passes.
     let cliChecked = false;
     // What the belt says of Paradev: the version the check read, and the last pass's answer.

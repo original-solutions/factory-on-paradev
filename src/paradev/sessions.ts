@@ -109,7 +109,6 @@ const CloudRows = Schema.Array(
     id: Schema.String,
     name: Schema.optional(Schema.NullOr(Schema.String)),
     status: Schema.optional(Schema.NullOr(Schema.String)),
-    environmentId: Schema.optional(Schema.NullOr(Schema.String)),
     createdAt: Schema.String,
     tags: Schema.optional(Schema.NullOr(Schema.Array(Tag))),
   }),
@@ -310,11 +309,8 @@ export type ParadevSessions = FactorySessions["Service"] & {
   readonly findProjects: (
     workspaceRoots: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<FactoryProject | null>, SessionsError>;
-  /**
-   * Archives the orphaned cloud workspaces of `environmentIds`, the config's `repos[].cloud`; the
-   * runner calls it once per pass while a repo names one.
-   */
-  readonly sweepOrphans: (environmentIds: ReadonlyArray<string>) => Effect.Effect<void, SessionsError>;
+  /** Archives the orphaned cloud workspaces; the runner calls it once per pass while a repo names a cloud environment. */
+  readonly sweepOrphans: Effect.Effect<void, SessionsError>;
 };
 
 type Operation = SessionsError["operation"];
@@ -350,9 +346,6 @@ const lineBefore = (text: string, mark: string): string | null => {
 /** Whether a listed workspace carries the `factory` tag. */
 const taggedFactory = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined): boolean =>
   (tags ?? []).some((tag) => (typeof tag === "string" ? tag : tag.name) === "factory");
-
-/** A name `launchBranch` gives: `fac/<issue>-<attempt>`, with an 8-hex suffix, or `fac/x-<12 hex>`. */
-const LAUNCH_NAME = /^fac\/(?:\d+-\d+(?:-[0-9a-f]{8})?|x-[0-9a-f]{12})$/;
 
 /** Claude's folder for a worktree's sessions: the path with every character but a letter or digit as `-`. */
 const claudeProjectFolder = (worktreePath: string): string => worktreePath.replace(/[^A-Za-z0-9]/g, "-");
@@ -1069,10 +1062,21 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       return yield* ssh.run(destination, `sh -c ${shellQuote(script)}`).pipe(
         Effect.map((result) => {
           const lines = result.tail.split("\n").map((line) => line.trim());
-          if (result.exitCode !== 0 || lines.filter((line) => line !== "").at(-1) !== LOOKUP_MARK) return null;
+          const last = lines.filter((line) => line !== "").at(-1) ?? "";
+          if (result.exitCode !== 0 || last !== LOOKUP_MARK) return { unfinished: result.exitCode, last } as const;
           const resolved = lines.find((line) => line.startsWith("W"))?.slice(1) ?? "";
           return lines.some((line) => line === `n${worktreePath}` || (resolved !== "" && line === `n${resolved}`));
         }),
+        // Exit 3: no `lsof` on the host's PATH, or `pgrep` failed. Said each time, as nothing else shows it.
+        Effect.flatMap((answer) =>
+          typeof answer === "boolean"
+            ? Effect.succeed(answer)
+            : Effect.logWarning(
+                `the agent lookup of ${record.threadId} on host ${machineId} did not finish (exit ${answer.unfinished}${
+                  answer.last === "" ? "" : `, last line ${answer.last}`
+                }); is lsof on the PATH of a non-interactive ssh?`,
+              ).pipe(Effect.as(null)),
+        ),
         Effect.catch((error) =>
           Effect.logWarning(`could not read whether ${record.threadId}'s agent is alive: ${error.message}`).pipe(
             Effect.as(null),
@@ -1656,66 +1660,35 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   }, (effect) => effect.pipe(Effect.mapError(failWith("archive"))));
 
   /**
-   * Archives, once per pass, the cloud workspaces a launch of this runner left: in one of
-   * `environmentIds` (the config's `repos[].cloud`), tagged `factory`, named as a launch names its
-   * workspace, and either with no thread record and created over 10 minutes ago (the launch died
-   * between its create and its record) or with a record whose agent never started and created
-   * longer ago than a launch can wait for ready (its archive failed too). One log line each; a
-   * workspace that fails to archive is one warning, and the rest go on. It assumes one runner per
-   * Paradev organisation: another runner's workspaces of the same environments look like its own.
+   * Archives, once per pass, every cloud workspace tagged `factory` with no thread record file,
+   * whole or torn, created over 10 minutes ago: a launch that died between its create and its
+   * record left it, and an idle box bills. A workspace with a record is the core's, whatever state
+   * the record is in. One log line each; a workspace that fails to archive is one warning, and
+   * the rest go on. The tag is the only mark of whose a workspace is, so this assumes one runner
+   * per Paradev organisation (P2's solo runner).
    */
-  const sweepOrphans = (environmentIds: ReadonlyArray<string>) =>
-    Effect.gen(function* () {
-      if (environmentIds.length === 0) return;
-      const argv = ["workspaces", "list", ...at({ kind: "cloud" })];
-      const rows = yield* callWithRetry(cli, argv, 30_000).pipe(
-        Effect.flatMap((answer) => decodeAnswer(CloudRows, answer, argv)),
+  const sweepOrphans = Effect.gen(function* () {
+    const argv = ["workspaces", "list", ...at({ kind: "cloud" })];
+    const rows = yield* callWithRetry(cli, argv, 30_000).pipe(
+      Effect.flatMap((answer) => decodeAnswer(CloudRows, answer, argv)),
+    );
+    const now = yield* Clock.currentTimeMillis;
+    for (const row of rows) {
+      if (row.status === "deleted" || !taggedFactory(row.tags) || !isPlainId(row.id)) continue;
+      if (!(now - Date.parse(row.createdAt) > ORPHAN_AGE_MS)) continue;
+      if (yield* local(threadFileExists(dataDir, row.id))) continue;
+      yield* archiveWorkspace({ kind: "cloud" }, row.id).pipe(
+        Effect.andThen(
+          Effect.logInfo(
+            `archived cloud workspace ${row.id} (${row.name ?? "no name"}): tagged factory, created ${row.createdAt}, and no thread record`,
+          ),
+        ),
+        Effect.catch((error) =>
+          Effect.logWarning(`could not archive the orphaned cloud workspace ${row.id}: ${error.message}`),
+        ),
       );
-      const now = yield* Clock.currentTimeMillis;
-      for (const row of rows) {
-        if (
-          row.status === "deleted" ||
-          !taggedFactory(row.tags) ||
-          !isPlainId(row.id) ||
-          !environmentIds.includes(row.environmentId ?? "") ||
-          !LAUNCH_NAME.test(row.name ?? "")
-        ) {
-          continue;
-        }
-        const age = now - Date.parse(row.createdAt);
-        if (!(age > ORPHAN_AGE_MS)) continue;
-        // A record file that does not read back whole is still this runner's: it is never swept.
-        if (yield* local(threadFileExists(dataDir, row.id))) {
-          const record = yield* local(readThread(dataDir, row.id));
-          const stale =
-            record !== null &&
-            record.target.kind === "cloud" &&
-            record.archivedAt === null &&
-            record.terminals.length === 0 &&
-            age > ORPHAN_AGE_MS + cloudReadyMaxMs;
-          if (!stale) continue;
-          yield* archiveRecord(record).pipe(
-            Effect.andThen(
-              Effect.logInfo(
-                `archived cloud workspace ${row.id} (${row.name}): its launch never started an agent, created ${row.createdAt}`,
-              ),
-            ),
-            Effect.catch((error) => Effect.logWarning(`could not archive the stale cloud workspace ${row.id}: ${error.message}`)),
-          );
-          continue;
-        }
-        yield* archiveWorkspace({ kind: "cloud" }, row.id).pipe(
-          Effect.andThen(
-            Effect.logInfo(
-              `archived cloud workspace ${row.id} (${row.name}): tagged factory, created ${row.createdAt}, and no thread record`,
-            ),
-          ),
-          Effect.catch((error) =>
-            Effect.logWarning(`could not archive the orphaned cloud workspace ${row.id}: ${error.message}`),
-          ),
-        );
-      }
-    }).pipe(Effect.mapError(failWith("archive")));
+    }
+  }).pipe(Effect.mapError(failWith("archive")));
 
   /** `git worktree remove --force` in the clone the worktree belongs to; its branch stays. */
   const removeWorktree = Effect.fn("ParadevSessions.removeWorktree")(function* (path: string) {
