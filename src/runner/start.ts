@@ -43,13 +43,14 @@ import {
   type GitHubError,
   type IssueDetail,
 } from "../tracker/github.ts";
-import type {
-  FactoryProject,
-  FactorySessions,
-  MessageRejectedError,
-  Model,
-  SessionsError,
-  ThreadNotFoundError,
+import {
+  NoTargetHasRoom,
+  type FactoryProject,
+  type FactorySessions,
+  type MessageRejectedError,
+  type Model,
+  type SessionsError,
+  type ThreadNotFoundError,
 } from "../sessions.ts";
 import {
   CANNOT_CONFIRM,
@@ -803,6 +804,8 @@ const launchSession = Effect.fn("RunnerStart.launchSession")(function* (
     }),
   );
   if (launched._tag === "Failure") {
+    // No target has room: the run stays in `triage` and the next pass sends the same launch again.
+    if (launched.failure.cause instanceof NoTargetHasRoom) return yield* Effect.fail(launched.failure);
     return {
       ok: false,
       detail: sessionMayExistNote(describe(launched.failure.cause), commandId),

@@ -177,6 +177,13 @@ export class MessageRejectedError extends Schema.TaggedError<MessageRejectedErro
   }
 }
 
+/** Placement found no target with room for a launch. The launch is sent again on a later pass. */
+export class NoTargetHasRoom extends Schema.TaggedError<NoTargetHasRoom>()("FactoryNoTargetHasRoom", {}) {
+  override get message(): string {
+    return "no target has room";
+  }
+}
+
 export class SessionsError extends Schema.TaggedError<SessionsError>()("FactorySessionsError", {
   operation: Schema.Literals([
     "find-project",
