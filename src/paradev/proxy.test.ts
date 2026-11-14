@@ -1,7 +1,10 @@
+import * as Http from "node:http";
+import type { AddressInfo } from "node:net";
+
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
-import { checkProxy, type ProxyGet } from "./proxy.ts";
+import { checkProxy, liveProxyGet, PROXY_TIMEOUT_MS, type ProxyGet } from "./proxy.ts";
 
 const answering =
   (status: number): { get: ProxyGet; asked: Array<string> } => {
@@ -71,4 +74,76 @@ describe("checkProxy", () => {
       assert.deepStrictEqual(slashed.asked, ["https://proxy.example:8443/v1/models"]);
     }),
   );
+});
+
+describe("liveProxyGet", () => {
+  /** A real server on 127.0.0.1 for the scope; `seen` is each request it took. */
+  const serving = (handler: (request: Http.IncomingMessage, response: Http.ServerResponse) => void) =>
+    Effect.gen(function* () {
+      const seen: Array<{ method: string | undefined; url: string | undefined; authorization: string | undefined }> = [];
+      const sockets = new Set<import("node:net").Socket>();
+      const server = Http.createServer((request, response) => {
+        seen.push({ method: request.method, url: request.url, authorization: request.headers.authorization });
+        handler(request, response);
+      });
+      server.on("connection", (socket) => {
+        sockets.add(socket);
+        socket.on("close", () => sockets.delete(socket));
+      });
+      yield* Effect.acquireRelease(
+        Effect.promise(() => new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))),
+        () =>
+          Effect.promise(
+            () =>
+              new Promise<void>((resolve) => {
+                for (const socket of sockets) socket.destroy();
+                server.close(() => resolve());
+              }),
+          ),
+      );
+      return { seen, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+    });
+
+  it.live("sends GET /v1/models with no authorization header, and a 401 comes back as guarded", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serving((_request, response) => response.writeHead(401).end());
+        assert.deepStrictEqual(yield* checkProxy(liveProxyGet, server.url), { kind: "guarded" });
+        assert.deepStrictEqual(server.seen, [{ method: "GET", url: "/v1/models", authorization: undefined }]);
+      }),
+    ),
+  );
+
+  it.live("a redirect is the answer, not followed: a 302 to a path that answers 401 is down", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serving((request, response) =>
+          request.url === "/v1/models" ? response.writeHead(302, { location: "/login" }).end() : response.writeHead(401).end(),
+        );
+        assert.deepStrictEqual(yield* checkProxy(liveProxyGet, server.url), { kind: "down", reason: "answered HTTP 302" });
+        assert.deepStrictEqual(server.seen.map((request) => request.url), ["/v1/models"]);
+      }),
+    ),
+  );
+
+  it.live("a server that never answers is down at checkProxy's timeout, and the request is aborted then", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let closed = false;
+        const server = yield* serving((request) => void request.socket.on("close", () => (closed = true)));
+        assert.deepStrictEqual(yield* checkProxy(liveProxyGet, server.url, 50), {
+          kind: "down",
+          reason: "did not answer within 0.05 s",
+        });
+        // The one timeout aborts the fetch too: the server sees the connection close, not ten seconds later.
+        const until = Date.now() + 2_000;
+        while (!closed && Date.now() < until) yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
+        assert.isTrue(closed);
+      }),
+    ),
+  );
+
+  it("waits ten seconds for the proxy", () => {
+    assert.strictEqual(PROXY_TIMEOUT_MS, 10_000);
+  });
 });
