@@ -92,8 +92,17 @@ const dropReason = (candidate: Candidate): string | null => {
   }
 };
 
-const identityOf = (candidate: Candidate): string =>
-  candidate.kind === "host" ? `host:${candidate.id}` : candidate.kind;
+/**
+ * The one identity of a target: `local`, `host:<id>` or `cloud`. A candidate, a placed target and a
+ * counted target all go through it, so a drop, a count and a kept target match by the same rule.
+ */
+export const targetKey = (
+  target:
+    | { readonly kind: "local" | "cloud" }
+    | { readonly kind: "host"; readonly id: string }
+    | { readonly kind: "host"; readonly machineId: string },
+): string =>
+  target.kind !== "host" ? target.kind : `host:${"id" in target ? target.id : target.machineId}`;
 
 const nameOf = (candidate: Candidate): string =>
   candidate.kind === "local" ? "local" : candidate.kind === "host" ? candidate.name : "cloud";
@@ -119,7 +128,7 @@ export const choosePlacement = (candidates: ReadonlyArray<Candidate>): Placement
   for (const candidate of candidates) {
     const reason = dropReason(candidate);
     if (reason !== null) {
-      dropped.push({ id: identityOf(candidate), target: nameOf(candidate), reason });
+      dropped.push({ id: targetKey(candidate), target: nameOf(candidate), reason });
     } else if (candidate.kind === "cloud") cloud = candidate;
     else if (candidate.load !== null) machines.push({ candidate, load: candidate.load });
   }

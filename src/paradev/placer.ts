@@ -10,7 +10,7 @@ import type { MachineConfig, WatchedRepo } from "../config.ts";
 import type { MachineEvent } from "../ledger/events.ts";
 import type { Load } from "../load.ts";
 import { NoTargetHasRoom, type LaunchRequest } from "../sessions.ts";
-import { type Candidate, choosePlacement } from "./placement.ts";
+import { type Candidate, choosePlacement, targetKey } from "./placement.ts";
 import type { LaunchTarget, TargetCount } from "./sessions.ts";
 
 /**
@@ -32,14 +32,6 @@ export interface PlacerDeps {
   readonly record: (event: MachineEvent) => Effect.Effect<void>;
 }
 
-/** The key a target's count is kept under: `local`, `host:<id>` or `cloud`; a counted or a placed target alike. */
-const keyOf = (
-  target: { readonly kind: "local" | "cloud" } | { readonly kind: "host"; readonly machineId: string },
-): string => (target.kind === "host" ? `host:${target.machineId}` : target.kind);
-
-const candidateKey = (candidate: Candidate): string =>
-  candidate.kind === "host" ? `host:${candidate.id}` : candidate.kind;
-
 export const makePlacer = (deps: PlacerDeps) => {
   let localHeld: string | null = null;
   /** Running agents per target this pass; null when its snapshot could not be read. Null here: not read yet. */
@@ -58,7 +50,7 @@ export const makePlacer = (deps: PlacerDeps) => {
   const countsOf = Effect.gen(function* () {
     if (counts === null) {
       const read = yield* deps.running;
-      counts = new Map(read.map((count) => [keyOf(count.target), count.running]));
+      counts = new Map(read.map((count) => [targetKey(count.target), count.running]));
       // A launch in flight is in no snapshot yet: it counts on top of what the snapshot read.
       for (const key of inFlight.values()) bump(counts, key);
     }
@@ -85,7 +77,7 @@ export const makePlacer = (deps: PlacerDeps) => {
         id: host.id,
         name: host.name,
         path: listed.path,
-        slots: { running: countOf(keyOf({ kind: "host", machineId: host.id })), max: host.maxRuns },
+        slots: { running: countOf(`host:${host.id}`), max: host.maxRuns },
         maxLoadPerCore: host.maxLoadPerCore,
         load: deps.hostLoads.get(host.id) ?? null,
         notReady: notReady.get(host.id) ?? null,
@@ -130,8 +122,8 @@ export const makePlacer = (deps: PlacerDeps) => {
       }
       if (placement.kind === "refused") return yield* Effect.fail(new NoTargetHasRoom());
       // The slot is taken for the rest of the pass: the next launch counts it.
-      bump(running, keyOf(placement.target));
-      inFlight.set(request.commandId, keyOf(placement.target));
+      bump(running, targetKey(placement.target));
+      inFlight.set(request.commandId, targetKey(placement.target));
       return placement.target;
     });
 
@@ -177,7 +169,7 @@ export const makePlacer = (deps: PlacerDeps) => {
         const running = yield* countsOf;
         const candidates = candidatesOf(repo, running);
         const keptCandidate =
-          kept === undefined ? undefined : candidates.find((candidate) => candidateKey(candidate) === keyOf(kept));
+          kept === undefined ? undefined : candidates.find((candidate) => targetKey(candidate) === targetKey(kept));
         return yield* settle(repo.repo, keptCandidate === undefined ? candidates : [keptCandidate], running, request);
       }).pipe(exclusive.withPermits(1)),
   };
