@@ -243,14 +243,21 @@ export const writeLaunch = Effect.fn("ParadevState.writeLaunch")(function* (
 /**
  * This runner's id: a random UUID written to `<data>/paradev/runner-id` on first use and read back
  * after that. It marks the cloud workspaces this runner creates, so its orphan sweep archives no
- * other runner's. A file that does not read back as an id is replaced, as a torn record is missing.
+ * other runner's. A file that does not read back as an id is replaced, with a warning: the workspaces
+ * tagged with what it held leave the sweep.
  */
 export const runnerId = Effect.fn("ParadevState.runnerId")(function* (dataDir: string) {
   const path = yield* Path.Path;
   const file = runnerIdFile(path, dataDir);
-  const read = (yield* readText(file))?.trim();
+  const text = yield* readText(file);
+  const read = text?.trim();
   if (read !== undefined && RUNNER_ID.test(read)) return read;
   const id = crypto.randomUUID();
   yield* writeFileAtomically(file, `${id}\n`);
+  if (text !== null) {
+    yield* Effect.logWarning(
+      `${file} held ${JSON.stringify(text.trim().slice(0, 80))}, not a runner id; wrote ${id}. Cloud workspaces tagged with an earlier id are no longer swept`,
+    );
+  }
   return id;
 });

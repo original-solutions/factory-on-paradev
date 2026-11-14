@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as TestClock from "effect/testing/TestClock";
@@ -3408,6 +3409,58 @@ describe("the orphan sweep", () => {
       ]);
       yield* TestClock.setTime(NOW);
       const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual(t.calls, [listArgv, ["workspaces", "archive", OBJECT_TAG, "--host", "cloud"]]);
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.include(logs[0], `archived cloud workspace ${OBJECT_TAG}`);
+    }),
+  );
+
+  it.effect("one service reads the runner id once: a runner-id file changed after the first sweep changes no tag", () =>
+    Effect.gen(function* () {
+      const only = (answer: unknown) => rows(answer).filter((row) => row.id === OBJECT_TAG);
+      const archive = { argv: ["workspaces", "archive", OBJECT_TAG, "--host", "cloud"], answer: { deleted: [OBJECT_TAG], notFound: [], failed: [], warnings: [] } };
+      const t = rig([{ argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: only }, archive, { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: only }, archive]);
+      yield* TestClock.setTime(NOW);
+      const idFile = NodePath.join(t.data, "paradev", "runner-id");
+      const { logs } = yield* logged(
+        t.run((s) =>
+          Effect.gen(function* () {
+            yield* s.sweepOrphans;
+            NodeFS.writeFileSync(idFile, "ffffffff-0000-4000-8000-00000000ffff\n");
+            yield* s.sweepOrphans;
+          }),
+        ),
+      );
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(logs.length, 2, logs.join("\n"));
+      for (const line of logs) assert.include(line, `tagged ${MINE}`);
+    }),
+  );
+
+  it.effect("a runner id that fails to read fails that sweep, and the next sweep reads it again", () =>
+    Effect.gen(function* () {
+      const only = (answer: unknown) => rows(answer).filter((row) => row.id === OBJECT_TAG);
+      const t = rig([
+        { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: only },
+        { argv: ["workspaces", "archive", OBJECT_TAG, "--host", "cloud"], answer: { deleted: [OBJECT_TAG], notFound: [], failed: [], warnings: [] } },
+      ]);
+      yield* TestClock.setTime(NOW);
+      const idFile = NodePath.join(t.data, "paradev", "runner-id");
+      NodeFS.rmSync(idFile);
+      NodeFS.mkdirSync(idFile); // a directory: the read fails, and it is not a missing file
+      const { logs, result } = yield* logged(
+        t.run((s) =>
+          Effect.gen(function* () {
+            const first = yield* Effect.exit(s.sweepOrphans);
+            NodeFS.rmdirSync(idFile);
+            NodeFS.writeFileSync(idFile, `${RUNNER}\n`);
+            yield* s.sweepOrphans;
+            return first;
+          }),
+        ),
+      );
+      assert.isTrue(Exit.isFailure(result));
       assert.deepStrictEqual(t.unused(), []);
       assert.deepStrictEqual(t.calls, [listArgv, ["workspaces", "archive", OBJECT_TAG, "--host", "cloud"]]);
       assert.strictEqual(logs.length, 1, logs.join("\n"));

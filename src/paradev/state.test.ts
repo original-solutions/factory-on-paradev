@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
 
 import { useTempDirs } from "../ledger/testSupport.ts";
 import {
@@ -190,16 +191,35 @@ describe("the runner id", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("a file that does not read back as an id is replaced by a new one", () =>
+  it.effect("a file that does not read back as an id is replaced by a new one, with one warning naming both", () =>
     Effect.gen(function* () {
       const data = tempDir("state");
       NodeFS.mkdirSync(NodePath.dirname(idFile(data)), { recursive: true });
       for (const torn of ["", "not an id\n", "../x"]) {
         NodeFS.writeFileSync(idFile(data), torn);
-        const id = yield* runnerId(data);
+        const logs: Array<string> = [];
+        const capture = Logger.make(({ logLevel, message }) => {
+          logs.push(`${logLevel} ${(Array.isArray(message) ? message : [message]).join(" ")}`);
+        });
+        const id = yield* runnerId(data).pipe(Effect.provide(Logger.layer([capture], { mergeWithExisting: false })));
         assert.match(id, /^[0-9a-f-]{36}$/);
+        assert.strictEqual(logs.length, 1, logs.join("\n"));
+        assert.match(logs[0]!, /^Warn /);
+        assert.include(logs[0], JSON.stringify(torn.trim()));
+        assert.include(logs[0], id);
         assert.strictEqual(yield* runnerId(data), id);
       }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a missing file is written with no warning", () =>
+    Effect.gen(function* () {
+      const logs: Array<string> = [];
+      const capture = Logger.make(({ message }) => {
+        logs.push(String(message));
+      });
+      yield* runnerId(tempDir("state")).pipe(Effect.provide(Logger.layer([capture], { mergeWithExisting: false })));
+      assert.deepStrictEqual(logs, []);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

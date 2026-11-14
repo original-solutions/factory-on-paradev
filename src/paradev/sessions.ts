@@ -6,7 +6,9 @@
  */
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import type { PlatformError } from "effect/PlatformError";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -387,6 +389,16 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   /** The adapter's file and CLI helpers need these; the service's methods require nothing. */
   const local = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path | SupersetCli>) =>
     Effect.provideContext(effect, services);
+
+  /**
+   * This runner's tag, `factory-<runner id>`, read once per service: the sweep and a cloud launch
+   * that start together share one read, so a fresh data dir cannot mint two ids. A failed read is
+   * not kept, so the next use reads again.
+   */
+  const mine = yield* local(runnerId(dataDir)).pipe(
+    Effect.map(runnerTag),
+    Effect.cachedWithTTL((exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero)),
+  );
 
   // ---- git ----------------------------------------------------------------------------------
 
@@ -1013,7 +1025,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const argv = [
         "workspaces", "create", ...at(target), "--environment", placed.environmentId,
         "--machine-size", placed.machineSize, "--name", launchBranch(request.commandId),
-        "--base-branch", request.baseRef, "--tag", "factory", "--tag", runnerTag(yield* local(runnerId(dataDir))),
+        "--base-branch", request.baseRef, "--tag", "factory", "--tag", yield* mine,
       ];
       const created = yield* decodeAnswer(CloudCreated, yield* call(cli, argv, 300_000), argv);
       if (!isPlainId(created.id)) return yield* fail(`cloud workspace id ${created.id} is not plain`);
@@ -1719,16 +1731,14 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * each; a workspace that fails to archive is one warning, and the rest go on.
    */
   const sweepOrphans = Effect.gen(function* () {
-    // First: the sweep starts beside the pass, so a fresh data dir has its id long before the
-    // pass's own CLI calls reach a cloud launch. That is timing, not a lock.
-    const mine = runnerTag(yield* local(runnerId(dataDir)));
+    const tag = yield* mine;
     const argv = ["workspaces", "list", ...at({ kind: "cloud" })];
     const rows = yield* callWithRetry(cli, argv, 30_000).pipe(
       Effect.flatMap((answer) => decodeAnswer(CloudRows, answer, argv)),
     );
     const now = yield* Clock.currentTimeMillis;
     for (const row of rows) {
-      if (row.status === "deleted" || !hasTag(row.tags, mine) || !isPlainId(row.id)) continue;
+      if (row.status === "deleted" || !hasTag(row.tags, tag) || !isPlainId(row.id)) continue;
       if (!(now - Date.parse(row.createdAt) > ORPHAN_AGE_MS)) continue;
       if (yield* local(threadFileExists(dataDir, row.id))) {
         const record = yield* local(readThread(dataDir, row.id));
@@ -1752,7 +1762,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       yield* archiveWorkspace({ kind: "cloud" }, row.id).pipe(
         Effect.andThen(
           Effect.logInfo(
-            `archived cloud workspace ${row.id} (${row.name ?? "no name"}): tagged ${mine}, created ${row.createdAt}, and no thread record`,
+            `archived cloud workspace ${row.id} (${row.name ?? "no name"}): tagged ${tag}, created ${row.createdAt}, and no thread record`,
           ),
         ),
         Effect.catch((error) =>
