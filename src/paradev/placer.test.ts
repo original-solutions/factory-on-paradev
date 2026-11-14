@@ -290,6 +290,71 @@ describe("placer", () => {
     }),
   );
 
+  it.effect("targets: a row for this Mac, each configured host and cloud, from the pass's readings", () =>
+    Effect.gen(function* () {
+      const t = setup({
+        counts: [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "host", machineId: "h1" }, running: 0 },
+          { target: { kind: "cloud" }, running: null },
+        ],
+        notReady: new Map([["h1", "git identity: no user.email"]]),
+      });
+      t.placer.beginPass({ localHeld: "high load", proxy: null, machine: t.machine() });
+      assert.deepStrictEqual(yield* t.placer.targets, [
+        {
+          kind: "local",
+          name: "local",
+          online: true,
+          load: quiet,
+          slots: { used: 1, max: 1 },
+          ready: false,
+          reason: "slots full: 1 of 1 running",
+        },
+        {
+          kind: "host",
+          name: "mini",
+          online: true,
+          load: quiet,
+          slots: { used: 0, max: 1 },
+          ready: false,
+          reason: "not ready: git identity: no user.email",
+        },
+        {
+          kind: "cloud",
+          name: "cloud",
+          online: false,
+          load: null,
+          slots: { used: null, max: 1 },
+          ready: true,
+          reason: "its running agents could not be counted",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("targets: no cloud row without a cloud block, and cloud is not ready before a pass checked the proxy", () =>
+    Effect.gen(function* () {
+      const none = setup({ machine: machine({ cloud: undefined, hosts: [] }) });
+      none.placer.beginPass({ localHeld: null, proxy: null, machine: none.machine() });
+      assert.deepStrictEqual((yield* none.placer.targets).map((row) => row.name), ["local"]);
+      const unchecked = setup();
+      const cloud = (yield* unchecked.placer.targets).find((row) => row.kind === "cloud")!;
+      assert.deepStrictEqual({ ready: cloud.ready, reason: cloud.reason }, { ready: false, reason: PROXY_NOT_CHECKED });
+    }),
+  );
+
+  it.effect("targets: shares the pass's one read of the counts and load with placement, and counts the slot a launch took", () =>
+    Effect.gen(function* () {
+      const t = setup();
+      t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
+      assert.deepStrictEqual(yield* t.placer.place(request("hosted")), { kind: "local" });
+      const rows = yield* t.placer.targets;
+      assert.deepStrictEqual(t.reads, { running: 1, load: 1 });
+      assert.deepStrictEqual(rows[0]!.slots, { used: 1, max: 1 });
+    }),
+  );
+
   it.effect("a refusal fails with NoTargetHasRoom and records every drop once per pass and target", () =>
     Effect.gen(function* () {
       const t = setup({ counts: [full({ kind: "local" }), full({ kind: "host", machineId: "h1" })] });

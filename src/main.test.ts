@@ -871,7 +871,7 @@ describe("on the Paradev CLI", () => {
           v: number;
           runner: { version: string; paradevCli: string; paradevOnline: boolean; claimsPaused: boolean };
         };
-        assert.strictEqual(written.v, 1);
+        assert.strictEqual(written.v, 2);
         assert.strictEqual(written.runner.paradevCli, "2.0.8");
         assert.isTrue(written.runner.paradevOnline);
         assert.isFalse(written.runner.claimsPaused);
@@ -1026,6 +1026,33 @@ describe("on the Paradev CLI", () => {
         yield* idleAfter(loop, factoryDir, 1);
         yield* waitUntil("the belt warning", () => logs.some((line) => line.includes("65536 bytes")));
         assert.deepStrictEqual(eventsOf(factoryDir, "error"), []);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("after each pass the runner writes the target rows status reads, with the belt off too", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        const off = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    enabled: false\n`;
+        const { loop, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", off), noGhProcess, {}, paradev);
+        yield* idleAfter(loop, factoryDir, 1);
+        const file = NodePath.join(factoryDir, "targets.json");
+        yield* waitUntil("the targets file", () => NodeFS.existsSync(file));
+        const rows = JSON.parse(NodeFS.readFileSync(file, "utf8")) as Array<{
+          kind: string;
+          name: string;
+          online: boolean;
+          slots: { used: number | null; max: number };
+        }>;
+        assert.deepStrictEqual(
+          rows.map((row) => ({ kind: row.kind, name: row.name, online: row.online, slots: row.slots })),
+          [{ kind: "local", name: "local", online: true, slots: { used: 0, max: 1 } }],
+        );
+        assert.deepStrictEqual(
+          paradev.calls.filter((argv) => argv[0] === "pages"),
+          [],
+        );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
