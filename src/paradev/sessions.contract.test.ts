@@ -2902,8 +2902,7 @@ describe("launch in the cloud", () => {
     }),
   );
 
-  /** Every file under the data dir, relative to it: what a refused launch must not have written. */
-  /** Every file the launch wrote under the data dir; the rig's runner id was there before it. */
+  /** Every file a launch wrote under the data dir, relative to it; the rig's runner id was there before it. */
   const written = (data: string): ReadonlyArray<string> =>
     NodeFS.existsSync(data) ? NodeFS.readdirSync(data, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => NodePath.relative(data, NodePath.join(e.parentPath, e.name))).filter((file) => file !== NodePath.join("paradev", "runner-id")) : [];
 

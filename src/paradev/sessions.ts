@@ -1719,12 +1719,13 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * each; a workspace that fails to archive is one warning, and the rest go on.
    */
   const sweepOrphans = Effect.gen(function* () {
+    // First, so a fresh data dir has its id before this pass can launch in the cloud.
+    const mine = runnerTag(yield* local(runnerId(dataDir)));
     const argv = ["workspaces", "list", ...at({ kind: "cloud" })];
     const rows = yield* callWithRetry(cli, argv, 30_000).pipe(
       Effect.flatMap((answer) => decodeAnswer(CloudRows, answer, argv)),
     );
     const now = yield* Clock.currentTimeMillis;
-    const mine = runnerTag(yield* local(runnerId(dataDir)));
     for (const row of rows) {
       if (row.status === "deleted" || !hasTag(row.tags, mine) || !isPlainId(row.id)) continue;
       if (!(now - Date.parse(row.createdAt) > ORPHAN_AGE_MS)) continue;
