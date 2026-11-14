@@ -37,6 +37,8 @@ export const PROXY_NOT_CHECKED = "the proxy is not checked yet since the config 
 
 export const makePlacer = (deps: PlacerDeps) => {
   let localHeld: string | null = null;
+  /** This Mac's load this pass; read on the first candidate list of the pass and kept for the rest of it. */
+  let localLoad: Load | null = null;
   /** Running agents per target this pass; null when its snapshot could not be read. Null here: not read yet. */
   let counts: Map<string, number | null> | null = null;
   /** Why cloud takes no run this pass, from the pass's proxy check; null when it passed or was not run. */
@@ -70,7 +72,7 @@ export const makePlacer = (deps: PlacerDeps) => {
   const localOf = (running: ReadonlyMap<string, number | null>, held: string | null): Candidate => ({
     kind: "local",
     slots: { running: running.get("local") ?? null, max: deps.machine.local.maxRuns },
-    load: deps.readLoad(),
+    load: (localLoad ??= deps.readLoad()),
     held,
   });
 
@@ -162,6 +164,7 @@ export const makePlacer = (deps: PlacerDeps) => {
       proxyReason = began.proxy;
       checkedUnder = began.machine;
       counts = null;
+      localLoad = null;
       recorded = new Set();
     },
     /**

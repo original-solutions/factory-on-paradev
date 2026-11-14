@@ -4091,6 +4091,32 @@ describe("placement is durable under the command id (#55)", () => {
       assert.isNull(yield* readPlacement(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)));
     }),
   );
+
+  it.live("a placement file that does not read back fails the launch without placing: nothing is created, and launchEnded is not told", () =>
+    Effect.gen(function* () {
+      let placed = 0;
+      const ended: Array<string> = [];
+      const t = rig([], {
+        config: {
+          place: () => Effect.sync(() => (placed += 1, { kind: "local" as const })),
+          launchEnded: (id: string) => Effect.sync(() => void ended.push(id)),
+        },
+      });
+      // The file is there, with no target in it: placing again could move the launch.
+      const file = NodePath.join(t.data, "paradev", "placements", `${sha256(LAUNCH_ID)}.json`);
+      NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
+      NodeFS.writeFileSync(file, "not a target\n");
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.instanceOf(error, SessionsError);
+      assert.strictEqual((error as SessionsError).operation, "launch");
+      assert.isFalse(isNoTargetHasRoom(error));
+      assert.include(String((error as SessionsError).cause), "does not read back as a target");
+      assert.strictEqual(placed, 0);
+      assert.deepStrictEqual(t.calls, []);
+      assert.deepStrictEqual(ended, []);
+      assert.isNull(yield* readLaunch(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)));
+    }),
+  );
 });
 
 describe("a kept placement is checked again (#55)", () => {
@@ -4249,6 +4275,22 @@ describe("runningByTarget and runningThreads, per target (#55)", () => {
       assert.strictEqual(yield* t.run((s) => s.runningThreads), 1);
       assert.deepStrictEqual(t.unused(), []);
       assert.strictEqual(t.calls.length, 2);
+    }),
+  );
+
+  it.effect("records that cannot be listed give every target a null count, read no snapshot, and fail runningThreads", () =>
+    Effect.gen(function* () {
+      const t = rig([], { config: withAll });
+      // The records' folder is a file: the listing fails, and no count can be trusted.
+      NodeFS.writeFileSync(NodePath.join(t.data, "paradev", "threads"), "not a folder\n");
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: null },
+        { target: { kind: "host", machineId: HOST }, running: null },
+        { target: { kind: "cloud" }, running: null },
+      ]);
+      const error = yield* t.run((s) => s.runningThreads).pipe(Effect.flip);
+      assert.strictEqual(error.operation, "running-threads");
+      assert.deepStrictEqual(t.calls, []);
     }),
   );
 });

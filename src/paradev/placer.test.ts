@@ -187,6 +187,19 @@ describe("placer", () => {
     }),
   );
 
+  it.effect("reads this Mac's load once per pass, as the counts, and again on the next pass", () =>
+    Effect.gen(function* () {
+      const t = setup({ machine: machine({ local: { maxRuns: 4 }, hosts: [{ ...HOST, maxRuns: 4 }] }) });
+      t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
+      yield* t.placer.place(request("hosted", 1));
+      yield* t.placer.place(request("hosted", 2));
+      assert.deepStrictEqual(t.reads, { running: 1, load: 1 });
+      t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
+      yield* t.placer.place(request("hosted", 3));
+      assert.deepStrictEqual(t.reads, { running: 2, load: 2 });
+    }),
+  );
+
   it.effect("reads the counts once per pass, and a second launch sees the first one's slot", () =>
     Effect.gen(function* () {
       const t = setup();

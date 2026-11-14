@@ -110,11 +110,11 @@ A v1 record reads as `target: { kind: "local" }`. Records are never rewritten to
 
 ### Placement, inside `launch`
 
-Runs once per launch, before step 2 of P1's `launch`. A retry of the same command id finds the launch file first (P1 step 1) and never places again, so a run cannot move targets between attempts of one launch.
+Runs once per launch, before step 2 of P1's `launch`. A retry of the same command id finds the launch file first (P1 step 1) and never places again. The answer is written to `<data>/paradev/placements/<sha256 of the command id>.json` before anything is fetched or created, so a send cut off between the placement and the launch file goes back to its target: a kept this-Mac or host target is checked again as the only candidate (the other targets' slots still count), and a launch whose kept target has no room waits for it rather than moving. Two kept targets are placed afresh: a cloud target, since with no launch file the workspace it made is an orphan the sweep archives, and a target the repo no longer lists. A placement file that does not read back fails the launch without placing, since placing again could move it. The old code ignores these files, so a revert leaves them behind.
 
 1. Candidates: this Mac, each host the repo lists, and cloud when the repo names an environment.
 2. Drop a candidate whose slots are full: its running threads (the target's own `runningThreads`, below) are at its `max_runs`.
-3. Drop this Mac when P1's load or disk check would hold the pass; drop a host when its last reading (this pass, below) failed or is over its `max_load_per_core`; drop cloud when the proxy check failed this pass or `hosts list` has it absent.
+3. Drop this Mac when P1's load or disk check would hold the pass; drop a host when its last reading (this pass, below) failed or is over its `max_load_per_core`; drop cloud when the proxy check failed this pass, or no pass has checked the proxy under the config in use. `hosts list` says nothing about cloud: `hosts-list-host-online.json`, recorded on an org that used cloud, has no cloud row, so its absence cannot be read; a `snapshot --host cloud` that fails gives cloud a null count, which step 2 drops as uncountable.
 4. Drop a host whose `hosts check` failed at the last config load.
 5. Pick the machine with the lowest load per core; this Mac on a tie. No machine: cloud if it is a candidate. Nothing: `launch` fails with `SessionsError` operation `launch`, text `no target has room`, and the core's existing retry runs it again next pass. The machine log gets one `claim_skipped`-style note per pass, event `placement`, data `{ repo, target, reason }`, for every candidate dropped, so the belt can say why a run waits. `[Assumption]` `placement` is a new machine-log event; U8 keeps run events unchanged, and the machine log already takes new event types without a ledger version bump.
 
@@ -193,7 +193,7 @@ Nothing new runs. The runner still needs the Paradev app open on this Mac. A hos
 
 | Event | Host | Cloud |
 |---|---|---|
-| Runner restart or crash | As P1: records and the ledger carry on; a placement already made is in the thread id | As host. The orphan sweep catches a workspace created before its record |
+| Runner restart or crash | As P1: records and the ledger carry on; a placement already made is in the thread id, or in `paradev/placements/` when the launch file was not written yet, and the resend goes back to it | As host, except a kept cloud placement is placed afresh. The orphan sweep catches a workspace created before its record |
 | The host's service stops | Agents keep running in `pty-daemon`; every call for that host is `PARADEV_OFFLINE`; claims for that host hold; the same terminal ids answer within 5 s of its return (H5) | n/a |
 | The host reboots | Not tested (H0: FileVault with no auto-login holds the Mac offline until someone types the password). Expected: agents die, the host reads offline, then resume by session id once it is back, which #58's kill test covers short of the reboot | n/a |
 | The agent process dies | `[Assumption]` as L5b; #58 records it | The X3-pattern liveness read counts 0 processes: `interrupted`, then resume from `/home/ubuntu/.claude/projects/-workspace/` (C5) |
