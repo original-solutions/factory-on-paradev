@@ -6,11 +6,11 @@
 import * as Effect from "effect/Effect";
 import * as Semaphore from "effect/Semaphore";
 
-import type { MachineConfig, WatchedRepo } from "../config.ts";
+import type { CloudConfig, HostConfig, MachineConfig, WatchedRepo } from "../config.ts";
 import type { MachineEvent } from "../ledger/events.ts";
 import type { Load } from "../load.ts";
 import { NoTargetHasRoom, type LaunchRequest } from "../sessions.ts";
-import { type Candidate, choosePlacement, targetKey } from "./placement.ts";
+import { type Candidate, choosePlacement, targetKey, targetRow, type TargetReading } from "./placement.ts";
 import type { LaunchTarget, TargetCount } from "./sessions.ts";
 
 /**
@@ -76,33 +76,43 @@ export const makePlacer = (deps: PlacerDeps) => {
     held,
   });
 
+  /** A host's readings this pass, whatever repo is placed. */
+  const hostOf = (
+    host: HostConfig,
+    running: ReadonlyMap<string, number | null>,
+    notReady: ReadonlyMap<string, string>,
+  ): Extract<TargetReading, { readonly kind: "host" }> => ({
+    kind: "host",
+    id: host.id,
+    name: host.name,
+    slots: { running: running.get(targetKey({ kind: "host", id: host.id })) ?? null, max: host.maxRuns },
+    maxLoadPerCore: host.maxLoadPerCore,
+    load: deps.hostLoads.get(host.id) ?? null,
+    notReady: notReady.get(host.id) ?? null,
+  });
+
+  /** Cloud's readings this pass, whatever repo is placed. */
+  const cloudOf = (
+    cloud: CloudConfig,
+    running: ReadonlyMap<string, number | null>,
+  ): Extract<TargetReading, { readonly kind: "cloud" }> => ({
+    kind: "cloud",
+    machineSize: cloud.machineSize,
+    slots: { running: running.get("cloud") ?? null, max: cloud.maxRuns },
+    proxy: checkedUnder === deps.machine ? proxyReason : PROXY_NOT_CHECKED,
+  });
+
   const candidatesOf = (repo: WatchedRepo, running: ReadonlyMap<string, number | null>): Array<Candidate> => {
-    const countOf = (key: string): number | null => running.get(key) ?? null;
     const candidates: Array<Candidate> = [localOf(running, localHeld)];
     const notReady = deps.hostsNotReady();
     for (const listed of repo.hosts ?? []) {
       const host = deps.machine.hosts.find((entry) => entry.id === listed.id);
       if (host === undefined) continue;
-      candidates.push({
-        kind: "host",
-        id: host.id,
-        name: host.name,
-        path: listed.path,
-        slots: { running: countOf(targetKey({ kind: "host", id: host.id })), max: host.maxRuns },
-        maxLoadPerCore: host.maxLoadPerCore,
-        load: deps.hostLoads.get(host.id) ?? null,
-        notReady: notReady.get(host.id) ?? null,
-      });
+      candidates.push({ ...hostOf(host, running, notReady), path: listed.path });
     }
     const { cloud } = deps.machine;
     if (repo.cloud !== undefined && cloud !== undefined) {
-      candidates.push({
-        kind: "cloud",
-        environmentId: repo.cloud,
-        machineSize: cloud.machineSize,
-        slots: { running: countOf("cloud"), max: cloud.maxRuns },
-        proxy: checkedUnder === deps.machine ? proxyReason : PROXY_NOT_CHECKED,
-      });
+      candidates.push({ ...cloudOf(cloud, running), environmentId: repo.cloud });
     }
     return candidates;
   };
@@ -146,6 +156,22 @@ export const makePlacer = (deps: PlacerDeps) => {
     });
 
   return {
+    /**
+     * A row for this Mac, each configured host, and cloud when configured, from this pass's
+     * readings: the counts are the ones placement reads, read here when no launch read them yet,
+     * so a slot a launch took this pass counts.
+     */
+    targets: Effect.gen(function* () {
+      const running = yield* countsOf;
+      const notReady = deps.hostsNotReady();
+      const { cloud } = deps.machine;
+      const readings: Array<TargetReading> = [
+        localOf(running, localHeld),
+        ...deps.machine.hosts.map((host) => hostOf(host, running, notReady)),
+        ...(cloud === undefined ? [] : [cloudOf(cloud, running)]),
+      ];
+      return readings.map(targetRow);
+    }).pipe(exclusive.withPermits(1)),
     /** The launch of `commandId` ended: its agent is in the snapshots now, so it stops counting on its own. */
     launchEnded: (commandId: string): Effect.Effect<void> =>
       Effect.sync(() => void inFlight.delete(commandId)),

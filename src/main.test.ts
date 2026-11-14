@@ -578,7 +578,7 @@ it.effect("logs runner started once for a valid machine file, then runs the firs
     assert.strictEqual(logs.at(-1), "pass done: 0 runs, 0 claimed, 1 errors, 0 need attention");
     assert.deepStrictEqual(status, {
       state: "running",
-      settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"] },
+      settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"], hostNames: new Map() },
     });
     assert.deepStrictEqual(events, ["pass_started", "repo_skipped", "pass_finished"]);
   }),
@@ -1189,7 +1189,7 @@ describe("on the Paradev CLI", () => {
         assert.strictEqual(skipped(), 1);
         assert.deepStrictEqual(loop.status, {
           state: "running",
-          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: [] },
+          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: [], hostNames: new Map() },
         });
         paradev.listDown = "Host service for this machine isn't running";
         yield* onePassMore(loop, factoryDir);
@@ -1198,7 +1198,7 @@ describe("on the Paradev CLI", () => {
         assert.strictEqual(skipped(), 1);
         assert.deepStrictEqual(loop.status, {
           state: "running",
-          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"] },
+          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"], hostNames: new Map() },
         });
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
@@ -1336,7 +1336,7 @@ describe("on the Paradev CLI", () => {
         assert.deepStrictEqual(yield* items(), []);
         assert.deepStrictEqual(loop.status, {
           state: "running",
-          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"] },
+          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"], hostNames: new Map() },
         });
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
@@ -3708,7 +3708,7 @@ describe("reloading the machine config", () => {
         assert.strictEqual((yield* Fiber.join(pass))?.errors, 1);
         assert.deepStrictEqual(loop.status, {
           state: "running",
-          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"] },
+          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"], hostNames: new Map() },
         });
         assert.ok(
           calls.some((call) => call.startsWith("gh ") && call.includes("a/b")),
@@ -3762,7 +3762,7 @@ describe("reloading the machine config", () => {
           // The pass under way listed a/b, and what was listed last is what the status reports.
           assert.deepStrictEqual(loop.status, {
             state: "running",
-            settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"] },
+            settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"], hostNames: new Map() },
           });
           yield* Deferred.succeed(release, undefined);
           yield* Fiber.join(first);
@@ -3774,7 +3774,7 @@ describe("reloading the machine config", () => {
           yield* Fiber.join(next);
           assert.deepStrictEqual(loop.status, {
             state: "running",
-            settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["c/d"] },
+            settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["c/d"], hostNames: new Map() },
           });
           const lastOld = calls.findLastIndex((call) => call.includes("a/b"));
           const firstNew = calls.findIndex((call) => call.includes("c/d"));

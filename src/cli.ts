@@ -19,6 +19,7 @@ import { packageVersion } from "./paths.ts";
 import { isRunner, lockHolder } from "./runnerLock.ts";
 import { retro, RETRO_USAGE } from "./retro.ts";
 import { readTextOrNull } from "./syncFiles.ts";
+import { hostNamesOf } from "./targets.ts";
 import {
   buildStatus,
   type FactoryStatus,
@@ -72,6 +73,7 @@ const factoryStatus = (io: CliIo): FactoryStatus => {
       pollSeconds: config.pollSeconds,
       maxConcurrentRuns: config.maxConcurrentRuns,
       repos: config.repos.map((repo) => repo.repo),
+      hostNames: hostNamesOf(config.hosts),
     },
   };
 };
@@ -85,8 +87,12 @@ const summary = (report: StatusReport): Array<string> => [
   ...(report.paused_by_hand === null
     ? []
     : [`claims paused since ${report.paused_by_hand.since}`]),
+  ...report.targets.map(
+    (target) =>
+      `target ${target.name}: ${target.slots.used ?? "?"}/${target.slots.max}${target.reason === null ? "" : ` (${target.reason})`}`,
+  ),
   ...report.runs.map(
-    (run) => `${run.id}  ${run.state ?? "starting"}  ${run.pr_url ?? "-"}`,
+    (run) => `${run.id}  ${run.state ?? "starting"}  ${run.target ?? "-"}  ${run.pr_url ?? "-"}`,
   ),
   ...report.attention.map((item) => `attention: ${item.message}`),
 ];

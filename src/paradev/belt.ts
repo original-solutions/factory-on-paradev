@@ -2,7 +2,7 @@
 /**
  * The belt page and its storage writer. The first pass publishes `belt.html` as a Paradev page
  * and saves its id in `<data>/belt.json`; a runner whose HTML differs publishes it again to that
- * page. After each pass the writer puts the belt, a {@link BeltV1}, in the page's shared storage
+ * page. After each pass the writer puts the belt, a {@link BeltV2}, in the page's shared storage
  * under `belt`, when it changed or the last write is 10 minutes old. Nothing here is session
  * trouble: a failed publish or write is a warning in the log, and the next pass tries again.
  */
@@ -14,15 +14,15 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import type { AttentionItem } from "../attention.ts";
-import { beltBytes, type BeltV1 } from "../belt.ts";
+import { beltBytes, type BeltV2 } from "../belt.ts";
 import type { BeltVisibility } from "../config.ts";
 import { writeFileAtomically } from "../files.ts";
 import { readRuns, type RunReadCache, type RunSummary } from "../ledger/listRuns.ts";
 import { runIdToString } from "../ledger/runId.ts";
+import { targetNameOf, targetOf, type TargetRow } from "../targets.ts";
 import { sha256 } from "../text.ts";
 import { decodeAnswer } from "./call.ts";
 import type { SupersetCli } from "./cli.ts";
-import { workspaceIdOf } from "./state.ts";
 
 /** The page the runner publishes: one static file, beside this one. */
 export const BELT_HTML = `${import.meta.dirname}/belt.html`;
@@ -47,7 +47,7 @@ const TITLE_MAX = 120;
 const STEP_MAX = 120;
 const REASON_MAX = 300;
 
-type Run = BeltV1["runs"][number];
+type Run = BeltV2["runs"][number];
 
 /** A run as the ledger has it, and the session thread it launched, if any. */
 export interface BeltRun {
@@ -77,7 +77,7 @@ const cut = (text: string | null, max: number): string | null => {
   return `${kept}…`;
 };
 
-const runOf = ({ summary, threadId }: BeltRun): Run => {
+const runOf = ({ summary, threadId }: BeltRun, hostNames: ReadonlyMap<string, string>): Run => {
   const issue = Number(summary.id.issue);
   return {
     id: runIdToString(summary.id),
@@ -91,7 +91,9 @@ const runOf = ({ summary, threadId }: BeltRun): Run => {
     startedTs: summary.startedTs,
     finished: summary.finished,
     totalMs: summary.totalMs,
-    workspaceId: threadId === null ? null : workspaceIdOf(threadId),
+    // Every target's workspace has a page at Paradev, so the belt links it wherever it runs.
+    workspaceId: threadId === null ? null : (targetOf(threadId)?.workspaceId ?? null),
+    target: targetNameOf(threadId, hostNames),
   };
 };
 
@@ -99,7 +101,7 @@ const runOf = ({ summary, threadId }: BeltRun): Run => {
  * `payload` with finished runs dropped, oldest first, until its JSON is at most
  * {@link BELT_MAX_BYTES}. Unfinished runs are never dropped.
  */
-const fit = (payload: BeltV1): BeltV1 => {
+const fit = (payload: BeltV2): BeltV2 => {
   let size = beltBytes(payload);
   if (size <= BELT_MAX_BYTES) return payload;
   const dropped = new Set<number>();
@@ -117,22 +119,24 @@ const fit = (payload: BeltV1): BeltV1 => {
 
 export interface BeltInput {
   readonly nowMs: number;
-  readonly runner: BeltV1["runner"];
+  readonly runner: BeltV2["runner"];
   /** Oldest first, as {@link readBeltRuns} lists them. */
   readonly runs: ReadonlyArray<BeltRun>;
   readonly attention: ReadonlyArray<AttentionItem>;
+  /** Each configured host's name by its machine id, for the target of a run on a host. */
+  readonly hostNames: ReadonlyMap<string, string>;
 }
 
 /**
  * The belt to write: the counts from every run given, the runs cut to fit
  * {@link BELT_MAX_BYTES}. It carries titles, states, steps and reasons, never gate output or logs.
  */
-export const beltPayload = (input: BeltInput): BeltV1 => {
-  const runs = input.runs.map(runOf);
+export const beltPayload = (input: BeltInput): BeltV2 => {
+  const runs = input.runs.map((run) => runOf(run, input.hostNames));
   const open = runs.filter((run) => !run.finished);
   const count = (state: Run["state"]) => open.filter((run) => run.state === state).length;
   return fit({
-    v: 1,
+    v: 2,
     updatedAt: new Date(input.nowMs).toISOString(),
     runner: input.runner,
     counts: {
@@ -316,7 +320,7 @@ const pageOf = Effect.fn("Belt.pageOf")(function* (target: BeltTarget, nowMs: nu
  * belt the page last got, `updatedAt` aside, is not written again until {@link HEARTBEAT_MS}
  * after that write. Never fails: what goes wrong is a warning in the log.
  */
-export const writeBelt = (target: BeltTarget, payload: BeltV1, nowMs: number) =>
+export const writeBelt = (target: BeltTarget, payload: BeltV2, nowMs: number) =>
   Effect.gen(function* () {
     const pageId = yield* pageOf(target, nowMs);
     if (pageId === null) return;
@@ -342,6 +346,9 @@ export interface PassFacts {
   readonly claimsPaused: boolean;
   readonly paradevOnline: boolean;
   readonly attention: ReadonlyArray<AttentionItem>;
+  /** The pass's target rows, as `<data>/targets.json` has them. */
+  readonly targets: ReadonlyArray<TargetRow>;
+  readonly hostNames: ReadonlyMap<string, string>;
 }
 
 /**
@@ -362,9 +369,11 @@ export const afterPass = (target: BeltTarget, facts: PassFacts, cache?: RunReadC
         claimsPaused: facts.claimsPaused,
         paradevOnline: facts.paradevOnline,
         lastPassAt: new Date(facts.nowMs).toISOString(),
+        targets: facts.targets,
       },
       runs,
       attention: facts.attention,
+      hostNames: facts.hostNames,
     });
     yield* writeBelt(target, payload, facts.nowMs);
   }).pipe(Effect.catch((error) => Effect.logWarning(`belt not written: ${error.message}`)));
