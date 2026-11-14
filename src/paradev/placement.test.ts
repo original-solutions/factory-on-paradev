@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 
 import type { Load } from "../load.ts";
 import { NO_TARGET_HAS_ROOM } from "../sessions.ts";
-import { type Candidate, choosePlacement } from "./placement.ts";
+import { type Candidate, choosePlacement, targetRow } from "./placement.ts";
 
 const load = (perCore: number, cores = 10): Load => ({ oneMinute: perCore * cores, cores });
 
@@ -183,5 +183,60 @@ describe("choosePlacement", () => {
 
   it("refuses when there are no candidates", () => {
     assert.deepStrictEqual(choosePlacement([]), { kind: "refused", reason: NO_TARGET_HAS_ROOM, dropped: [] });
+  });
+});
+
+describe("targetRow", () => {
+  it("shows this Mac's slots, load and readiness, with no reason when it would take a run", () => {
+    assert.deepStrictEqual(targetRow(local({ slots: { running: 1, max: 2 } })), {
+      kind: "local",
+      name: "local",
+      online: true,
+      load: { oneMinute: 5, cores: 10 },
+      slots: { used: 1, max: 2 },
+      ready: true,
+      reason: null,
+    });
+  });
+
+  it("gives this Mac's hold as its reason and calls it not ready", () => {
+    const row = targetRow(local({ held: "low disk" }));
+    assert.deepStrictEqual({ ready: row.ready, reason: row.reason }, { ready: false, reason: "this Mac holds claims: low disk" });
+  });
+
+  it("names a host by its name and gives the first reason placement would drop it for", () => {
+    assert.deepStrictEqual(targetRow(host("a", { load: load(2), slots: { running: 0, max: 1 } })), {
+      kind: "host",
+      name: "name-a",
+      online: true,
+      load: { oneMinute: 20, cores: 10 },
+      slots: { used: 0, max: 1 },
+      ready: true,
+      reason: "load 2.00 per core is over max_load_per_core 1",
+    });
+    const notReady = targetRow(host("a", { notReady: "ssh: no key" }));
+    assert.deepStrictEqual({ ready: notReady.ready, reason: notReady.reason }, { ready: false, reason: "not ready: ssh: no key" });
+  });
+
+  it("reads a target whose running agents could not be counted as offline, with no used count", () => {
+    const row = targetRow(host("a", { slots: { running: null, max: 2 }, load: null }));
+    assert.deepStrictEqual(
+      { online: row.online, load: row.load, slots: row.slots, reason: row.reason },
+      { online: false, load: null, slots: { used: null, max: 2 }, reason: "its running agents could not be counted" },
+    );
+  });
+
+  it("gives cloud no load, and its proxy check as its readiness", () => {
+    assert.deepStrictEqual(targetRow(cloud({ slots: { running: 1, max: 1 } })), {
+      kind: "cloud",
+      name: "cloud",
+      online: true,
+      load: null,
+      slots: { used: 1, max: 1 },
+      ready: true,
+      reason: "slots full: 1 of 1 running",
+    });
+    const down = targetRow(cloud({ proxy: "the proxy check failed: down" }));
+    assert.deepStrictEqual({ ready: down.ready, reason: down.reason }, { ready: false, reason: "the proxy check failed: down" });
   });
 });

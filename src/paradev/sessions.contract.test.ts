@@ -26,7 +26,7 @@ import {
   type ParadevSessions,
   type ParadevSessionsConfig,
 } from "./sessions.ts";
-import { SshError, type SshRunner } from "./ssh.ts";
+import { isAllowed, SshError, type SshRunner } from "./ssh.ts";
 import { readLaunch, readPlacement, readThread, type ThreadRecord, writeLaunch, writePlacement, writeThread } from "./state.ts";
 
 const tempDir = useTempDirs();
@@ -2571,12 +2571,16 @@ const HELPER = "506a60d3-6dd2-4c12-b67d-dfd20151f16f";
 /** The argv a fixture was recorded with: the adapter must make the very same call. */
 const recorded = (fixture: string): Step => ({ argv: readFixture(fixture).argv, fixture });
 
-/** An ssh runner that answers each command from `answer`, and keeps every call. */
+/**
+ * An ssh runner that answers each command from `answer`, and keeps every call. A command outside
+ * the allowlist fails the test: `sshRunner` would refuse it.
+ */
 const fakeSsh = (answer: (command: string) => Partial<RunResult> | "unreachable") => {
   const calls: Array<readonly [string, string]> = [];
   const runner: SshRunner = {
     run: (destination, command) =>
       Effect.suspend(() => {
+        assert.isTrue(isAllowed(command), `the adapter sent a command outside the allowlist: ${command}`);
         calls.push([destination, command]);
         const answered = answer(command);
         if (answered === "unreachable") {
@@ -2901,6 +2905,68 @@ describe("launch in the cloud", () => {
       assert.deepStrictEqual(t.unused(), []);
       const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
       assert.deepStrictEqual(saved!.terminals, [C3_TERM]);
+    }),
+  );
+
+  /** A cloud snapshot of C3 with one terminal and no agent in it. */
+  const noAgentSnapshot: Step = {
+    argv: ["snapshot", "--host", "cloud", "--workspace", C3_WS],
+    fixture: "snapshot-cloud",
+    edit: snapshotOf(C3_WS, [{ id: "t-starting", title: "", agent: null }]),
+  };
+  const archiveArgv = ["workspaces", "archive", C3_WS, "--host", "cloud"];
+
+  it.live("a retry that finds a terminal with no claude agent after every look archives the workspace once and fails", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          noAgentSnapshot,
+          noAgentSnapshot,
+          noAgentSnapshot,
+          { argv: archiveArgv, fixture: "ws-archive-cloud" },
+        ],
+        { config: { place: () => Effect.die("placed again"), cloudReadyPollMs: 1, agentPollDelaysMs: [0, 0] } },
+      );
+      yield* seed(t.data, cloudRecord({ terminals: [], turns: [] }));
+      yield* writeLaunch(t.data, LAUNCH_ID, `cloud:${C3_WS}`).pipe(Effect.provide(NodeServices.layer));
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(
+        String(error.cause),
+        `workspace ${C3_WS} has a terminal with no claude agent in it, after 3 looks; the workspace was archived`,
+      );
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.filter(argvIs("workspaces", "archive")).length, 1);
+      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNotNull(saved!.archivedAt);
+    }),
+  );
+
+  it.live("a first launch whose agents create fails, then finds a terminal with no claude agent, archives the workspace once and fails", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          { argv: argvIs("agents", "create", "--host", "cloud"), fail: "Request timed out" },
+          noAgentSnapshot,
+          noAgentSnapshot,
+          noAgentSnapshot,
+          { argv: archiveArgv, fixture: "ws-archive-cloud" },
+        ],
+        { config: { ...onCloud, agentPollDelaysMs: [0, 0] } },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      const cause = String(error.cause);
+      assert.include(cause, "agents create failed (");
+      assert.include(cause, `workspace ${C3_WS} has terminal t-starting with no claude agent after 3 looks`);
+      assert.isTrue(cause.endsWith("; the workspace was archived"), cause);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.filter(argvIs("workspaces", "archive")).length, 1);
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNotNull(saved!.archivedAt);
+      assert.deepStrictEqual(saved!.terminals, []);
     }),
   );
 

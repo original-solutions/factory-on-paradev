@@ -19,6 +19,9 @@
   th { font-weight: 600; background: #f0f0f0; }
   tr.finished td { color: #666; }
   .reason { white-space: pre-line; color: #6b4b00; }
+  .targets { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.75rem 0 0; }
+  .target { border: 1px solid #ddd; border-radius: 4px; padding: 0.3rem 0.6rem; background: #fff; }
+  .target.down { border-color: #e0b4b4; }
 </style>
 </head>
 <body>
@@ -73,8 +76,32 @@
     return "<a href=\"" + esc(url) + "\" target=\"_blank\" rel=\"noopener noreferrer\">" + esc(label) + "</a>";
   }
 
+  // Only a plain workspace id is a link, to its page at Paradev.
+  function workspaceLink(id) {
+    if (typeof id !== "string" || !/^[A-Za-z0-9-]+$/.test(id)) return "";
+    return "<a href=\"https://app.superset.sh/workspaces/" + esc(id) + "\" target=\"_blank\" rel=\"noopener noreferrer\">workspace</a>";
+  }
+
+  // Where a run is: its target, beside its workspace link. A v1 belt has no target.
+  function where(run) {
+    return [run.target ? esc(run.target) : "", workspaceLink(run.workspaceId)].filter(Boolean).join(" ");
+  }
+
+  // One box per target: its slots, its load per core, and why it takes no run when it does not.
+  function target(t) {
+    const slots = t.slots || {};
+    const facts = [(slots.used == null ? "?" : slots.used) + "/" + slots.max + " running"];
+    if (t.load && t.load.cores > 0) facts.push("load " + (t.load.oneMinute / t.load.cores).toFixed(2) + "/core");
+    if (t.online === false) facts.push("offline");
+    if (t.ready === false) facts.push("not ready");
+    return "<span class=\"target" + (t.online === false || t.ready === false ? " down" : "") + "\"><strong>" +
+      esc(t.name) + "</strong> <span class=\"muted\">" + esc(facts.join(", ")) + "</span>" +
+      (t.reason ? "<div class=\"reason\">" + esc(t.reason) + "</div>" : "") + "</span>";
+  }
+
+  // v1 is the belt of a runner from before targets; v2 adds them.
   function isBelt(value) {
-    return value != null && typeof value === "object" && value.v === 1 && Array.isArray(value.runs);
+    return value != null && typeof value === "object" && (value.v === 1 || value.v === 2) && Array.isArray(value.runs);
   }
 
   // A stored value may come as JSON text or as the value itself.
@@ -110,10 +137,12 @@
       "<td>" + esc(run.title) + (run.reason ? "<div class=\"reason\">" + esc(run.reason) + "</div>" : "") + "</td>" +
       "<td>" + esc(run.finished ? "finished" : run.state) + "</td>" +
       "<td>" + esc(run.step) + "</td>" +
+      "<td>" + where(run) + "</td>" +
       "<td>" + prLink(run.prUrl) + "</td>" +
       "<td>" + esc(run.finished ? duration(run.totalMs) : ago(run.startedTs)) + "</td>" +
       "</tr>"
     ).join("");
+    const targets = Array.isArray(r.targets) ? r.targets.map(target).join("") : "";
     beltEl.innerHTML =
       "<p><strong>" + esc(r.host) + "</strong> <span class=\"muted\">runner " + esc(r.version) +
       ", Paradev CLI " + esc(r.paradevCli) + ", updated " + esc(ago(belt.updatedAt)) + "</span></p>" +
@@ -125,10 +154,11 @@
       "<span><strong>" + esc(c.needsInfo) + "</strong> needs info</span>" +
       "<span><strong>" + esc(c.stuck) + "</strong> stuck</span>" +
       "<span><strong>" + esc(c.finished7d) + "</strong> finished in 7 days</span></p>" +
+      (targets ? "<div id=\"targets\" class=\"targets\">" + targets + "</div>" : "") +
       (attention ? "<h2>Needs a person</h2><ul>" + attention + "</ul>" : "") +
       "<h2>Runs</h2>" +
       (rows
-        ? "<table><thead><tr><th>Issue</th><th>Title</th><th>State</th><th>Step</th><th>PR</th><th>Time</th></tr></thead><tbody>" + rows + "</tbody></table>"
+        ? "<table><thead><tr><th>Issue</th><th>Title</th><th>State</th><th>Step</th><th>Where</th><th>PR</th><th>Time</th></tr></thead><tbody>" + rows + "</tbody></table>"
         : "<p class=\"muted\">No runs this week.</p>");
   }
 

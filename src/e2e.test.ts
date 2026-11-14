@@ -898,7 +898,7 @@ const scenario = (spec: Spec) =>
           // What the passes listed is the clone, a Paradev project on this Mac.
           assert.deepStrictEqual(loop.status, {
             state: "running",
-            settings: { pollSeconds: 10, maxConcurrentRuns: 1, repos: [REPO] },
+            settings: { pollSeconds: 10, maxConcurrentRuns: 1, repos: [REPO], hostNames: new Map() },
           });
 
           const launched = entries.find((entry) => entry.event === "session_launched");

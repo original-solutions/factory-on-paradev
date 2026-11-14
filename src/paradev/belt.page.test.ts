@@ -2,9 +2,9 @@
 import * as NodeFS from "node:fs";
 
 import { Window } from "happy-dom";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, assert, describe, expect, it } from "vitest";
 
-import type { BeltV1 } from "../belt.ts";
+import type { BeltV1, BeltV2 } from "../belt.ts";
 import { BELT_HTML } from "./belt.ts";
 import { readFixture } from "./fake-superset.ts";
 
@@ -148,6 +148,95 @@ describe("belt.html", () => {
     expect(page.window.document.querySelector("img")).toBeNull();
     expect(page.window.document.querySelector('a[href^="javascript:"]')).toBeNull();
     expect(page.text()).toContain("javascript:alert(1)");
+  });
+
+  it("still reads the v1 belt a runner from before targets wrote", async () => {
+    const belt = fixtureBelt();
+    assert.strictEqual(belt.v, 1);
+    const page = await render(newStub(belt));
+    await settle(page.window);
+    expect(page.text()).toContain(belt.runs[0]!.title ?? "");
+    expect(page.window.document.getElementById("belt")!.textContent).not.toContain("No belt yet");
+    expect(page.window.document.getElementById("error")!.textContent).toBe("");
+  });
+
+  it("shows a strip of targets above the runs, and each run's target beside its workspace link", async () => {
+    const v1 = fixtureBelt();
+    const belt: BeltV2 = {
+      ...v1,
+      v: 2,
+      runner: {
+        ...v1.runner,
+        targets: [
+          {
+            kind: "local",
+            name: "local",
+            online: true,
+            load: { oneMinute: 2.5, cores: 10 },
+            slots: { used: 1, max: 1 },
+            ready: true,
+            reason: "slots full: 1 of 1 running",
+          },
+          {
+            kind: "host",
+            name: "trilogy-mac",
+            online: false,
+            load: null,
+            slots: { used: null, max: 2 },
+            ready: false,
+            reason: "its running agents could not be counted",
+          },
+        ],
+      },
+      runs: [
+        { ...v1.runs[0]!, target: "trilogy-mac", workspaceId: "f0f5d9c4-965a-4cc0-a503-f9d998a8cc92" },
+        { ...v1.runs[1]!, target: null, workspaceId: null },
+      ],
+    };
+    const page = await render(newStub(belt));
+    await settle(page.window);
+    const document = page.window.document;
+    const strip = document.getElementById("targets")!;
+    expect(strip).not.toBeNull();
+    const stripText = strip.textContent ?? "";
+    expect(stripText).toContain("local");
+    expect(stripText).toContain("1/1");
+    expect(stripText).toContain("slots full: 1 of 1 running");
+    expect(stripText).toContain("trilogy-mac");
+    expect(stripText).toContain("offline");
+    expect(stripText).toContain("?/2");
+    expect(stripText).toContain("load 0.25/core");
+    expect(stripText).toContain("not ready");
+    const boxes = Array.from(strip.querySelectorAll(".target"));
+    expect(boxes.map((box) => box.classList.contains("down"))).toEqual([false, true]);
+    // The strip comes before the runs.
+    const runsTable = document.querySelector("table")!;
+    expect(strip.compareDocumentPosition(runsTable as unknown as typeof strip) & 4).toBe(4);
+    const link = document.querySelector('a[href="https://app.superset.sh/workspaces/f0f5d9c4-965a-4cc0-a503-f9d998a8cc92"]')!;
+    expect(link).not.toBeNull();
+    const cell = link.parentElement!;
+    expect(cell.textContent).toContain("trilogy-mac");
+  });
+
+  it("links no workspace whose id is not a plain id, and escapes the target", async () => {
+    const v1 = fixtureBelt();
+    const markup = `<img src=x onerror=alert(1)>`;
+    const belt: BeltV2 = {
+      ...v1,
+      v: 2,
+      runner: {
+        ...v1.runner,
+        targets: [
+          { kind: "host", name: markup, online: true, load: null, slots: { used: 0, max: 1 }, ready: true, reason: markup },
+        ],
+      },
+      runs: [{ ...v1.runs[0]!, target: markup, workspaceId: `x"><img src=x>` }],
+    };
+    const page = await render(newStub(belt));
+    await settle(page.window);
+    expect(page.window.document.querySelector("img")).toBeNull();
+    expect(page.window.document.querySelector('a[href*="workspaces"]')).toBeNull();
+    expect(page.text()).toContain(markup);
   });
 
   it("says so when no belt has been written yet", async () => {

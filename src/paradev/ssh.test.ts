@@ -12,13 +12,18 @@ import { useTempDirs } from "../ledger/testSupport.ts";
 import { FactoryProcess, type RunInput, type RunResult } from "../process.ts";
 
 import {
+  agentLookup,
   CLAUDE_VERSION,
   fromCommandRunner,
   GH_AUTH_STATUS,
   GIT_EMAIL,
+  hostGit,
   isAllowed,
   liveSshSpawn,
   LOAD_COMMAND,
+  LOOKUP_MARK,
+  newestSessionList,
+  pathExists,
   PROXY_ENV_READ,
   PROXY_ENV_SCRIPT,
   remoteUrl,
@@ -26,6 +31,7 @@ import {
   SSH_TIMEOUT_MS,
   shellQuote,
   sshArgs,
+  SSH_ENV,
   SshError,
   sshRunner,
   TRUE_COMMAND,
@@ -79,6 +85,21 @@ const ALLOWED: ReadonlyArray<string> = [
   GIT_EMAIL,
   GH_AUTH_STATUS,
   CLAUDE_VERSION,
+  // The adapter's calls in a worktree on a host (#67).
+  hostGit("/wt", ["rev-parse", "--verify", "HEAD^{commit}"]),
+  hostGit("/wt", ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=dirty"], ["--no-optional-locks"]),
+  hostGit("/wt", ["symbolic-ref", "-q", "HEAD"]),
+  hostGit("/wt", ["symbolic-ref", "-q", "--short", "HEAD"]),
+  hostGit("/wt", ["rev-list", "--max-count=1", "HEAD", "--not", "--branches", "--remotes"]),
+  hostGit("/wt", [
+    "rev-list", "--max-count=1", "HEAD", "--not",
+    "--exclude=fac/67-1", "--branches", "--exclude=*/fac/67-1", "--remotes",
+  ]),
+  hostGit("/wt", ["fetch", "--quiet", "origin", "main"]),
+  hostGit("/wt", ["reset", "--hard", "--no-recurse-submodules", "-q", SHA], ["-c", "submodule.recurse=false"]),
+  pathExists("/wt/.git"),
+  agentLookup("claude", "/wt"),
+  newestSessionList("-Users-me-wt"),
 ];
 
 describe("isAllowed", () => {
@@ -103,6 +124,37 @@ describe("isAllowed", () => {
       `python3 -c '${TRUST_SCRIPT}' 'a' 'b'`,
     ];
     for (const command of refused) assert.isFalse(isAllowed(command), command);
+  });
+
+  it("refuses git in a worktree on a host for any call the adapter does not make", () => {
+    const refused = [
+      hostGit("/wt", ["config", "core.sshCommand", "id"]),
+      hostGit("/wt", ["reset", "--hard", SHA]),
+      hostGit("/wt", ["fetch", "--quiet", "origin", "main", "--upload-pack=id"]),
+      // An option where the shape takes a branch or a commit id.
+      hostGit("/wt", ["fetch", "--quiet", "origin", "--upload-pack=id"]),
+      hostGit("/wt", ["fetch", "--quiet", "origin", "--recurse-submodules"]),
+      hostGit("/wt", ["fetch", "--quiet", "origin", "-ofoo"]),
+      hostGit("/wt", ["fetch", "--quiet", "origin", "a..b"]),
+      hostGit("/wt", ["reset", "--hard", "--no-recurse-submodules", "-q", "--recurse-submodules"], ["-c", "submodule.recurse=false"]),
+      hostGit("/wt", ["reset", "--hard", "--no-recurse-submodules", "-q", "main"], ["-c", "submodule.recurse=false"]),
+      hostGit("/wt", ["rev-parse", "--verify", "HEAD^{commit}"], ["-c", "core.fsmonitor=id"]),
+      hostGit("/wt", ["status", "--porcelain"]),
+      "'git' '-C' '/wt' 'rev-parse' '--verify' 'HEAD^{commit}' 'x'",
+      "sh -c 'id'",
+      "sh -c 'ls -t $HOME/.claude/projects/a/*.jsonl 2>/dev/null | head -1' x",
+      newestSessionList("a;id"),
+      newestSessionList("$(id)"),
+    ];
+    for (const command of refused) assert.isFalse(isAllowed(command), command);
+  });
+
+  it("refuses a script whose inner word closes its quote, though the outer word stays one word", () => {
+    const lookup = agentLookup("claude", "/wt");
+    const broken = lookup.replace("'\\''claude'\\''", "'\\''claude'\\''; id; '\\''x'\\''");
+    assert.notStrictEqual(broken, lookup);
+    assert.isFalse(isAllowed(broken), broken);
+    assert.isTrue(isAllowed(agentLookup("it's", "/Users/o'brien/wt")));
   });
 
   it("refuses a path with a backslash, which the allowlist cannot tell from an escape", () => {
@@ -169,6 +221,29 @@ describe("builders", () => {
   it("neither script has a single quote in it, so each stays one quoted word", () => {
     assert.notInclude(TRUST_SCRIPT, "'");
     assert.notInclude(PROXY_ENV_SCRIPT, "'");
+  });
+
+  it("git in a worktree on a host quotes every word, its own options before -C", () => {
+    assert.strictEqual(
+      hostGit("/a b", ["reset", "-q", SHA], ["-c", "submodule.recurse=false"]),
+      `'git' '-c' 'submodule.recurse=false' '-C' '/a b' 'reset' '-q' '${SHA}'`,
+    );
+    assert.strictEqual(pathExists("/a b/.git"), "test -e '/a b/.git'");
+  });
+
+  it("the agent lookup runs in sh, quotes the command and the path, and ends with its mark", () => {
+    const lookup = agentLookup("claude", "/a b");
+    assert.isTrue(lookup.startsWith("sh -c '"));
+    assert.include(lookup, "pgrep -x '\\''claude'\\''");
+    assert.include(lookup, "cd '\\''/a b'\\''");
+    assert.isTrue(lookup.endsWith(`echo ${LOOKUP_MARK}'`));
+  });
+
+  it("the newest session list reads the folder under the host's own home", () => {
+    assert.strictEqual(
+      newestSessionList("-Users-me-wt"),
+      "sh -c 'ls -t $HOME/.claude/projects/-Users-me-wt/*.jsonl 2>/dev/null | head -1'",
+    );
   });
 });
 
@@ -444,18 +519,39 @@ describe("sshRunner", () => {
   it.effect("runs ssh in batch mode with a 10 s connect, the destination after --, and the command as one word", () =>
     Effect.gen(function* () {
       const { inputs, process } = processAnswering(result({ tail: "ok\n" }));
-      const answered = yield* sshRunner(process).run("tomk@trilogy-mac", "uptime");
+      const answered = yield* sshRunner(process).run("tomk@trilogy-mac", TRUE_COMMAND);
       assert.strictEqual(answered.tail, "ok\n");
       assert.deepStrictEqual(inputs.map((input) => [input.command, input.args, input.timeoutMs]), [
-        ["ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", "tomk@trilogy-mac", "uptime"], 10_000],
+        ["ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", "tomk@trilogy-mac", "true"], 10_000],
       ]);
+    }),
+  );
+
+  it.effect("keeps the agent socket in ssh's environment, from the list liveSshSpawn uses", () =>
+    Effect.gen(function* () {
+      const { inputs, process } = processAnswering(result());
+      yield* sshRunner(process).run("tomk@trilogy-mac", TRUE_COMMAND);
+      assert.isTrue(inputs[0]!.inheritEnv?.includes("SSH_AUTH_SOCK"));
+      assert.deepStrictEqual(inputs[0]!.inheritEnv, SSH_ENV);
+    }),
+  );
+
+  it.effect("refuses a text outside the allowlist without spawning ssh", () =>
+    Effect.gen(function* () {
+      const { inputs, process } = processAnswering(result());
+      for (const command of ["uptime", `${TRUE_COMMAND}; id`, hostGit("/wt", ["config", "core.sshCommand", "id"])]) {
+        const refused = yield* sshRunner(process).run("tomk@trilogy-mac", command).pipe(Effect.flip);
+        assert.instanceOf(refused, SshError);
+        assert.strictEqual(refused.message, "ssh tomk@trilogy-mac: the command is not one the runner may send to a host");
+      }
+      assert.deepStrictEqual(inputs, []);
     }),
   );
 
   it.effect("answers the command's own non-zero exit, and takes a longer timeout when asked", () =>
     Effect.gen(function* () {
       const { inputs, process } = processAnswering(result({ exitCode: 1, stderrTail: "No such file" }));
-      const answered = yield* sshRunner(process).run("tomk@trilogy-mac", "ls x", { timeoutMs: 120_000 });
+      const answered = yield* sshRunner(process).run("tomk@trilogy-mac", pathExists("/x"), { timeoutMs: 120_000 });
       assert.strictEqual(answered.exitCode, 1);
       assert.strictEqual(inputs[0]!.timeoutMs, 120_000);
     }),

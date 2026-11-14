@@ -6,6 +6,7 @@
 import type { MachineSize } from "../config.ts";
 import type { Load } from "../load.ts";
 import { NO_TARGET_HAS_ROOM } from "../sessions.ts";
+import type { TargetRow } from "../targets.ts";
 import type { LaunchTarget } from "./sessions.ts";
 
 /** A target's slots: `running` is null when its snapshot could not be read. */
@@ -49,6 +50,15 @@ export type Candidate =
     };
 
 /**
+ * What a target's own readings say, whatever repo is placed: a candidate without the repo's path
+ * on a host or its cloud environment. `status` and the belt show one per target.
+ */
+export type TargetReading = OmitEach<Candidate, "path" | "environmentId">;
+
+/** `Omit` on each member of a union, so the members stay told apart by `kind`. */
+type OmitEach<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+/**
  * A candidate placement did not use, and why. `id` is the candidate's identity (`local`,
  * `host:<id>` or `cloud`); `target` is what the log and the belt call it: "local", the host's
  * name, or "cloud".
@@ -73,7 +83,7 @@ const slotsReason = ({ running, max }: Slots): string | null =>
       : null;
 
 /** Why `candidate` cannot take a launch, the first reason that applies; null when it can. */
-const dropReason = (candidate: Candidate): string | null => {
+const dropReason = (candidate: TargetReading): string | null => {
   const full = slotsReason(candidate.slots);
   if (full !== null) return full;
   switch (candidate.kind) {
@@ -104,7 +114,7 @@ export const targetKey = (
 ): string =>
   target.kind !== "host" ? target.kind : `host:${"id" in target ? target.id : target.machineId}`;
 
-const nameOf = (candidate: Candidate): string =>
+const nameOf = (candidate: TargetReading): string =>
   candidate.kind === "local" ? "local" : candidate.kind === "host" ? candidate.name : "cloud";
 
 const targetOf = (candidate: Candidate): LaunchTarget =>
@@ -113,6 +123,25 @@ const targetOf = (candidate: Candidate): LaunchTarget =>
     : candidate.kind === "host"
       ? { kind: "host", machineId: candidate.id, path: candidate.path }
       : { kind: "cloud", environmentId: candidate.environmentId, machineSize: candidate.machineSize };
+
+/**
+ * The row `status` and the belt show for a target: its readings, whether its own check passed, and
+ * the first reason placement would not use it now, as {@link choosePlacement} judges a candidate.
+ */
+export const targetRow = (reading: TargetReading): TargetRow => ({
+  kind: reading.kind,
+  name: nameOf(reading),
+  online: reading.slots.running !== null,
+  load: reading.kind === "cloud" ? null : reading.load,
+  slots: { used: reading.slots.running, max: reading.slots.max },
+  ready:
+    reading.kind === "local"
+      ? reading.held === null
+      : reading.kind === "host"
+        ? reading.notReady === null
+        : reading.proxy === null,
+  reason: dropReason(reading),
+});
 
 /**
  * The machine (this Mac or a host) with room and the lowest load per core, this Mac on a tie;

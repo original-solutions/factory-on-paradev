@@ -1,16 +1,17 @@
 /**
  * The per-pass glue of placement (#55): it gathers what the pass has read about each target of a
  * repo, asks `choosePlacement`, and records why a candidate was not used. `launch` asks it once per
- * command id, through `place`. Everything it reads is read at most once per pass.
+ * command id, through `place`. Placement reads everything at most once per pass; the rows the
+ * belt and `status` show, built after the pass, reuse that read or make their own.
  */
 import * as Effect from "effect/Effect";
 import * as Semaphore from "effect/Semaphore";
 
-import type { MachineConfig, WatchedRepo } from "../config.ts";
+import type { CloudConfig, HostConfig, MachineConfig, WatchedRepo } from "../config.ts";
 import type { MachineEvent } from "../ledger/events.ts";
 import type { Load } from "../load.ts";
 import { NoTargetHasRoom, type LaunchRequest } from "../sessions.ts";
-import { type Candidate, choosePlacement, targetKey } from "./placement.ts";
+import { type Candidate, choosePlacement, targetKey, targetRow, type TargetReading } from "./placement.ts";
 import type { LaunchTarget, TargetCount } from "./sessions.ts";
 
 /**
@@ -41,6 +42,8 @@ export const makePlacer = (deps: PlacerDeps) => {
   let localLoad: Load | null = null;
   /** Running agents per target this pass; null when its snapshot could not be read. Null here: not read yet. */
   let counts: Map<string, number | null> | null = null;
+  /** Which pass this is, so a read that ends after the next pass began is not taken for that pass's own. */
+  let pass = 0;
   /** Why cloud takes no run this pass, from the pass's proxy check; null when it passed or was not run. */
   let proxyReason: string | null = null;
   /**
@@ -58,51 +61,69 @@ export const makePlacer = (deps: PlacerDeps) => {
   /** One placement at a time: a re-gate relaunch and a pass launch never read or bump the counts at once. */
   const exclusive = Semaphore.makeUnsafe(1);
 
+  /** The snapshots, with the launches in flight on top: the counts as placement reads them. */
+  const readCounts = Effect.gen(function* () {
+    const read = yield* deps.running;
+    const running = new Map(read.map((count) => [targetKey(count.target), count.running]));
+    // A launch in flight is in no snapshot yet: it counts on top of what the snapshot read.
+    for (const key of inFlight.values()) bump(running, key);
+    return running;
+  });
+
+  /** The pass's counts: read on the first placement of the pass and kept for the rest of it. */
   const countsOf = Effect.gen(function* () {
-    if (counts === null) {
-      const read = yield* deps.running;
-      counts = new Map(read.map((count) => [targetKey(count.target), count.running]));
-      // A launch in flight is in no snapshot yet: it counts on top of what the snapshot read.
-      for (const key of inFlight.values()) bump(counts, key);
-    }
+    if (counts === null) counts = yield* readCounts;
     return counts;
   });
 
+  /** This Mac's load, read on the first candidate list of the pass and kept for the rest of it. */
+  const passLoad = (): Load => (localLoad ??= deps.readLoad());
+
   /** This Mac as a candidate; `held` is why P1's checks hold claims, which a repo with nowhere else to go ignores. */
-  const localOf = (running: ReadonlyMap<string, number | null>, held: string | null): Candidate => ({
+  const localOf = (running: ReadonlyMap<string, number | null>, held: string | null, load: Load): Candidate => ({
     kind: "local",
     slots: { running: running.get("local") ?? null, max: deps.machine.local.maxRuns },
-    load: (localLoad ??= deps.readLoad()),
+    load,
     held,
   });
 
+  /** A host's readings this pass, whatever repo is placed. */
+  const hostOf = (
+    host: HostConfig,
+    running: ReadonlyMap<string, number | null>,
+    notReady: ReadonlyMap<string, string>,
+  ): Extract<TargetReading, { readonly kind: "host" }> => ({
+    kind: "host",
+    id: host.id,
+    name: host.name,
+    slots: { running: running.get(targetKey({ kind: "host", id: host.id })) ?? null, max: host.maxRuns },
+    maxLoadPerCore: host.maxLoadPerCore,
+    load: deps.hostLoads.get(host.id) ?? null,
+    notReady: notReady.get(host.id) ?? null,
+  });
+
+  /** Cloud's readings this pass, whatever repo is placed. */
+  const cloudOf = (
+    cloud: CloudConfig,
+    running: ReadonlyMap<string, number | null>,
+  ): Extract<TargetReading, { readonly kind: "cloud" }> => ({
+    kind: "cloud",
+    machineSize: cloud.machineSize,
+    slots: { running: running.get("cloud") ?? null, max: cloud.maxRuns },
+    proxy: checkedUnder === deps.machine ? proxyReason : PROXY_NOT_CHECKED,
+  });
+
   const candidatesOf = (repo: WatchedRepo, running: ReadonlyMap<string, number | null>): Array<Candidate> => {
-    const countOf = (key: string): number | null => running.get(key) ?? null;
-    const candidates: Array<Candidate> = [localOf(running, localHeld)];
+    const candidates: Array<Candidate> = [localOf(running, localHeld, passLoad())];
     const notReady = deps.hostsNotReady();
     for (const listed of repo.hosts ?? []) {
       const host = deps.machine.hosts.find((entry) => entry.id === listed.id);
       if (host === undefined) continue;
-      candidates.push({
-        kind: "host",
-        id: host.id,
-        name: host.name,
-        path: listed.path,
-        slots: { running: countOf(targetKey({ kind: "host", id: host.id })), max: host.maxRuns },
-        maxLoadPerCore: host.maxLoadPerCore,
-        load: deps.hostLoads.get(host.id) ?? null,
-        notReady: notReady.get(host.id) ?? null,
-      });
+      candidates.push({ ...hostOf(host, running, notReady), path: listed.path });
     }
     const { cloud } = deps.machine;
     if (repo.cloud !== undefined && cloud !== undefined) {
-      candidates.push({
-        kind: "cloud",
-        environmentId: repo.cloud,
-        machineSize: cloud.machineSize,
-        slots: { running: countOf("cloud"), max: cloud.maxRuns },
-        proxy: checkedUnder === deps.machine ? proxyReason : PROXY_NOT_CHECKED,
-      });
+      candidates.push({ ...cloudOf(cloud, running), environmentId: repo.cloud });
     }
     return candidates;
   };
@@ -146,6 +167,31 @@ export const makePlacer = (deps: PlacerDeps) => {
     });
 
   return {
+    /**
+     * A row for this Mac, each configured host, and cloud when configured, from this pass's
+     * readings. The counts are the ones a launch read this pass, taken under the lock so a
+     * placement under way is counted first. When no launch read any, the rows read them here,
+     * off the lock, so a slow snapshot holds up no launch; the read is kept as the pass's own
+     * only while it is still this pass and no launch read meanwhile.
+     */
+    targets: Effect.gen(function* () {
+      const began = pass;
+      let running = yield* Effect.sync(() => counts).pipe(exclusive.withPermits(1));
+      if (running === null) {
+        running = yield* readCounts;
+        if (pass === began && counts === null) counts = running;
+      }
+      // The same for the load: this pass's one read, or one the rows keep to themselves.
+      const load = pass === began ? passLoad() : deps.readLoad();
+      const notReady = deps.hostsNotReady();
+      const { cloud } = deps.machine;
+      const readings: Array<TargetReading> = [
+        localOf(running, localHeld, load),
+        ...deps.machine.hosts.map((host) => hostOf(host, running, notReady)),
+        ...(cloud === undefined ? [] : [cloudOf(cloud, running)]),
+      ];
+      return readings.map(targetRow);
+    }),
     /** The launch of `commandId` ended: its agent is in the snapshots now, so it stops counting on its own. */
     launchEnded: (commandId: string): Effect.Effect<void> =>
       Effect.sync(() => void inFlight.delete(commandId)),
@@ -160,6 +206,7 @@ export const makePlacer = (deps: PlacerDeps) => {
       readonly proxy: string | null;
       readonly machine: MachineConfig;
     }): void => {
+      pass += 1;
       localHeld = began.localHeld;
       proxyReason = began.proxy;
       checkedUnder = began.machine;
@@ -189,7 +236,7 @@ export const makePlacer = (deps: PlacerDeps) => {
             return { kind: "local" } as const;
           }
           const running = yield* countsOf;
-          return yield* settle(repo?.repo ?? request.projectId, [localOf(running, null)], running, request);
+          return yield* settle(repo?.repo ?? request.projectId, [localOf(running, null, passLoad())], running, request);
         }
         const running = yield* countsOf;
         const candidates = candidatesOf(repo, running);

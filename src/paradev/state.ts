@@ -10,7 +10,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import { writeFileAtomically } from "../files.ts";
-import { isPlainId } from "../sessions.ts";
+import { targetOf, type ThreadTarget } from "../targets.ts";
 import { sha256 } from "../text.ts";
 
 const Turn = Schema.Struct({
@@ -113,37 +113,12 @@ const decodeRecord = (text: string): ThreadRecord | null => {
   return { v: 2, target: { kind: "local" }, ...fields };
 };
 
-/** A target as its thread id names it: the host's name and the cloud environment are not in it. */
-export type ThreadTarget =
-  | { readonly kind: "local" }
-  | { readonly kind: "host"; readonly machineId: string }
-  | { readonly kind: "cloud" };
+// The thread id's parser lives beside `status`, which reads it too and may not import from here.
+export { targetOf, type ThreadTarget };
 
 /** `local:<ws>`, `host:<machineId>:<ws>` or `cloud:<ws>`. */
 export const threadIdOf = (target: Target | ThreadTarget, workspaceId: string): string =>
   target.kind === "host" ? `host:${target.machineId}:${workspaceId}` : `${target.kind}:${workspaceId}`;
-
-/** The inverse of {@link threadIdOf}; null for an id of any other form or with an id that is not plain. */
-export const targetOf = (
-  threadId: string,
-): { readonly target: ThreadTarget; readonly workspaceId: string } | null => {
-  const parts = threadId.split(":");
-  if (!parts.every(isPlainId)) return null;
-  const [kind, first, second] = parts;
-  if (parts.length === 2 && (kind === "local" || kind === "cloud")) {
-    return { target: { kind }, workspaceId: first! };
-  }
-  if (parts.length === 3 && kind === "host") {
-    return { target: { kind, machineId: first! }, workspaceId: second! };
-  }
-  return null;
-};
-
-/** The workspace of a `local:<workspaceId>` thread id; null for any other id. */
-export const workspaceIdOf = (threadId: string): string | null => {
-  const parsed = targetOf(threadId);
-  return parsed?.target.kind === "local" ? parsed.workspaceId : null;
-};
 
 const threadsDir = (path: Path.Path, dataDir: string) => path.join(dataDir, "paradev", "threads");
 
