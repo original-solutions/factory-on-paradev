@@ -133,6 +133,8 @@ describe("isAllowed", () => {
       hostGit("/wt", ["fetch", "--quiet", "origin", "main", "--upload-pack=id"]),
       // An option where the shape takes a branch or a commit id.
       hostGit("/wt", ["fetch", "--quiet", "origin", "--upload-pack=id"]),
+      hostGit("/wt", ["fetch", "--quiet", "origin", "--recurse-submodules"]),
+      hostGit("/wt", ["fetch", "--quiet", "origin", "-ofoo"]),
       hostGit("/wt", ["fetch", "--quiet", "origin", "a..b"]),
       hostGit("/wt", ["reset", "--hard", "--no-recurse-submodules", "-q", "--recurse-submodules"], ["-c", "submodule.recurse=false"]),
       hostGit("/wt", ["reset", "--hard", "--no-recurse-submodules", "-q", "main"], ["-c", "submodule.recurse=false"]),
