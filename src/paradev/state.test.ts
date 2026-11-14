@@ -12,6 +12,7 @@ import {
   listThreads,
   readLaunch,
   readThread,
+  runnerId,
   targetOf,
   type ThreadRecord,
   threadIdOf,
@@ -167,6 +168,38 @@ describe("launch files", () => {
       assert.deepStrictEqual(JSON.parse(NodeFS.readFileSync(file, "utf8")), { threadId: `local:${WS}` });
       NodeFS.writeFileSync(file, "{\"thread");
       assert.isNull(yield* readLaunch(data, id));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("the runner id", () => {
+  const idFile = (data: string) => NodePath.join(data, "paradev", "runner-id");
+
+  it.effect("is written once to <data>/paradev/runner-id and read back after that; a fresh data dir gets a new one", () =>
+    Effect.gen(function* () {
+      const data = tempDir("state");
+      assert.isFalse(NodeFS.existsSync(idFile(data)));
+      const first = yield* runnerId(data);
+      assert.match(first, /^[0-9a-f-]{36}$/);
+      assert.strictEqual(NodeFS.readFileSync(idFile(data), "utf8").trim(), first);
+      const written = NodeFS.statSync(idFile(data)).ino;
+      assert.strictEqual(yield* runnerId(data), first);
+      // A read never rewrites the file.
+      assert.strictEqual(NodeFS.statSync(idFile(data)).ino, written);
+      assert.notStrictEqual(yield* runnerId(tempDir("state")), first);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a file that does not read back as an id is replaced by a new one", () =>
+    Effect.gen(function* () {
+      const data = tempDir("state");
+      NodeFS.mkdirSync(NodePath.dirname(idFile(data)), { recursive: true });
+      for (const torn of ["", "not an id\n", "../x"]) {
+        NodeFS.writeFileSync(idFile(data), torn);
+        const id = yield* runnerId(data);
+        assert.match(id, /^[0-9a-f-]{36}$/);
+        assert.strictEqual(yield* runnerId(data), id);
+      }
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

@@ -41,6 +41,8 @@ const L1_WS = "be47b9e8-7687-4c3c-8791-5fd7f04ba5fe";
 const L1_TERM = "27446599-a510-4df8-989b-45938576d96b";
 const LAUNCH_ID = "softfac:original-solutions__factory-paradev-spike__1__1:launch";
 const MINUTE = 60_000;
+/** The runner id every rig's data dir holds: the cloud create's second tag and the sweep's mark. */
+const RUNNER = "0a1b2c3d-0000-4000-8000-00000000abcd";
 
 // ---- real git -------------------------------------------------------------------------------
 
@@ -137,6 +139,8 @@ const rig = (
 ): Rig => {
   const fake = fakeSuperset(script);
   const data = tempDir("data");
+  NodeFS.mkdirSync(NodePath.join(data, "paradev"), { recursive: true });
+  NodeFS.writeFileSync(NodePath.join(data, "paradev", "runner-id"), `${RUNNER}\n`);
   const lookups: Array<readonly [string, string]> = [];
   const gitCalls: Rig["gitCalls"] = [];
   const recording = Layer.effect(
@@ -2801,7 +2805,7 @@ describe("launch in the cloud", () => {
   };
   const createArgv = [
     "workspaces", "create", "--host", "cloud", "--environment", ENV, "--machine-size", "small",
-    "--name", "fac/1-1", "--base-branch", "main", "--tag", "factory",
+    "--name", "fac/1-1", "--base-branch", "main", "--tag", "factory", "--tag", `factory-${RUNNER}`,
   ];
   const getArgv = ["workspaces", "get", C3_WS, "--host", "cloud"];
 
@@ -2899,8 +2903,9 @@ describe("launch in the cloud", () => {
   );
 
   /** Every file under the data dir, relative to it: what a refused launch must not have written. */
+  /** Every file the launch wrote under the data dir; the rig's runner id was there before it. */
   const written = (data: string): ReadonlyArray<string> =>
-    NodeFS.existsSync(data) ? NodeFS.readdirSync(data, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => NodePath.relative(data, NodePath.join(e.parentPath, e.name))) : [];
+    NodeFS.existsSync(data) ? NodeFS.readdirSync(data, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => NodePath.relative(data, NodePath.join(e.parentPath, e.name))).filter((file) => file !== NodePath.join("paradev", "runner-id")) : [];
 
   it.live("a created workspace id that is not plain fails the launch, with no record, no launch file and no further call", () =>
     Effect.gen(function* () {
@@ -3283,10 +3288,13 @@ describe("the orphan sweep", () => {
   const NO_AGENT = "c1e2d3c4-0000-4000-8000-000000000005";
   const TORN = "b1e2d3c4-0000-4000-8000-000000000006";
   const listArgv = ["workspaces", "list", "--host", "cloud"];
+  const ONLY_FACTORY = "a7e2d3c4-0000-4000-8000-000000000010";
+  const OTHER_RUNNER = "a8e2d3c4-0000-4000-8000-000000000011";
+  const MINE = `factory-${RUNNER}`;
   /** The recorded row, as each case of the sweep: only C6 and OBJECT_TAG are orphans. */
   const rows = (answer: unknown) => {
     const [row] = answer as ReadonlyArray<Record<string, unknown>>;
-    const tagged = { ...row, tags: ["factory"], createdAt: ago(60 * MINUTE) };
+    const tagged = { ...row, tags: ["factory", MINE], createdAt: ago(60 * MINUTE) };
     return [
       { ...tagged, id: C6_WS, name: "fac/6-1", createdAt: ago(11 * MINUTE) },
       { ...tagged, id: C3_WS }, // a live run's record
@@ -3295,7 +3303,9 @@ describe("the orphan sweep", () => {
       { ...tagged, id: "d1e2d3c4-0000-4000-8000-000000000002", tags: [] },
       { ...tagged, id: "e1e2d3c4-0000-4000-8000-000000000003", createdAt: ago(9 * MINUTE) },
       { ...tagged, id: "a1e2d3c4-0000-4000-8000-000000000004", status: "deleted" },
-      { ...tagged, id: OBJECT_TAG, tags: [{ name: "factory" }] },
+      { ...tagged, id: OBJECT_TAG, tags: [{ name: "factory" }, { name: MINE }] },
+      { ...tagged, id: ONLY_FACTORY, tags: ["factory"] }, // no runner's mark: not this runner's to archive
+      { ...tagged, id: OTHER_RUNNER, tags: ["factory", "factory-ffffffff-0000-4000-8000-00000000ffff"] }, // another runner's
       { ...tagged, id: "a5e2d3c4-0000-4000-8000-000000000009", createdAt: "not a date" },
       { ...tagged, id: "../a6e2d3c4" }, // not a plain id: never a path or an argv word
     ];
@@ -3314,7 +3324,7 @@ describe("the orphan sweep", () => {
       NodeFS.writeFileSync(NodePath.join(data, "paradev", "threads", `${TORN}.json`), '{"v":2,"thre');
     });
 
-  it.effect("archives each cloud workspace tagged factory, with no thread record, created over 10 minutes ago, one line each", () =>
+  it.effect("archives each cloud workspace with this runner's tag, no thread record, created over 10 minutes ago, one line each", () =>
     Effect.gen(function* () {
       const t = rig([
         { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: rows },
@@ -3387,6 +3397,22 @@ describe("the orphan sweep", () => {
       const after = yield* readThread(t.data, NO_AGENT).pipe(Effect.provide(NodeServices.layer));
       assert.strictEqual(after!.archivedAt, NOW);
       assert.isNull((yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer)))!.archivedAt);
+    }),
+  );
+
+  it.effect("a workspace tagged only factory, or with another runner's tag, is left alone; this runner's is archived", () =>
+    Effect.gen(function* () {
+      const only = (answer: unknown) => rows(answer).filter((row) => [ONLY_FACTORY, OTHER_RUNNER, OBJECT_TAG].includes(row.id as string));
+      const t = rig([
+        { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: only },
+        { argv: ["workspaces", "archive", OBJECT_TAG, "--host", "cloud"], answer: { deleted: [OBJECT_TAG], notFound: [], failed: [], warnings: [] } },
+      ]);
+      yield* TestClock.setTime(NOW);
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual(t.calls, [listArgv, ["workspaces", "archive", OBJECT_TAG, "--host", "cloud"]]);
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.include(logs[0], `archived cloud workspace ${OBJECT_TAG}`);
     }),
   );
 
