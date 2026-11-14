@@ -64,6 +64,8 @@ const setup = (
     proxy?: Array<number>;
     hostLoad?: Load | null;
     notReady?: ReadonlyMap<string, string>;
+    /** Effect run before `running` answers: a slow read. */
+    slowRead?: Effect.Effect<void>;
   } = {},
 ) => {
   const reads = { running: 0, proxy: 0, load: 0 };
@@ -91,8 +93,9 @@ const setup = (
       reads.load += 1;
       return quiet;
     },
-    running: Effect.sync(() => {
+    running: Effect.gen(function* () {
       reads.running += 1;
+      if (options.slowRead !== undefined) yield* options.slowRead;
       return counts.map((count) => ({ ...count }));
     }),
     proxyGet,
@@ -170,6 +173,35 @@ describe("placer", () => {
       const second = yield* t.placer.place(request("hosted", 2)).pipe(Effect.flip);
       assert.instanceOf(second, NoTargetHasRoom);
       assert.strictEqual(t.reads.running, 1);
+    }),
+  );
+
+  it.effect("a launch on a repo with no hosts takes a slot on this Mac for the rest of the pass", () =>
+    Effect.gen(function* () {
+      const t = setup({ machine: machine({ local: { maxRuns: 2 }, hosts: [{ ...HOST, maxRuns: 2 }] }) });
+      t.placer.beginPass(null);
+      // The first hosted launch reads the counts; this Mac wins the tie and holds one.
+      assert.deepStrictEqual(yield* t.placer.place(request("hosted", 1)), { kind: "local" });
+      // A launch on a repo with no hosts is this Mac's too, and fills it.
+      assert.deepStrictEqual(yield* t.placer.place(request("mac")), { kind: "local" });
+      assert.deepStrictEqual(yield* t.placer.place(request("hosted", 3)), {
+        kind: "host",
+        machineId: "h1",
+        path: "/srv/hosted",
+      });
+    }),
+  );
+
+  it.effect("two launches placed at once read the counts once and do not both take the last slot", () =>
+    Effect.gen(function* () {
+      const t = setup({ slowRead: Effect.forEach([1, 2, 3, 4, 5], () => Effect.yieldNow, { discard: true }) });
+      t.placer.beginPass("high load");
+      const results = yield* Effect.all(
+        [t.placer.place(request("hosted", 1)), t.placer.place(request("hosted", 2))].map((place) => Effect.result(place)),
+        { concurrency: "unbounded" },
+      );
+      assert.strictEqual(t.reads.running, 1);
+      assert.deepStrictEqual(results.map((result) => result._tag).sort(), ["Failure", "Success"]);
     }),
   );
 
