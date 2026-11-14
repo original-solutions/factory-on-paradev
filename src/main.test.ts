@@ -75,6 +75,7 @@ import {
   ThreadNotFoundError,
   type FactorySessions,
 } from "./sessions.ts";
+import { TARGETS_FILE } from "./targets.ts";
 import { MARKER } from "./tracker/github.ts";
 
 /**
@@ -437,6 +438,23 @@ const runtimeOver = (
       write: (text: string) => fs.writeFileString(paths.machineConfigPath, text),
     };
   });
+
+/**
+ * The real file system, with the rename that lands `targets.json` watched: `seen` gets whether a
+ * file was there to replace, and while `failing()` the rename fails as a full disk would.
+ */
+const targetsFileSystem = (seen: Array<boolean>, failing: () => boolean) =>
+  Layer.effect(FileSystem.FileSystem)(
+    Effect.map(FileSystem.FileSystem, (real) => ({
+      ...real,
+      rename: (from: string, to: string) => {
+        if (NodePath.basename(to) !== TARGETS_FILE) return real.rename(from, to);
+        seen.push(NodeFS.existsSync(to));
+        // A rename into a directory that is not there fails with a real error.
+        return real.rename(from, failing() ? NodePath.join(to, "missing", "rows") : to);
+      },
+    })),
+  );
 
 /**
  * The runtime over a temp base dir holding `config` (or no file), in the caller's scope, with a
@@ -1056,6 +1074,47 @@ describe("on the Paradev CLI", () => {
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it.effect("a start removes the rows a stopped runner left, so status shows none until this runner's first pass", () => {
+    const seen: Array<boolean> = [];
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const off = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    enabled: false\n`;
+        const { loop, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", off), noGhProcess, {}, newParadev(), (paths) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            yield* fs.writeFileString(NodePath.join(paths.factoryDir, TARGETS_FILE), "[]\n");
+          }),
+        );
+        yield* idleAfter(loop, factoryDir, 1);
+        const file = NodePath.join(factoryDir, TARGETS_FILE);
+        yield* waitUntil("the targets file", () => NodeFS.existsSync(file));
+        // The first write found no file to replace: the stopped runner's rows went at start.
+        assert.deepStrictEqual(seen, [false]);
+      }),
+    ).pipe(Effect.provide(targetsFileSystem(seen, () => false)), Effect.provide(NodeServices.layer));
+  });
+
+  it.effect("a write of the target rows that fails removes the last rows, with a warning and no pass error", () => {
+    let failing = false;
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const off = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    enabled: false\n`;
+        const { loop, logs, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", off), noGhProcess, {}, newParadev());
+        yield* idleAfter(loop, factoryDir, 1);
+        const file = NodePath.join(factoryDir, TARGETS_FILE);
+        yield* waitUntil("the targets file", () => NodeFS.existsSync(file));
+        failing = true;
+        // A pass that ends while the last write is still finishing hands nothing over, and the
+        // next one does: wake passes until one has written under the failure.
+        const warned = (line: string) => line.includes("the target rows were not written");
+        for (let n = 0; n < 5 && !logs.some(warned); n++) yield* onePassMore(loop, factoryDir);
+        yield* waitUntil("the write warning", () => logs.some(warned));
+        yield* waitUntil("the rows removed", () => !NodeFS.existsSync(file));
+        assert.deepStrictEqual(eventsOf(factoryDir, "error"), []);
+      }),
+    ).pipe(Effect.provide(targetsFileSystem([], () => failing)), Effect.provide(NodeServices.layer));
+  });
 
   it.effect("with the belt off, no pass publishes or writes a belt", () =>
     Effect.scoped(

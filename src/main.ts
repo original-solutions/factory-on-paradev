@@ -1203,12 +1203,20 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       memo: beltMemo,
     };
     const hostNames = hostNamesOf(machine.hosts);
+    // `status` shows the rows in the file as this runner's last pass. Rows a stopped runner left,
+    // or ones a failed write left behind, would read as that, so both are removed.
+    const targetsFile = path.join(factoryDir, TARGETS_FILE);
+    const removeTargets = fileSystem
+      .remove(targetsFile, { force: true })
+      .pipe(Effect.catch((error) => Effect.logWarning(`the stale target rows were not removed: ${error.message}`)));
     // `status` reads only the data dir, so the pass's target rows go there whether the belt is on or not.
     const afterPass = Effect.gen(function* () {
       const nowMs = Date.now();
       const targets = yield* placer.targets;
-      yield* writeFileAtomically(path.join(factoryDir, TARGETS_FILE), targetsText(targets)).pipe(
-        Effect.catch((error) => Effect.logWarning(`the target rows were not written: ${error.message}`)),
+      yield* writeFileAtomically(targetsFile, targetsText(targets)).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning(`the target rows were not written: ${error.message}`).pipe(Effect.andThen(removeTargets)),
+        ),
       );
       if (!machine.paradev.belt.enabled) return;
       yield* writeBeltAfterPass(
@@ -1384,6 +1392,8 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       yield* Effect.logInfo("factory config reloaded");
       return yield* state.loop.wake;
     }
+    // Rows in the data dir now are a stopped runner's: gone before this one's first pass writes its own.
+    yield* removeTargets;
     // The first pass runs at once, on the config just set.
     state.loop = yield* runLoop(
       onePass,
