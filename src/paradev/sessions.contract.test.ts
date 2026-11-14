@@ -3949,6 +3949,48 @@ describe("placement is durable under the command id (#55)", () => {
     }),
   );
 
+  it.live("launchEnded is told the command id once after a fresh placement, whether the launch succeeds or fails, and not on a resend", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const ended: Array<string> = [];
+      const config = {
+        remoteBase: r.remoteBase,
+        place: () => Effect.succeed({ kind: "local" } as const),
+        launchEnded: (id: string) => Effect.sync(() => void ended.push(id)),
+      };
+      // A launch that fails: the create is refused.
+      const failing = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: argvIs("workspaces", "create"), fail: "create refused" },
+        ],
+        { config },
+      );
+      yield* failing.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.deepStrictEqual(ended, [LAUNCH_ID]);
+      // The resend reuses the placement file: it places nothing and tells nothing.
+      NodeFS.rmSync(NodePath.join(failing.data, "paradev", "launches"), { recursive: true, force: true });
+      const resend = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: argvIs("workspaces", "create"), fail: "create refused" },
+        ],
+        { config: { ...config, place: () => Effect.die("placed again") } },
+      );
+      NodeFS.cpSync(failing.data, resend.data, { recursive: true });
+      yield* resend.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.deepStrictEqual(ended, [LAUNCH_ID]);
+      // A launch that succeeds.
+      const ok = rig(
+        [...launchScript(r), { argv: argvIs("agents", "explain"), fixture: "agents-explain-local-starting" }],
+        { config },
+      );
+      yield* ok.run((s) => s.launch(request({ commandId: "softfac:o__r__2__1:launch" })));
+      assert.deepStrictEqual(ended, [LAUNCH_ID, "softfac:o__r__2__1:launch"]);
+    }),
+  );
+
   it.live("a placement that finds no room fails the launch as a wait: no create, no launch file, no placement file", () =>
     Effect.gen(function* () {
       const t = rig([], { config: { place: () => Effect.fail(new NoTargetHasRoom()) } });

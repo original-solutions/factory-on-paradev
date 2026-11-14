@@ -187,6 +187,43 @@ describe("placer", () => {
     }),
   );
 
+  it.effect("a placement whose launch has not ended still counts in the next pass, and stops when it ends", () =>
+    Effect.gen(function* () {
+      const t = setup();
+      t.placer.beginPass({ localHeld: "high load", proxy: null });
+      const first = request("hosted", 1);
+      assert.deepStrictEqual(yield* t.placer.place(first), { kind: "host", machineId: "h1", path: "/srv/hosted" });
+      // The next pass: the snapshot does not show the agent yet, but the launch is still running.
+      t.placer.beginPass({ localHeld: "high load", proxy: null });
+      const refused = yield* t.placer.place(request("hosted", 2)).pipe(Effect.flip);
+      assert.instanceOf(refused, NoTargetHasRoom);
+      // The launch ended: its agent is in the snapshot now, which is what counts.
+      yield* t.placer.launchEnded(first.commandId);
+      t.placer.beginPass({ localHeld: "high load", proxy: null });
+      assert.deepStrictEqual(yield* t.placer.place(request("hosted", 3)), {
+        kind: "host",
+        machineId: "h1",
+        path: "/srv/hosted",
+      });
+    }),
+  );
+
+  it.effect("a launch on a repo with no hosts is in flight too", () =>
+    Effect.gen(function* () {
+      const t = setup();
+      t.placer.beginPass({ localHeld: null, proxy: null });
+      const mac = request("mac");
+      assert.deepStrictEqual(yield* t.placer.place(mac), { kind: "local" });
+      t.placer.beginPass({ localHeld: null, proxy: null });
+      // This Mac holds one slot of one: the hosted repo's launch goes to the host.
+      assert.deepStrictEqual(yield* t.placer.place(request("hosted")), {
+        kind: "host",
+        machineId: "h1",
+        path: "/srv/hosted",
+      });
+    }),
+  );
+
   it.effect("a new pass reads the counts again", () =>
     Effect.gen(function* () {
       const t = setup();
