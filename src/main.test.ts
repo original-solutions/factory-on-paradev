@@ -4178,4 +4178,23 @@ describe("liveWorld: the hosts", () => {
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it.effect("a reload goes on placing through the one placer, so a launch in flight before it still counts", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const worlds: Array<PassWorld> = [];
+        const { loop, factoryDir } = yield* started(
+          configFor([["a/b", "/b"]], "/gh", HOSTS),
+          noGhProcess,
+          { ssh: healthy, onWorld: (world) => worlds.push(world) },
+          newParadev(),
+        );
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* loop.reload;
+        assert.strictEqual(worlds.length, 2);
+        // A gate fiber from the first world and a pass of the second place through the same placer.
+        assert.strictEqual(worlds[1]!.beginPlacement, worlds[0]!.beginPlacement);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
 });
