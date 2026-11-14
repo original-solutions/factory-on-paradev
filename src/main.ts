@@ -123,7 +123,7 @@ import { type CliError, layer as cliLayer, SupersetCli } from "./paradev/cli.ts"
 import { afterPass as writeBeltAfterPass, newBeltMemo } from "./paradev/belt.ts";
 import { makePlacer } from "./paradev/placer.ts";
 import { addProjectCommand } from "./paradev/projects.ts";
-import { liveProxyGet, type ProxyGet } from "./paradev/proxy.ts";
+import { checkProxy, liveProxyGet, type ProxyAnswer, type ProxyGet } from "./paradev/proxy.ts";
 import { check as checkCli, describeFailure } from "./paradev/schema.ts";
 import {
   AgentProcess,
@@ -317,6 +317,8 @@ export interface LiveGate {
   readonly readLoad?: () => Load;
   /** How a host is read over ssh. Default the `ssh` binary; a test passes the answers it needs. */
   readonly ssh?: SshSpawn;
+  /** How the cloud proxy is asked with no key. Default `fetch`; a test passes the answers it needs. */
+  readonly proxyGet?: ProxyGet;
   /** Asks the Paradev CLI (with --json) for the host checks: the parsed answer, or the error text. */
   readonly superset?: CliCall;
 }
@@ -435,6 +437,8 @@ export interface LiveShared {
   readonly hostMisses: Map<string, number>;
   /** Each host's load reading this pass: see `PassWorld.hostLoads`. */
   readonly hostLoads: Map<string, Load | null>;
+  /** Passes in a row the cloud proxy has not answered 401: see `PassWorld.proxyMisses`. */
+  readonly proxyMisses: { passes: number };
 }
 
 /** A fresh `LiveShared`, made once per process. */
@@ -450,6 +454,7 @@ export const newShared = (): LiveShared => ({
   paradevHold: { passes: 0 },
   hostMisses: new Map(),
   hostLoads: new Map(),
+  proxyMisses: { passes: 0 },
 });
 
 /** What the pass's branch prune answers: P1 prunes no branch. */
@@ -486,10 +491,12 @@ export const liveWorld = (
     paradevHold,
     hostMisses,
     hostLoads,
+    proxyMisses,
   }: LiveShared = newShared(),
 ): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown" | "beginPlacement"> => {
   const load = live.readLoad ?? readLoad;
   const ssh = live.ssh ?? liveSshSpawn(process);
+  const proxyGet = live.proxyGet ?? liveProxyGet;
   // Every host is not ready until its check has passed: a new world is a new config load.
   const hostsNotReady = new Map(
     machine.hosts.map((host) => [host.id, "not checked yet since the config load"] as const),
@@ -803,6 +810,11 @@ export const liveWorld = (
     ssh,
     hostMisses,
     hostLoads,
+    proxyMisses,
+    checkProxy: () =>
+      machine.cloud === undefined
+        ? Effect.succeed<ProxyAnswer>({ kind: "down", reason: "no cloud block in the machine config" })
+        : checkProxy(proxyGet, machine.cloud.proxy),
     hostsNotReady,
     hostCheckedAt: new Map(),
     checkHost: (host) =>
@@ -1188,6 +1200,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         scope,
         ...(options.readLoad !== undefined && { readLoad: options.readLoad }),
         ...(options.ssh !== undefined && { ssh: options.ssh }),
+        ...(options.proxyGet !== undefined && { proxyGet: options.proxyGet }),
         superset: (argv) => cli.run(argv, { timeoutMs: 30_000 }).pipe(Effect.mapError((e) => e.text.split("\n")[0] ?? e.text)),
       },
       options.gateRemoteBase,
@@ -1201,8 +1214,6 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       hostsNotReady: () => base.hostsNotReady,
       readLoad: options.readLoad ?? readLoad,
       running: Effect.suspend(() => sessions.runningByTarget),
-      proxyGet: options.proxyGet ?? liveProxyGet,
-      attention,
       record: (event) =>
         base.record(event).pipe(
           Effect.catch((error) => Effect.logWarning(`the machine log could not take a placement: ${error.message}`)),

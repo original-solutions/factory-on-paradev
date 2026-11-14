@@ -63,6 +63,7 @@ import {
   type StartError,
   type StartOutcome,
 } from "./runner/start.ts";
+import type { ProxyAnswer } from "./paradev/proxy.ts";
 import { isNoTargetHasRoom, type Model, type SessionsError } from "./sessions.ts";
 import type { StopRequestOutcome } from "./runner/stop.ts";
 import { sanitize } from "./text.ts";
@@ -403,11 +404,24 @@ export interface PassWorld {
    */
   readonly hostLoads: Map<string, Load | null>;
   /**
-   * Starts placement's pass, right after the host loads are read: it forgets the last pass's
-   * counts and proxy answer. `localHeld` is why this Mac takes no claim this pass, else null.
-   * See `paradev/placer.ts`.
+   * How many passes in a row the cloud proxy has not answered 401; kept from pass to pass, and
+   * across a config load. At `CLOUD_PROXY_DOWN_PASSES` the pass raises `cloud-proxy-down`.
    */
-  readonly beginPlacement: (localHeld: string | null) => void;
+  readonly proxyMisses: { passes: number };
+  /**
+   * Asks the cloud proxy once, with no key: `checkProxy` against `cloud.proxy`. Called once per
+   * pass, and only while `cloud` is configured and a repo names a cloud environment. Never fails.
+   */
+  readonly checkProxy: () => Effect.Effect<ProxyAnswer>;
+  /**
+   * Starts placement's pass, right after the host loads and the proxy are read: it forgets the
+   * last pass's counts. `localHeld` is why this Mac takes no claim this pass, else null; `proxy`
+   * is why cloud takes none (the proxy check did not pass), else null. See `paradev/placer.ts`.
+   */
+  readonly beginPlacement: (began: {
+    readonly localHeld: string | null;
+    readonly proxy: string | null;
+  }) => void;
   /**
    * The hosts that are not ready, by host id, with the first failing line of their last check:
    * none of them is a launch candidate. A new world starts with every configured host here, as
@@ -855,7 +869,11 @@ export const runPass = Effect.fn("Pass.runPass")(function* (
   pass.highLoad = yield* highLoad(world, machine, pass);
   pass.paradevOffline = yield* paradevOffline(world, pass);
   yield* hostLoads(world, machine, pass);
-  world.beginPlacement(pass.lowDisk ? "low disk" : pass.highLoad ? "high load" : null);
+  const proxy = yield* cloudProxy(world, machine, pass);
+  world.beginPlacement({
+    localHeld: pass.lowDisk ? "low disk" : pass.highLoad ? "high load" : null,
+    proxy,
+  });
   yield* brokenWorktrees(world, pass);
   // Without the ledger there is no telling how many runs are active, so nothing is claimed.
   const infos = yield* runs(world, pass);
@@ -1163,6 +1181,85 @@ const hostLoads = Effect.fn("Pass.hostLoads")(function* (
       message: `host ${host.name} (${host.ssh}) has not answered over ssh for ${HOST_UNREACHABLE_PASSES} passes; it takes no run until it does`,
     });
   }
+});
+
+/** Passes in a row the cloud proxy may fail to answer 401 before one attention item is raised. */
+export const CLOUD_PROXY_DOWN_PASSES = 3;
+
+/** The attention item for a proxy that has not answered for `CLOUD_PROXY_DOWN_PASSES` passes. */
+export const CLOUD_PROXY_DOWN_ITEM_ID = "cloud-proxy-down";
+
+/** The attention item for a proxy that answered 200 with no key: its key check is off. */
+export const CLOUD_PROXY_OPEN_ITEM_ID = "cloud-proxy-open";
+
+/** The port the proxy's `https://` address names, 443 when it names none. */
+const proxyPort = (proxy: string): string => {
+  try {
+    return new URL(proxy).port || "443";
+  } catch {
+    return "443";
+  }
+};
+
+/**
+ * The cloud proxy check, once per pass: `GET <proxy>/v1/models` with no key must answer 401. 200
+ * means the key check is off, so cloud takes no run and an item says so; any other answer drops
+ * cloud for the pass, and `CLOUD_PROXY_DOWN_PASSES` in a row raise `cloud-proxy-down`. Run only
+ * while `cloud` is configured and a repo names a cloud environment. Answers why cloud takes no run
+ * this pass, or null when the check passed or was not run.
+ */
+const cloudProxy = Effect.fn("Pass.cloudProxy")(function* (
+  world: PassWorld,
+  machine: MachineConfig,
+  pass: Pass,
+) {
+  const cloud = machine.cloud;
+  if (cloud === undefined || !machine.repos.some((entry) => entry.cloud !== undefined)) {
+    world.proxyMisses.passes = 0;
+    yield* world.attention.clear(
+      (item) => item.id === CLOUD_PROXY_DOWN_ITEM_ID || item.id === CLOUD_PROXY_OPEN_ITEM_ID,
+    );
+    return null;
+  }
+  const answer = yield* world.checkProxy();
+  if (answer.kind === "guarded") {
+    world.proxyMisses.passes = 0;
+    yield* world.attention.clear(
+      (item) => item.id === CLOUD_PROXY_DOWN_ITEM_ID || item.id === CLOUD_PROXY_OPEN_ITEM_ID,
+    );
+    return null;
+  }
+  if (answer.kind === "open") {
+    world.proxyMisses.passes = 0;
+    yield* world.attention.clear((item) => item.id === CLOUD_PROXY_DOWN_ITEM_ID);
+    pass.line(`cloud proxy: ${cloud.proxy} answered 200 to a call with no key; its key check is off, so cloud takes no run`);
+    pass.report.attention += 1;
+    yield* world.attention.raise({
+      id: CLOUD_PROXY_OPEN_ITEM_ID,
+      kind: "attention",
+      repo: null,
+      issue: null,
+      run: null,
+      message: `the cloud proxy at ${cloud.proxy} answered 200 to a call with no key, so its key check is off; cloud takes no run until it is back on`,
+    });
+    return "the proxy's key check is off (it answered 200 with no key)";
+  }
+  world.proxyMisses.passes += 1;
+  yield* world.attention.clear((item) => item.id === CLOUD_PROXY_OPEN_ITEM_ID);
+  pass.line(`cloud proxy: the check failed (${plain(answer.reason)}); cloud takes no run this pass`);
+  if (world.proxyMisses.passes >= CLOUD_PROXY_DOWN_PASSES) {
+    pass.report.attention += 1;
+    // No error text: an open item is not raised again, so it would go stale.
+    yield* world.attention.raise({
+      id: CLOUD_PROXY_DOWN_ITEM_ID,
+      kind: "attention",
+      repo: null,
+      issue: null,
+      run: null,
+      message: `the cloud proxy at ${cloud.proxy} has not answered 401 for ${CLOUD_PROXY_DOWN_PASSES} passes; cloud takes no run until it does; on the proxy's Mac check the CLI Proxy API is up and the Funnel is on: tailscale funnel status, and tailscale funnel --bg --https=${proxyPort(cloud.proxy)} <the proxy's local port>`,
+    });
+  }
+  return `the proxy check failed: ${answer.reason}`;
 });
 
 /** How long after its last check a host that is not ready is checked again. */
