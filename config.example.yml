@@ -74,6 +74,8 @@ repos: []
 #     hosts:
 #       - id: c9c39956e0c1756e30d6bb9f4f907ff1
 #         path: /Users/tomk/factory-runner/original-solutions/factory-paradev-spike
+#         # Optional: the GitHub login this repo's runs on this host act as, over the host's gh_login.
+#         gh_login: tomkaczocha
 #     # Optional: a Paradev Cloud environment id that has this repo. Needs the cloud block.
 #     cloud: edad9805-e48d-40f3-a06c-e19a4105f974
 #
@@ -90,6 +92,9 @@ repos: []
 #     # The 1-minute load per core above which the host takes no run. 0 turns the check off.
 #     # Defaults to 1.
 #     max_load_per_core: 1
+#     # Optional: the GitHub login runs on this host act as, when its terminal's active gh login
+#     # is another one. Defaults to the runner's own login.
+#     gh_login: tomkaczocha
 #
 # # Present when some repo names a cloud environment.
 # cloud:

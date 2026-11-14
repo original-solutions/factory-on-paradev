@@ -28,6 +28,7 @@ import {
   DEFAULT_POLL_SECONDS,
   factoryOptIn,
   formatConfigError,
+  hostGhLogin,
   loadMachineConfig,
   paradevModel,
   parseProjectConfig,
@@ -526,9 +527,17 @@ export const liveWorld = (
   // A claim made while its model cools down from a rate limit launches on the model's fallback.
   const modelNow = (model: Model) =>
     launchModel(cooldowns, machine.modelFallbacks, model, clock()) ?? model;
+  // The login a run of the repo acts as on each host it lists.
+  const hostLoginsOf = (repo: Repo): ReadonlyMap<string, string> =>
+    new Map(
+      (repo.watched.hosts ?? []).map(
+        (on) => [on.id, hostGhLogin(machine.hosts, repo.watched, on.id, repo.trackerUser)] as const,
+      ),
+    );
   const startContext = (repo: Repo): StartContext => ({
     repo: repo.watched.repo,
     trackerUser: repo.trackerUser,
+    hostLogins: hostLoginsOf(repo),
     machine: host,
     project: repo.project,
     dataDir,
@@ -543,6 +552,7 @@ export const liveWorld = (
   const buildingContext = (repo: Repo, project: ProjectConfig): BuildingContext => ({
     repo: repo.watched.repo,
     trackerUser: repo.trackerUser,
+    hostLogins: hostLoginsOf(repo),
     machine: host,
     project,
     dataDir,
@@ -839,7 +849,14 @@ export const liveWorld = (
     hostCheckedAt: new Map(),
     checkHost: (host) =>
       checkHost(
-        { ssh, superset: live.superset ?? (() => Effect.fail("no Paradev CLI to ask")) },
+        {
+          ssh,
+          superset: live.superset ?? (() => Effect.fail("no Paradev CLI to ask")),
+          // The login ignores the repo: any configured one will do.
+          runnerLogin: withProcess(
+            makeGitHub({ repo: machine.repos[0]?.repo ?? "", ghConfigDir: machine.ghConfigDir }).login(),
+          ).pipe(Effect.mapError((error) => error.message)),
+        },
         machine,
         host,
       ),

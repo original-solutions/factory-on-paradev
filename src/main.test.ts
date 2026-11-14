@@ -4423,7 +4423,8 @@ describe("liveWorld: the hosts", () => {
         const paradev = newParadev();
         paradev.hostsList = [{ id: "h1", name: "mini", online: "yes" }];
         const { loop, factoryDir } = yield* started(
-          configFor([["a/b", "/b"]], "/gh", HOSTS),
+          // The host names its login, so the check does not need the runner's, which noGhProcess cannot read.
+          configFor([["a/b", "/b"]], "/gh", `${HOSTS}    gh_login: tomkaczocha\n`),
           noGhProcess,
           { ssh: healthy, onWorld: (world) => worlds.push(world) },
           paradev,

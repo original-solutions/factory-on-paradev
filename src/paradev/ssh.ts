@@ -150,6 +150,9 @@ export const PROXY_ENV_READ = `python3 -c '${PROXY_ENV_SCRIPT}'`;
 export const GIT_EMAIL = "git config --global user.email";
 /** Whether the host's `gh` is logged in. */
 export const GH_AUTH_STATUS = "gh auth status";
+/** Whether the host's `gh` holds a token for `login`; the token itself goes to /dev/null. */
+export const ghTokenCheck = (login: string): string =>
+  `gh auth token --user ${shellQuote(login)} >/dev/null 2>&1`;
 /** Whether Claude Code is installed on the host. */
 export const CLAUDE_VERSION = "claude --version";
 
@@ -223,6 +226,7 @@ const CONSTANTS: ReadonlySet<string> = new Set([
 
 const SHAPES: ReadonlyArray<RegExp> = [
   remoteUrl(WORD),
+  ghTokenCheck(WORD),
   trustRead(WORD),
   // The adapter's git calls in a worktree on a host: the base check, its fetch and its reset,
   // and `worktreeCheckout`'s reads.

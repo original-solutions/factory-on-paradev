@@ -701,7 +701,10 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         "agents", "create", ...inWorkspace(record), "--agent", record.agent,
         ...(request.model.model === "" ? [] : ["--model", request.model.model]),
         ...(typeof effort === "string" ? ["--effort", effort] : []),
-        "--prompt", request.message,
+        "--prompt",
+        record.target.kind === "host" && request.hostMessage !== undefined
+          ? request.hostMessage(record.target.machineId)
+          : request.message,
       ];
       // No retry: a second create could start a second agent. `startAgent` looks for the agent
       // when this fails.

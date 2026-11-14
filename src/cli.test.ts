@@ -12,6 +12,7 @@ import type { CommandResult } from "./install.ts";
 import {
   CLAUDE_VERSION,
   GH_AUTH_STATUS,
+  ghTokenCheck,
   GIT_EMAIL,
   PROXY_ENV_READ,
   remoteUrl,
@@ -362,6 +363,7 @@ ${PARADEV}`;
       [PROXY_ENV_READ]: good(""),
       [GIT_EMAIL]: good("me@example.com\n"),
       [GH_AUTH_STATUS]: good("ok"),
+      [ghTokenCheck("rawphp")]: good(""),
       [CLAUDE_VERSION]: good("2.1.0"),
       ...answers,
     };
@@ -371,6 +373,8 @@ ${PARADEV}`;
         return ssh[args.at(-1) ?? ""] ?? { status: 1, stdout: "", stderr: "no answer" };
       }
       calls.push(`${command} ${args.join(" ")}`);
+      // The runner's own login, read with its gh_config_dir.
+      if (command === "env" && args.includes("api")) return good("rawphp\n");
       const key = args.filter((arg) => arg !== "--json").join(" ");
       if (key === "hosts list") {
         return good(JSON.stringify([{ id: "h1", name: "mini", online: "yes" }, { id: "h2", name: "studio", online: "yes" }]));

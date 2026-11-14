@@ -30,6 +30,8 @@ export type RunError =
 /** What the stop and finish paths call: the tracker and the sessions, whichever step runs them. */
 export interface RunContext {
   readonly trackerUser: string;
+  /** Machine id to the GitHub login a run of this repo acts as on that host, for each host the repo lists. */
+  readonly hostLogins: ReadonlyMap<string, string>;
   readonly machine: string;
   /** The base branch: the work a stop leaves is counted against it. */
   readonly project: { readonly base: string };

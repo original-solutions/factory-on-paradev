@@ -26,6 +26,7 @@ import * as Gate from "./gate.ts";
 import {
   CLAUDE_VERSION,
   GH_AUTH_STATUS,
+  ghTokenCheck,
   GIT_EMAIL,
   LOAD_COMMAND,
   PROXY_ENV_READ,
@@ -1219,6 +1220,7 @@ const placementRun = (spec: PlacementSpec) =>
           if (command === PROXY_ENV_READ) return answer("");
           if (command === GIT_EMAIL) return answer("me@example.com\n");
           if (command === GH_AUTH_STATUS) return answer("Logged in\n");
+          if (command === ghTokenCheck(LOGIN)) return answer("");
           if (command === CLAUDE_VERSION) return answer("2.1.0\n");
           if (command.includes("'rev-parse'")) return answer(`${baseSha}\n`);
           return { exitCode: 1, timedOut: false, stdout: "", stderr: `no answer for ${command}` };

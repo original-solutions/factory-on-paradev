@@ -308,7 +308,7 @@ describe("checkHost", () => {
 });
 
 describe("checkHost: gh login", () => {
-  const withLogins = (host: Partial<HostConfig>, repoHosts: ReadonlyArray<{ id: string; path: string; ghLogin?: string }>) =>
+  const withLogins = (host: Partial<HostConfig>, repoHosts: Array<{ id: string; path: string; ghLogin?: string }>) =>
     machineOf([{ ...HOST, ...host }], repoHosts);
   const ghLines = (lines: ReadonlyArray<CheckLine>) => lines.filter((l) => l.check.startsWith("gh login"));
 

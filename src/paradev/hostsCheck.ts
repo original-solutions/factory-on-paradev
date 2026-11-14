@@ -1,5 +1,5 @@
 /**
- * `factory-runner hosts check`: the ten checks a host must pass before it gets runs, read over SSH
+ * `factory-runner hosts check`: the checks a host must pass before it gets runs, read over SSH
  * and through the Superset CLI, each with the fix the person runs when it fails. It writes nothing
  * on the host (decision U4). The same checks run at `install`, and beside the pass: every host
  * right after each config load, then a host that is not ready every 5 minutes and a ready one
@@ -15,6 +15,7 @@ import {
   CLAUDE_VERSION,
   fromCommandRunner,
   GH_AUTH_STATUS,
+  ghTokenCheck,
   GIT_EMAIL,
   PROXY_ENV_READ,
   remoteUrl,
@@ -33,6 +34,8 @@ export interface HostCheckIo {
   readonly ssh: SshSpawn;
   /** Runs `superset <argv> --json`: the parsed answer, or the error text. */
   readonly superset: (argv: ReadonlyArray<string>) => Effect.Effect<unknown, string>;
+  /** The runner's own gh login, which a host without a `gh_login` runs as; the error text when it cannot be read. */
+  readonly runnerLogin: Effect.Effect<string, string>;
 }
 
 /** How the checks ask the Paradev CLI: the parsed answer, or the error text. */
@@ -111,10 +114,12 @@ const proxyFix = (stdout: string): string | null => {
 };
 
 /**
- * Runs the ten checks of the spec's table for one host, in its order: online, ssh, cli, then clone,
- * project and trusted for each repo that lists the host, then proxy env, git identity, gh and
- * claude. `hosts list` and `projects list --host` are read once. When ssh fails the later ssh
- * lines are `not checked`; when the CLI fails the project lines are.
+ * Runs the checks of the spec's table for one host, in its order: online, ssh, cli, then clone,
+ * project and trusted for each repo that lists the host, then proxy env, git identity, gh, a
+ * `gh login` line for each distinct login a run on the host acts as, and claude. `hosts list` and
+ * `projects list --host` are read once, and the runner's login only when a login falls back to
+ * it. When ssh fails the later ssh lines are `not checked`; when the CLI fails the project lines
+ * are.
  */
 export const checkHost = (
   io: HostCheckIo,
@@ -126,7 +131,7 @@ export const checkHost = (
     const repos = machine.repos.flatMap((entry) =>
       (entry.hosts ?? [])
         .filter((on) => on.id === host.id)
-        .map((on) => ({ repo: entry.repo, path: on.path })),
+        .map((on) => ({ repo: entry.repo, path: on.path, ghLogin: on.ghLogin })),
     );
     const lines: Array<CheckLine> = [];
 
@@ -209,8 +214,39 @@ export const checkHost = (
       );
     }
 
+    // The logins a run on this host acts as: the host's, then each repo's; none named means the runner's.
+    const named = [host.ghLogin, ...repos.map((r) => r.ghLogin ?? host.ghLogin)];
+    const runner = named.includes(undefined) ? yield* Effect.result(io.runnerLogin) : null;
+    const logins: Array<string> = [];
+    for (const login of named.map((l) => l ?? (runner?._tag === "Success" ? runner.success : undefined))) {
+      if (login !== undefined && !logins.some((seen) => seen.toLowerCase() === login.toLowerCase())) logins.push(login);
+    }
+    const loginLines = Effect.gen(function* () {
+      const out: Array<CheckLine> = [];
+      for (const login of logins) {
+        const check = `gh login ${login}`;
+        if (!sshOk) {
+          out.push(skipped(check, SSH_SKIPPED));
+          continue;
+        }
+        const token = yield* ssh(ghTokenCheck(login));
+        out.push(line(check, token._tag === "Success" ? null : `gh auth login as ${login} on the host`));
+      }
+      if (runner?._tag === "Failure") {
+        out.push({
+          check: "gh login",
+          ok: false,
+          text: "not checked: the runner's gh login could not be read",
+          detail: runner.failure,
+        });
+      }
+      return out;
+    });
+
     if (!sshOk) {
-      for (const check of ["proxy env", "git identity", "gh", "claude"]) lines.push(skipped(check, SSH_SKIPPED));
+      for (const check of ["proxy env", "git identity", "gh"]) lines.push(skipped(check, SSH_SKIPPED));
+      lines.push(...(yield* loginLines));
+      lines.push(skipped("claude", SSH_SKIPPED));
       return lines;
     }
     const proxy = yield* ssh(PROXY_ENV_READ);
@@ -232,6 +268,7 @@ export const checkHost = (
         missingFrom(gh, "gh"),
       ),
     );
+    lines.push(...(yield* loginLines));
     const claude = yield* ssh(CLAUDE_VERSION);
     lines.push(
       line(
@@ -286,7 +323,10 @@ const cliErrorText = (done: SyncCommandResult): string =>
  * for 30 s. Each gets only its own environment names (`SSH_ENV`, and the CLI's `CLI_ENV`), so a
  * token exported in the shell reaches neither.
  */
-export const hostCheckIoFromCommands = (run: SyncCommandRun, cli: string): HostCheckIo => ({
+export const hostCheckIoFromCommands = (
+  run: SyncCommandRun,
+  cli: string,
+): Omit<HostCheckIo, "runnerLogin"> => ({
   ssh: fromCommandRunner(run),
   superset: (argv) =>
     Effect.suspend(() => {
@@ -299,6 +339,21 @@ export const hostCheckIoFromCommands = (run: SyncCommandRun, cli: string): HostC
     }),
 });
 
+/** The runner's gh login, read with the runner's own `gh_config_dir`. */
+const runnerLoginFromCommands = (run: SyncCommandRun, config: MachineConfig): Effect.Effect<string, string> =>
+  Effect.suspend(() => {
+    const done = run(
+      "env",
+      [`GH_CONFIG_DIR=${config.ghConfigDir}`, "gh", "api", "user", "--jq", ".login"],
+      30_000,
+      CLI_ENV,
+    );
+    const login = done.stdout.trim();
+    return done.status === 0 && login !== ""
+      ? Effect.succeed(login)
+      : Effect.fail(done.status === 0 ? "gh printed no login" : cliErrorText(done));
+  });
+
 /**
  * Runs and prints `hosts check` for each of `hosts`, one after another, as the CLI and install do:
  * each host's lines, then for a host that fails, that it gets no run. True when every line is ok.
@@ -309,7 +364,7 @@ export const printHostChecks = async (
   hosts: ReadonlyArray<HostConfig>,
   out: (line: string) => void,
 ): Promise<boolean> => {
-  const io = hostCheckIoFromCommands(run, config.paradev.cli);
+  const io = { ...hostCheckIoFromCommands(run, config.paradev.cli), runnerLogin: runnerLoginFromCommands(run, config) };
   let ok = true;
   for (const host of hosts) {
     const lines = await Effect.runPromise(checkHost(io, config, host));

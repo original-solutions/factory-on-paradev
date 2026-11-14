@@ -64,6 +64,8 @@ export interface LaunchRequest {
   readonly baseRef: string;
   /** The first message, which starts the first run. */
   readonly message: string;
+  /** The first message when the launch is placed on host `machineId`. Absent: `message` on every target. */
+  readonly hostMessage?: (machineId: string) => string;
   readonly model: Model;
   /**
    * The pull request the thread continues, linked to the thread at launch. Absent for a plain

@@ -209,6 +209,10 @@ const resumeParagraph = (resumed: ResumeFrom): string => {
 const STAY_ON_BRANCH =
   "Stay on the branch the worktree was launched on: never run `git checkout -b`, `git switch -c` or any command that creates or switches branches, and push the current branch with `git push -u origin HEAD`, unless told below to push to a named branch.";
 
+/** Everything of the first message but its account paragraph. */
+const launchBody = (repo: string, issue: number, resumed?: ResumeFrom, base?: string): string =>
+  `/factory ${repo}#${issue}\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${STAY_ON_BRANCH}${base === undefined ? "" : ` Open the pull request against ${base}, not the repo's default base.`}${resumed === undefined ? "" : `\n\n${resumeParagraph(resumed)}`}`;
+
 /**
  * The first message of a session for a GitHub issue: invokes `/factory`, says nobody is in the
  * chat, tells it to stay on its branch, names the base branch when the issue's `## Base` differs from the repo's (`base`), adds the
@@ -223,7 +227,22 @@ export const launchMessage = (
   resumed?: ResumeFrom,
   base?: string,
 ): string =>
-  `/factory ${repo}#${issue}\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${STAY_ON_BRANCH}${base === undefined ? "" : ` Open the pull request against ${base}, not the repo's default base.`}${resumed === undefined ? "" : `\n\n${resumeParagraph(resumed)}`}\n\nYou act on GitHub as ${login}. Paradev started this session with this Mac's gh login. Before anything else run gh api user --jq .login exactly as written, in the environment you were started with. Never set GH_CONFIG_DIR, GH_TOKEN or GH_HOST, and never use gh auth token or gh auth switch, on any command. If it prints any other login, end with FACTORY-STOP: stuck and make the first line of your message "${WRONG_ACCOUNT_PREFIX}<x>, not ${login}".`;
+  `${launchBody(repo, issue, resumed, base)}\n\nYou act on GitHub as ${login}. Paradev started this session with this Mac's gh login. Before anything else run gh api user --jq .login exactly as written, in the environment you were started with. Never set GH_CONFIG_DIR, GH_TOKEN or GH_HOST, and never use gh auth token or gh auth switch, on any command. If it prints any other login, end with FACTORY-STOP: stuck and make the first line of your message "${WRONG_ACCOUNT_PREFIX}<x>, not ${login}".`;
+
+/**
+ * `launchMessage` for a session placed on a Paradev host. The host terminal's active `gh` login
+ * may not be `login`, so a session that finds another one selects `login` by its token, call by
+ * call, as the factory skill's GitHub account rule says; it stops only when the host has no token
+ * for `login`.
+ */
+export const hostLaunchMessage = (
+  repo: string,
+  issue: number,
+  login: string,
+  resumed?: ResumeFrom,
+  base?: string,
+): string =>
+  `${launchBody(repo, issue, resumed, base)}\n\nYou act on GitHub as ${login}. Paradev started this session on a host whose terminal's active gh login may be another one. Before anything else run gh api user --jq .login exactly as written, in the environment you were started with. If it prints ${login}, carry on. If it prints another login, act as ${login} for every gh and git call that reaches GitHub, by the factory skill's GitHub account rule: prefix each with GH_TOKEN=$(gh auth token --user ${login}) inline, and give each such git call -c credential.helper= -c 'credential.helper=!gh auth git-credential' as well. Never print, echo or export the token or write it anywhere, never set GH_CONFIG_DIR or GH_HOST, and never use gh auth switch. If gh auth token --user ${login} finds no token, end with FACTORY-STOP: stuck and make the first line of your message "${WRONG_ACCOUNT_PREFIX}<x>, not ${login}".`;
 
 /** The issue's single status comment. */
 export const statusBody = (
@@ -261,9 +280,9 @@ export const rateLimitedMessage = (model: string | null): string =>
     ? `${RATE_LIMITED} It waited for the limit to cool down before sending this. ${CONTINUE}`
     : `${RATE_LIMITED} It moved this thread to ${model}, which is not limited, to carry on. ${CONTINUE}`;
 
-/** The public reason when the session's `gh` acts as another GitHub account than the launch message names. */
+/** The public reason when the session's `gh` cannot act as the GitHub login the run names. */
 export const WRONG_ACCOUNT =
-  "the session ran as the wrong GitHub account: restart the factory's T3 server so it has GH_CONFIG_DIR, then set factory:ready again";
+  "the session's gh could not act as the login the run names: for a host run, run factory-runner hosts check <name>; for a local run, check this Mac's active gh login; then set factory:ready again";
 
 /** The public reason of a run stopped for taking longer than `limits.minutes`. */
 export const TIME_LIMIT = "the run passed its time limit";
