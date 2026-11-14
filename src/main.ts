@@ -883,6 +883,8 @@ export interface RuntimeOptions {
   readonly gateRemoteBase?: string;
   /** Called with each world a start or reload builds, once the world is built: for a test that needs the pass world a reload built. */
   readonly onWorld?: (world: PassWorld) => void;
+  /** Called once with the one placer the factory places every launch through: for a test that places a launch itself. */
+  readonly onPlacer?: (placer: ReturnType<typeof makePlacer>) => void;
   /** How a directory's free space is read. Default `statfs`; a test passes the sizes it needs. */
   readonly readFreeSpace?: (path: string) => FreeSpace;
   /** How the machine's load is read. Default `os.loadavg`; a test passes the load it needs. */
@@ -1043,6 +1045,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     running: Effect.suspend(() => placingNow().running),
     record: (event) => Effect.suspend(() => placingNow().record(event)),
   });
+  options.onPlacer?.(placer);
   // The last belt written, and the run reads it was made from: kept across reloads.
   const beltMemo = newBeltMemo();
   const beltRuns: RunReadCache = new Map();
