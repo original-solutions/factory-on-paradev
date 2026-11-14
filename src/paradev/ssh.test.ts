@@ -117,6 +117,10 @@ describe("isAllowed", () => {
     }
   });
 
+  it("sends the token check's output to /dev/null", () => {
+    assert.strictEqual(ghTokenCheck("octo"), "gh auth token --user 'octo' >/dev/null 2>&1");
+  });
+
   it("refuses the unquoted and quote-breaking forms of each shape that takes a word", () => {
     const refused = [
       "git -C /wt remote get-url origin",
@@ -126,6 +130,10 @@ describe("isAllowed", () => {
       `python3 -c '${TRUST_SCRIPT}' 'a' 'b'`,
       ghTokenCheck("x").replace("'x'", "x"),
       ghTokenCheck("x").replace("'x'", "'x' 'y'"),
+      // The token's output must never leave the host: both redirects are required.
+      ghTokenCheck("x").replace(" >/dev/null 2>&1", ""),
+      ghTokenCheck("x").replace(" 2>&1", ""),
+      ghTokenCheck("x").replace(" >/dev/null", ""),
     ];
     for (const command of refused) assert.isFalse(isAllowed(command), command);
   });
