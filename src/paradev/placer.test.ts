@@ -397,6 +397,23 @@ describe("placer", () => {
       }),
     );
 
+    it.effect("that is refused carries the pin, and a full refusal does not", () =>
+      Effect.gen(function* () {
+        const full = [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "host", machineId: "h1" }, running: 1 },
+        ] as const;
+        const t = setup({ counts: full });
+        t.placer.beginPass({ localHeld: null, proxy: null });
+        const pinned = yield* t.placer.place(request("hosted", 1), HOST_TARGET).pipe(Effect.flip);
+        assert.instanceOf(pinned, NoTargetHasRoom);
+        assert.equal(pinned.pinned, "mini: slots full: 1 of 1 running");
+        const unpinned = yield* t.placer.place(request("hosted", 2)).pipe(Effect.flip);
+        assert.instanceOf(unpinned, NoTargetHasRoom);
+        assert.equal(unpinned.pinned, undefined);
+      }),
+    );
+
     it.effect("on a host that is not ready, or over its load, is refused", () =>
       Effect.gen(function* () {
         const notReady = setup({ notReady: new Map([["h1", "claude is not trusted"]]) });
