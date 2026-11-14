@@ -4526,7 +4526,8 @@ describe("self-update wiring", () => {
         assert.strictEqual(runs.length, 1);
         assert.strictEqual(afterPasses, 2);
         assert.strictEqual(made.length, 1);
-        // `enabled` reads the config loaded now: a reload that changes the key changes the answer.
+        // `enabled` reads the config loaded now, so a reload changes the answer. Nothing reloads the
+        // config at run time yet: in production the key changes at a restart.
         assert.strictEqual(runs[0]!(), false);
         yield* write(`${VALID}self_update: true\n`);
         yield* loop.reload;

@@ -11,7 +11,9 @@
  *
  * Only a runner that `install` placed under `versions/` updates itself: a checkout run by hand is
  * never replaced under a developer. `self_update` is read from the loaded config before each tag
- * read and before the restart, so a reload that turns it off stops the update where it is.
+ * read and before the restart. Nothing reloads the config while the runner runs, so the key counts
+ * from the next start: to hold back a staged update, set it to false and restart the runner, which
+ * starts the running version again (`current` has not moved) with the key off.
  */
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";

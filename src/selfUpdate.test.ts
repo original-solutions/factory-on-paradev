@@ -746,12 +746,13 @@ describe("self-update", () => {
         yield* TestClock.adjust(TEN_MINUTES);
         expect(f.calls).toEqual([]);
         expect(loud(f)).toEqual([{ level: "Info", text: OFF_LINE }]);
-        // A reload turned it on: the next period reads the tags and stages.
+        // The key is now on (a reload, which no production path triggers yet, or a restart): the
+        // next period reads the tags and stages.
         f.answers.enabled = true;
         yield* TestClock.adjust(TEN_MINUTES);
         expect(commands(f)).toEqual(STAGING);
         expect(update.staged()).toBe(true);
-        // A reload turned it off again: the staged update does not restart the runner, said once.
+        // The key is off again: the staged update does not restart the runner, said once.
         f.answers.enabled = false;
         yield* update.afterPass;
         yield* update.afterPass;
