@@ -2664,6 +2664,7 @@ describe("every call carries the record's target", () => {
     const source = NodeFS.readFileSync(NodePath.join(import.meta.dirname, "sessions.ts"), "utf8");
     const lines = source.split("\n").filter((line) => line.includes('"--local"'));
     assert.strictEqual(lines.length, 1, lines.join("\n"));
+    assert.include(lines[0], '["--local"] : ["--host"');
   });
 
   it.effect("a thread id naming another target than its record is ThreadNotFoundError", () =>
@@ -3006,7 +3007,9 @@ describe("status on a host", () => {
   it.effect("a lookup that SSH cannot reach, that exits non-zero, or that does not finish keeps the run running", () =>
     Effect.gen(function* () {
       assert.strictEqual((yield* silent("unreachable")).run, "running");
-      assert.strictEqual((yield* silent({ exitCode: 3, tail: "" })).run, "running");
+      const { logs, result } = yield* logged(silent({ exitCode: 3, tail: "" }));
+      assert.strictEqual(result.run, "running");
+      assert.isTrue(logs.some((line) => line.startsWith("Warn ") && line.includes("did not finish (exit 3)")), logs.join("\n"));
       assert.strictEqual((yield* silent({ tail: `W${H5_PATH}\n` })).run, "running");
     }),
   );
@@ -3248,60 +3251,47 @@ describe("the orphan sweep", () => {
   const NOW = Date.parse("2026-11-13T12:00:00.000Z");
   const ago = (ms: number) => new Date(NOW - ms).toISOString();
   const OBJECT_TAG = "f1e2d3c4-0000-4000-8000-000000000001";
-  const STALE = "c1e2d3c4-0000-4000-8000-000000000005";
+  const NO_AGENT = "c1e2d3c4-0000-4000-8000-000000000005";
   const TORN = "b1e2d3c4-0000-4000-8000-000000000006";
   const listArgv = ["workspaces", "list", "--host", "cloud"];
-  const archived = (id: string): Step => ({
-    argv: ["workspaces", "archive", id, "--host", "cloud"],
-    answer: { deleted: [id], notFound: [], failed: [], warnings: [] },
-  });
-  /** The recorded row, as each case of the sweep: only C6, OBJECT_TAG and STALE are its own to archive. */
+  /** The recorded row, as each case of the sweep: only C6 and OBJECT_TAG are orphans. */
   const rows = (answer: unknown) => {
     const [row] = answer as ReadonlyArray<Record<string, unknown>>;
-    const own = { ...row, environmentId: ENV, tags: ["factory"], createdAt: ago(60 * MINUTE) };
+    const tagged = { ...row, tags: ["factory"], createdAt: ago(60 * MINUTE) };
     return [
-      { ...own, id: C6_WS, name: "fac/6-1", createdAt: ago(11 * MINUTE) },
-      { ...own, id: C3_WS, name: "fac/3-1" }, // a live run's record
-      { ...own, id: "d1e2d3c4-0000-4000-8000-000000000002", name: "fac/2-1", tags: [] }, // no tag
-      { ...own, id: "e1e2d3c4-0000-4000-8000-000000000003", name: "fac/4-1", createdAt: ago(9 * MINUTE) }, // too young
-      { ...own, id: "a1e2d3c4-0000-4000-8000-000000000004", name: "fac/5-1", status: "deleted" },
-      { ...own, id: "a2e2d3c4-0000-4000-8000-000000000007", name: "fac/7-1", environmentId: "another-environment" },
-      { ...own, id: "a3e2d3c4-0000-4000-8000-000000000008", name: "a person's spike" },
-      { ...own, id: TORN, name: "fac/8-1" }, // a record that does not read back
-      { ...own, id: OBJECT_TAG, name: "fac/9-1", tags: [{ name: "factory" }] },
-      { ...own, id: STALE, name: "fac/10-1", createdAt: ago(16 * MINUTE) }, // a record whose agent never started
+      { ...tagged, id: C6_WS, name: "fac/6-1", createdAt: ago(11 * MINUTE) },
+      { ...tagged, id: C3_WS }, // a live run's record
+      { ...tagged, id: NO_AGENT }, // a record whose agent never started: still the core's
+      { ...tagged, id: TORN }, // a record file that does not read back
+      { ...tagged, id: "d1e2d3c4-0000-4000-8000-000000000002", tags: [] },
+      { ...tagged, id: "e1e2d3c4-0000-4000-8000-000000000003", createdAt: ago(9 * MINUTE) },
+      { ...tagged, id: "a1e2d3c4-0000-4000-8000-000000000004", status: "deleted" },
+      { ...tagged, id: OBJECT_TAG, tags: [{ name: "factory" }] },
     ];
   };
   const seedSweep = (data: string) =>
     Effect.gen(function* () {
-      yield* seed(
-        data,
-        cloudRecord(),
-        cloudRecord({ threadId: `cloud:${STALE}`, workspaceId: STALE, terminals: [], turns: [] }),
-      );
-      const threads = NodePath.join(data, "paradev", "threads");
-      NodeFS.writeFileSync(NodePath.join(threads, `${TORN}.json`), '{"v":2,"thre');
+      yield* seed(data, cloudRecord(), cloudRecord({ threadId: `cloud:${NO_AGENT}`, workspaceId: NO_AGENT, terminals: [], turns: [] }));
+      NodeFS.writeFileSync(NodePath.join(data, "paradev", "threads", `${TORN}.json`), '{"v":2,"thre');
     });
 
-  it.effect("archives its own orphans in the configured environments, and a record whose agent never started, one line each", () =>
+  it.effect("archives each cloud workspace tagged factory, with no thread record, created over 10 minutes ago, one line each", () =>
     Effect.gen(function* () {
       const t = rig([
         { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: rows },
         recorded("ws-archive-cloud-6"),
-        archived(OBJECT_TAG),
-        archived(STALE),
+        { argv: ["workspaces", "archive", OBJECT_TAG, "--host", "cloud"], answer: { deleted: [OBJECT_TAG], notFound: [], failed: [], warnings: [] } },
       ]);
       yield* seedSweep(t.data);
       yield* TestClock.setTime(NOW);
-      const { logs } = yield* logged(t.run((s) => s.sweepOrphans([ENV])));
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
       assert.deepStrictEqual(t.unused(), []);
-      assert.strictEqual(t.calls.length, 4);
-      assert.strictEqual(logs.length, 3, logs.join("\n"));
+      assert.strictEqual(t.calls.length, 3);
+      assert.strictEqual(logs.length, 2, logs.join("\n"));
       assert.include(logs[0], `archived cloud workspace ${C6_WS} (fac/6-1)`);
       assert.include(logs[1], `archived cloud workspace ${OBJECT_TAG}`);
-      assert.include(logs[2], `archived cloud workspace ${STALE} (fac/10-1): its launch never started an agent`);
-      const stale = yield* readThread(t.data, STALE).pipe(Effect.provide(NodeServices.layer));
-      assert.isNotNull(stale!.archivedAt);
+      const untouched = yield* readThread(t.data, NO_AGENT).pipe(Effect.provide(NodeServices.layer));
+      assert.isNull(untouched!.archivedAt);
     }),
   );
 
@@ -3310,23 +3300,14 @@ describe("the orphan sweep", () => {
       const t = rig([
         { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: rows },
         { argv: readFixture("ws-archive-cloud-6").argv, fail: "Workspace is busy" },
-        archived(OBJECT_TAG),
-        archived(STALE),
+        { argv: ["workspaces", "archive", OBJECT_TAG, "--host", "cloud"], answer: { deleted: [OBJECT_TAG], notFound: [], failed: [], warnings: [] } },
       ]);
       yield* seedSweep(t.data);
       yield* TestClock.setTime(NOW);
-      const { logs } = yield* logged(t.run((s) => s.sweepOrphans([ENV])));
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
       assert.deepStrictEqual(t.unused(), []);
-      assert.strictEqual(logs.length, 3, logs.join("\n"));
+      assert.strictEqual(logs.length, 2, logs.join("\n"));
       assert.match(logs[0]!, /^Warn could not archive the orphaned cloud workspace /);
-    }),
-  );
-
-  it.effect("with no environment configured it lists nothing", () =>
-    Effect.gen(function* () {
-      const t = rig([]);
-      yield* t.run((s) => s.sweepOrphans([]));
-      assert.deepStrictEqual(t.calls, []);
     }),
   );
 });
@@ -3348,6 +3329,8 @@ describe("cycle 1: liveness a send can trust, and what a failed cloud launch lea
         { argv: ["terminals", "close", ...where, "--terminal", C3_TERM], answer: { terminalId: C3_TERM, status: "disposed" } },
         ...helperSteps(C3_WS, "FACTORY-SESSION-DONE", `${session}\nFACTORY-SESSION-DONE\n❯ `, "terminals-create-cloud-6-sessions"),
         { argv: ["agents", "create", ...where, "--agent", "claude", "--resume-session", C6_SESSION, "--prompt", cloudText], fixture: "agents-create-cloud-resume" },
+        { argv: ["agents", "explain", ...where, "--terminal", C6_RESUMED], fixture: "agents-explain-cloud-working" },
+        ...helperSteps(C3_WS, "FACTORY-ALIVE-DONE", aliveScreen(1)),
       ]);
       yield* seed(t.data, cloudRecord());
       yield* TestClock.setTime(workingAt + 11 * MINUTE);
@@ -3356,6 +3339,9 @@ describe("cycle 1: liveness a send can trust, and what a failed cloud launch lea
           assert.strictEqual((yield* s.status(`cloud:${C3_WS}`)).run, "running");
           yield* TestClock.adjust(2 * MINUTE);
           yield* s.send(`cloud:${C3_WS}`, SEND_ID, cloudText);
+          // The new terminal's first silent look is its own: the dead terminal's 0 does not answer it.
+          yield* TestClock.adjust(MINUTE);
+          assert.strictEqual((yield* s.status(`cloud:${C3_WS}`)).run, "running");
         }),
       );
       assert.deepStrictEqual(t.unused(), []);
