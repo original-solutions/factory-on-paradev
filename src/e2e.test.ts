@@ -23,6 +23,17 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import * as Gate from "./gate.ts";
+import {
+  CLAUDE_VERSION,
+  GH_AUTH_STATUS,
+  GIT_EMAIL,
+  LOAD_COMMAND,
+  PROXY_ENV_READ,
+  remoteUrl,
+  trustRead,
+  TRUE_COMMAND,
+  type SshSpawn,
+} from "./paradev/ssh.ts";
 import { readRun, type Entry } from "./ledger/read.ts";
 import { newRunId } from "./ledger/runId.ts";
 import { FactoryLoop, factoryRuntime } from "./main.ts";
@@ -62,6 +73,9 @@ const PROJECT_ID = "e2e00000-0000-4000-8000-0000000000aa";
 const WORKSPACE_ID = "e2e00000-0000-4000-8000-000000000007";
 const TERMINAL_ID = "e2e00000-0000-4000-8000-0000000000c1";
 const AGENT_PID = 4242;
+/** The host the placement test lists for the repo, with the clone's own path as its clone. */
+const HOST_ID = "e2ehost0000000000000000000000001";
+const HOST_NAME = "e2e-mini";
 /** `launchBranch` of the run's launch command id, `softfac:acme__widgets__7__1:launch`. */
 const BRANCH = `fac/${ISSUE}-1`;
 
@@ -188,6 +202,8 @@ const makeParadev = (input: {
     const [a = "", b = ""] = args;
     if (a === "schema") return ok(readFixture("schema").stdout);
     if (a === "status") return ok("{}\n");
+    // The host the placement test lists: online, so its checks pass.
+    if (a === "hosts" && b === "list") return ok(`${json([{ id: HOST_ID, name: HOST_NAME, online: "yes" }])}\n`);
     if (a === "projects" && b === "list") {
       return ok(
         `${json([
@@ -1092,4 +1108,159 @@ it.live("sends a failed gate back into the session, then passes it on the second
     ]);
     assertWritten(result, 2, ["launch", "send"]);
   }),
+);
+
+/**
+ * Placement, wired through the runtime: a repo that lists a host, a host whose load is quiet and
+ * whose checks pass, this Mac busier. The one ready issue launches with `workspaces create --host`,
+ * and the host's snapshot is read for the counts. Only Paradev, GitHub and ssh are fakes; the
+ * runtime, the adapter, the pass and the placer are real. The run is not followed past its launch.
+ */
+it.live("a ready issue on a repo that lists a host launches on the quiet host when this Mac is busier", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const base = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "factory-e2e-host-" }));
+      const factoryDir = path.join(base, "factory");
+      const worktreesDir = path.join(base, "worktrees");
+      const clone = path.join(base, "clone");
+      const remotes = path.join(base, "remotes");
+      const claudeProjectsDir = path.join(base, "claude-projects");
+      for (const dir of [factoryDir, worktreesDir, clone, path.join(remotes, OWNER)]) {
+        yield* fs.makeDirectory(dir, { recursive: true });
+      }
+      gitSync(clone, "init", "-q", "-b", "main");
+      NodeFS.writeFileSync(path.join(clone, "README.md"), "widgets\n");
+      gitSync(clone, "add", "README.md");
+      gitSync(clone, "commit", "-q", "-m", "init");
+      const baseSha = gitSync(clone, "rev-parse", "HEAD");
+      gitSync(base, "clone", "--bare", "--quiet", clone, path.join(remotes, OWNER, `${NAME}.git`));
+      const projectConfig = json({
+        factory: { instructors: [INSTRUCTOR], base: "main", provision: [], gate: ["true"], limits: { gate_retries: 2 }, autonomy: "pr" },
+      });
+      const machineConfigPath = path.join(factoryDir, "config.yml");
+      yield* fs.writeFileString(
+        machineConfigPath,
+        [
+          `gh_config_dir: ${path.join(base, "gh")}`,
+          "poll_seconds: 10",
+          "max_concurrent_runs: 2",
+          "notify: false",
+          "min_free_gib: 0",
+          "max_load_per_core: 0",
+          "hosts:",
+          `  - id: ${HOST_ID}`,
+          `    name: ${HOST_NAME}`,
+          "    ssh: me@e2e-mini",
+          "    max_runs: 2",
+          "repos:",
+          `  - repo: ${REPO}`,
+          `    path: ${clone}`,
+          "    hosts:",
+          `      - id: ${HOST_ID}`,
+          `        path: ${clone}`,
+          "paradev:",
+          `  cli: ${CLI}`,
+          "  agent: claude",
+          "  belt:",
+          "    enabled: false",
+          "",
+        ].join("\n"),
+      );
+      const paradev = makeParadev({ clone, worktreesDir, replies: [reply("Built it.")] });
+      const github = makeGitHub({ baseSha, projectConfig, clock: yield* Clock.Clock, branchOf: paradev.branchOf });
+      const logs: Array<string> = [];
+      const capture = Logger.make(({ message }) => {
+        logs.push(Array.isArray(message) ? message.map(String).join(" ") : String(message));
+      });
+      const fakeProcess = Layer.effect(
+        FactoryProcess,
+        Effect.gen(function* () {
+          const real = yield* FactoryProcess;
+          return FactoryProcess.of({
+            run: (input) =>
+              input.command === CLI
+                ? paradev.run(input)
+                : input.command === "gh"
+                  ? github.run(input)
+                  : input.command === "osascript"
+                    ? Effect.succeed(ok(""))
+                    : real.run(input),
+          });
+        }),
+      ).pipe(Layer.provide(Process.layer));
+      // The host: quiet, ready, and holding the base commit in its worktree.
+      const sshCalls: Array<string> = [];
+      const ssh: SshSpawn = (args) =>
+        Effect.sync(() => {
+          const command = args.at(-1) ?? "";
+          sshCalls.push(command);
+          const answer = (stdout: string) => ({ exitCode: 0, timedOut: false, stdout, stderr: "" });
+          if (command === LOAD_COMMAND) return answer("{ 0.1 0.1 0.1 }\n10\n");
+          if (command === TRUE_COMMAND) return answer("");
+          if (command === remoteUrl(clone)) return answer(`https://github.com/${REPO}.git\n`);
+          if (command === trustRead(clone)) return answer("yes\n");
+          if (command === PROXY_ENV_READ) return answer("");
+          if (command === GIT_EMAIL) return answer("me@example.com\n");
+          if (command === GH_AUTH_STATUS) return answer("Logged in\n");
+          if (command === CLAUDE_VERSION) return answer("2.1.0\n");
+          if (command.includes("'rev-parse'")) return answer(`${baseSha}\n`);
+          return { exitCode: 1, timedOut: false, stdout: "", stderr: `no answer for ${command}` };
+        });
+      const factory = factoryRuntime({
+        gateRemoteBase: `file://${remotes}`,
+        // This Mac is the busier machine: 5 per core against the host's 0.01.
+        readLoad: () => ({ oneMinute: 5, cores: 1 }),
+        ssh,
+        sessions: {
+          remoteBase: `file://${remotes}`,
+          fetchRetryDelaysMs: [],
+          agentPollDelaysMs: [50, 50],
+          sendPollMs: 50,
+          sendWaitsMs: [2_000, 2_000],
+          claudeProjectsDir,
+        },
+      }).pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(FactoryPaths, { baseDir: factoryDir, worktreesDir, factoryDir, machineConfigPath, claudeProjectsDir }),
+            fakeProcess,
+            Layer.succeed(
+              AgentProcess,
+              AgentProcess.of({ find: (command, cwd) => Effect.sync(() => paradev.find(command, cwd)) }),
+            ),
+            Gate.layer.pipe(Layer.provide(fakeProcess)),
+            NodeServices.layer,
+          ),
+        ),
+      );
+      const built = yield* Layer.build(factory).pipe(
+        Effect.provide(Logger.layer([capture], { mergeWithExisting: false })),
+      );
+      const loop = Context.get(built, FactoryLoop);
+      const created = () => paradev.calls.find((call) => call[0] === "workspaces" && call[1] === "create");
+      const snapshots = () => paradev.calls.filter((call) => call[0] === "snapshot" && call.includes("--host"));
+      // The host's checks run beside the first pass and take a while to pass; the claim waits for
+      // a later pass, which the 10 s poll brings.
+      const driven = yield* Effect.gen(function* () {
+        for (;;) {
+          if (created() !== undefined) return;
+          yield* loop.awaitPass;
+        }
+      }).pipe(Effect.timeoutOption("60 seconds"));
+      const diagnosis = [
+        `superset calls:\n${paradev.calls.map((call) => call.join(" ").slice(0, 160)).join("\n")}`,
+        `unhandled superset calls:\n${paradev.unhandled.join("\n")}`,
+        `ssh: ${sshCalls.join(" | ")}`,
+        `factory log (last 60):\n${logs.slice(-60).join("\n")}`,
+      ].join("\n\n");
+      if (Option.isNone(driven)) assert.fail(`no workspace was created\n${diagnosis}`);
+      assert.deepStrictEqual(created()!.slice(0, 3), ["workspaces", "create", "--host"], diagnosis);
+      assert.strictEqual(created()![3], HOST_ID);
+      // The counts came from the host's snapshot, read for the placement.
+      assert.isAbove(snapshots().length, 0, diagnosis);
+      assert.strictEqual(snapshots()[0]![2], HOST_ID);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
 );
