@@ -565,7 +565,35 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       return record?.threadId === threadId ? record : null;
     });
 
-  const save = (record: ThreadRecord) => local(writeThread(dataDir, record));
+  /**
+   * Each recorded worktree path's target, a local one first: filled from the records on a miss,
+   * then kept by `save`. A record's target and path never change once written.
+   */
+  const targetsByPath = new Map<string, Target>();
+  const remember = (record: ThreadRecord) => {
+    const path = record.worktreePath;
+    if (path !== null && targetsByPath.get(path)?.kind !== "local") targetsByPath.set(path, record.target);
+  };
+  /** Drops the liveness and trust reads of the record's terminals other than its current one. */
+  const forget = (record: ThreadRecord) => {
+    const current = record.archivedAt === null ? record.terminals.at(-1) : undefined;
+    const reads: ReadonlyArray<readonly [Map<string, unknown>, string]> = [
+      [cloudAliveReads, `${record.threadId}/`],
+      [trustReads, `${record.workspaceId}/`],
+    ];
+    for (const [map, prefix] of reads) {
+      for (const key of [...map.keys()]) if (key.startsWith(prefix) && key !== `${prefix}${current}`) map.delete(key);
+    }
+  };
+  const save = (record: ThreadRecord) =>
+    local(writeThread(dataDir, record)).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          remember(record);
+          forget(record);
+        }),
+      ),
+    );
 
   // ---- launch -----------------------------------------------------------------------------
 
@@ -835,12 +863,16 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * of the preset an earlier attempt started. A cloud worktree gets no base check: Paradev cuts
    * its branch from the repository's branch on GitHub. A launch that fails here is not tried
    * again and leaves the core no thread to archive, so the workspace is archived before the
-   * launch fails: an idle box bills.
+   * launch fails: an idle box bills. When that archive fails too, the record keeps
+   * `pendingArchive` and the orphan sweep archives it; a repeat of the launch starts nothing there.
    */
   const startCloudAgent = (record: ThreadRecord, request: LaunchRequest, look: boolean) =>
     Effect.gen(function* () {
       if (record.archivedAt !== null) {
         return yield* fail(`cloud workspace ${record.workspaceId} was archived before its agent started`);
+      }
+      if (record.pendingArchive === true) {
+        return yield* fail(`cloud workspace ${record.workspaceId} was given up when an earlier launch failed`);
       }
       yield* waitReady(record);
       if (look) {
@@ -855,6 +887,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
           const now = (yield* local(readThread(dataDir, record.workspaceId))) ?? record;
           if (now.archivedAt !== null || now.terminals.length > 0) return yield* Effect.fail(error);
           const archived = yield* Effect.result(archiveRecord(now));
+          if (archived._tag === "Failure") yield* save({ ...now, pendingArchive: true }).pipe(Effect.ignore);
           return yield* fail(
             `${error.message}; ${
               archived._tag === "Success"
@@ -1123,8 +1156,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       return shown === true;
     });
 
-  /** The run's status from explain, the newest turn and, for a silent `working`, the process lookup. */
   /**
+   * The run's status from explain, the newest turn and, for a silent `working`, the process lookup.
    * `alive` is set when the run needed the process lookup, so a send that asked for a `fresh` one
    * types on that answer and looks no second time.
    */
@@ -1276,12 +1309,15 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   /**
    * Where the worktree at `path` is: the target of the thread whose worktree it is, else this Mac.
-   * A path a local thread has is this Mac's, whatever else names it.
+   * A path a local thread has is this Mac's, whatever else names it. The records are read only for
+   * a path not seen yet: one no record names, or one another process recorded.
    */
   const whereIs = (path: string) =>
     Effect.gen(function* () {
-      const owners = (yield* local(listThreads(dataDir))).filter((record) => record.worktreePath === path);
-      return owners.find((record) => record.target.kind === "local")?.target ?? owners[0]?.target ?? { kind: "local" as const };
+      const known = targetsByPath.get(path);
+      if (known !== undefined) return known;
+      for (const record of yield* local(listThreads(dataDir))) remember(record);
+      return targetsByPath.get(path) ?? { kind: "local" as const };
     });
 
   const worktreeCheckout = Effect.fn("ParadevSessions.worktreeCheckout")(function* (path: string) {
@@ -1663,7 +1699,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * Archives, once per pass, every cloud workspace tagged `factory` with no thread record file,
    * whole or torn, created over 10 minutes ago: a launch that died between its create and its
    * record left it, and an idle box bills. A workspace with a record is the core's, whatever state
-   * the record is in. One log line each; a workspace that fails to archive is one warning, and
+   * the record is in, unless the record has `pendingArchive`: its launch failed and could not
+   * archive it, so the core holds no thread for it. One log line each; a workspace that fails to archive is one warning, and
    * the rest go on. The tag is the only mark of whose a workspace is, so this assumes one runner
    * per Paradev organisation (P2's solo runner).
    */
@@ -1676,7 +1713,21 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     for (const row of rows) {
       if (row.status === "deleted" || !taggedFactory(row.tags) || !isPlainId(row.id)) continue;
       if (!(now - Date.parse(row.createdAt) > ORPHAN_AGE_MS)) continue;
-      if (yield* local(threadFileExists(dataDir, row.id))) continue;
+      if (yield* local(threadFileExists(dataDir, row.id))) {
+        const record = yield* local(readThread(dataDir, row.id));
+        if (record === null || record.archivedAt !== null || record.pendingArchive !== true) continue;
+        yield* archiveRecord(record).pipe(
+          Effect.andThen(
+            Effect.logInfo(
+              `archived cloud workspace ${row.id} (${row.name ?? "no name"}): its launch failed, and so did that launch's archive`,
+            ),
+          ),
+          Effect.catch((error) =>
+            Effect.logWarning(`could not archive the cloud workspace ${row.id} of a failed launch: ${error.message}`),
+          ),
+        );
+        continue;
+      }
       yield* archiveWorkspace({ kind: "cloud" }, row.id).pipe(
         Effect.andThen(
           Effect.logInfo(

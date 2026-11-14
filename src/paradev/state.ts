@@ -68,6 +68,12 @@ const RECORD_FIELDS = {
    * written before it existed.
    */
   gateLogAttempts: Schema.optional(Schema.Array(Schema.Number)),
+  /**
+   * Set when a cloud launch failed before its agent started and archiving its workspace failed too:
+   * the core holds no thread for it, so the orphan sweep archives it. Absent in records written
+   * before it existed.
+   */
+  pendingArchive: Schema.optional(Schema.Boolean),
 };
 
 /** A record as P1 wrote it: every thread local. */

@@ -2896,6 +2896,34 @@ describe("launch in the cloud", () => {
       assert.deepStrictEqual(saved!.terminals, [C3_TERM]);
     }),
   );
+
+  /** Every file under the data dir, relative to it: what a refused launch must not have written. */
+  const written = (data: string): ReadonlyArray<string> =>
+    NodeFS.existsSync(data) ? NodeFS.readdirSync(data, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => NodePath.relative(data, NodePath.join(e.parentPath, e.name))) : [];
+
+  it.live("a created workspace id that is not plain fails the launch, with no record, no launch file and no further call", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [{ argv: createArgv, fixture: "ws-create-cloud", edit: (answer) => ({ ...(answer as object), id: "../x" }) }],
+        { config: onCloud },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), "cloud workspace id ../x is not plain");
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.length, 1);
+      assert.deepStrictEqual(written(t.data), []);
+    }),
+  );
+
+  it.live("a base that is not a plain branch name fails the launch before any call", () =>
+    Effect.gen(function* () {
+      const t = rig([], { config: onCloud });
+      const error = yield* t.run((s) => s.launch(request({ baseRef: "-x" }))).pipe(Effect.flip);
+      assert.include(String(error.cause), "the base -x is not a plain branch name");
+      assert.deepStrictEqual(t.calls, []);
+      assert.deepStrictEqual(written(t.data), []);
+    }),
+  );
 });
 
 describe("status on a host", () => {
@@ -3297,6 +3325,32 @@ describe("the orphan sweep", () => {
     }),
   );
 
+  it.effect("a record whose failed launch could not archive its workspace is archived, one line, and its record says so", () =>
+    Effect.gen(function* () {
+      const t = rig([
+        { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: rows },
+        recorded("ws-archive-cloud-6"),
+        { argv: ["workspaces", "archive", NO_AGENT, "--host", "cloud"], answer: { deleted: [NO_AGENT], notFound: [], failed: [], warnings: [] } },
+        { argv: ["workspaces", "archive", OBJECT_TAG, "--host", "cloud"], answer: { deleted: [OBJECT_TAG], notFound: [], failed: [], warnings: [] } },
+      ]);
+      yield* seedSweep(t.data);
+      const given = cloudRecord({ threadId: `cloud:${NO_AGENT}`, workspaceId: NO_AGENT, terminals: [], turns: [], pendingArchive: true });
+      // Archived already, by the launch's own retry: not archived a second time.
+      const done = cloudRecord({ terminals: [], turns: [], pendingArchive: true, archivedAt: NOW - MINUTE });
+      yield* seed(t.data, given, done);
+      yield* TestClock.setTime(NOW);
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(logs.length, 3, logs.join("\n"));
+      assert.include(logs[1], `archived cloud workspace ${NO_AGENT}`);
+      assert.include(logs[1], "its launch failed, and so did that launch's archive");
+      const after = yield* readThread(t.data, NO_AGENT).pipe(Effect.provide(NodeServices.layer));
+      assert.strictEqual(after!.archivedAt, NOW);
+      assert.strictEqual(t.calls.length, 4);
+      assert.deepStrictEqual(yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer)), done);
+    }),
+  );
+
   it.effect("an orphan that fails to archive is one warning, and the next is still archived", () =>
     Effect.gen(function* () {
       const t = rig([
@@ -3438,6 +3492,23 @@ describe("cycle 1: liveness a send can trust, and what a failed cloud launch lea
       assert.include(String(error.cause), "archiving the workspace failed too");
       const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
       assert.isNull(saved!.archivedAt);
+      assert.isTrue(saved!.pendingArchive);
+    }),
+  );
+
+  it.live("a repeat of a launch whose archive failed starts nothing, and archives the workspace again", () =>
+    Effect.gen(function* () {
+      const t = rig([{ argv: archiveC3, fixture: "ws-archive-cloud" }], {
+        config: { place: () => Effect.die("placed again"), cloudReadyPollMs: 1 },
+      });
+      yield* seed(t.data, cloudRecord({ terminals: [], turns: [], pendingArchive: true }));
+      yield* writeLaunch(t.data, LAUNCH_ID, `cloud:${C3_WS}`).pipe(Effect.provide(NodeServices.layer));
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), "was given up when an earlier launch failed; the workspace was archived");
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.length, 1);
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNotNull(saved!.archivedAt);
     }),
   );
 
@@ -3584,6 +3655,90 @@ describe("cycle 1: a host worktree read and retried where it lives", () => {
       const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
       assert.include(String(error.cause), `no Paradev project at ${HOST_CLONE} on host ${HOST}`);
       assert.isFalse(t.calls.some(argvIs("workspaces", "create")));
+    }),
+  );
+});
+
+describe("a pending resume off this Mac whose agent's liveness cannot be read", () => {
+  const RESUME_ID = "softfac:original-solutions__factory-paradev-spike__1__1:resume-1";
+  /** A terminal the pending resume may have made, with no agent of the preset in it yet. */
+  const BARE = "0d6c1f5e-5b1e-4c55-9a0c-7c1d1c2b3a4f";
+
+  it.live("on a host, a lookup that does not finish starts nothing and types nothing", () =>
+    Effect.gen(function* () {
+      const ssh = fakeSsh(() => ({ exitCode: 3, tail: "" }));
+      const t = rig(
+        [{
+          ...recorded("snapshot-host-after-restart"),
+          edit: snapshotOf(H5_WS, [
+            { id: H5_TERM, title: "zsh", agent: null },
+            { id: BARE, title: "zsh", agent: null },
+          ]),
+        }],
+        { config: { ssh: ssh.runner, hosts: HOSTS } },
+      );
+      const pending = hostRecord({ pendingResume: RESUME_ID });
+      yield* seed(t.data, pending);
+      const error = yield* t.run((s) => s.send(pending.threadId, SEND_ID, "text")).pipe(Effect.flip);
+      assert.include(String((error as SessionsError).cause), `a resume of ${RESUME_ID} is pending`);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.length, 1);
+      assert.deepStrictEqual(ssh.calls.map(([, command]) => command), [lookupCommand(H5_PATH)]);
+      assert.deepStrictEqual(yield* readThread(t.data, H5_WS).pipe(Effect.provide(NodeServices.layer)), pending);
+    }),
+  );
+
+  it.live("in the cloud, a helper read that fails starts nothing and types nothing", () =>
+    Effect.gen(function* () {
+      const where = ["--host", "cloud", "--workspace", C3_WS, "--terminal", HELPER];
+      const t = rig([
+        {
+          ...recorded("snapshot-cloud"),
+          edit: snapshotOf(C3_WS, [
+            { id: C3_TERM, title: "zsh", agent: null },
+            { id: BARE, title: "zsh", agent: null },
+          ]),
+        },
+        { argv: argvIs("terminals", "create", "--host", "cloud"), fixture: "terminals-create-cloud-gate" },
+        { argv: argvIs("terminals", "wait"), fail: "Timed out waiting for a match" },
+        { argv: ["terminals", "close", ...where], answer: { terminalId: HELPER, status: "disposed" } },
+      ]);
+      const pending = cloudRecord({ pendingResume: RESUME_ID });
+      yield* seed(t.data, pending);
+      const error = yield* t.run((s) => s.send(pending.threadId, SEND_ID, "text")).pipe(Effect.flip);
+      assert.include(String((error as SessionsError).cause), `a resume of ${RESUME_ID} is pending`);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some((argv) => argvIs("agents", "create")(argv) || argvIs("terminals", "send")(argv)));
+      assert.deepStrictEqual(yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer)), pending);
+    }),
+  );
+});
+
+describe("where a worktree is, read from the records once per path", () => {
+  it.live("a path seen once is not looked up in the records again, and a path recorded later is still found", () =>
+    Effect.gen(function* () {
+      const head = "a".repeat(40);
+      const ssh = fakeSsh((command) =>
+        command.startsWith("test -e ") ? {} : command.includes("'rev-parse'") ? { tail: `${head}\n` } : { tail: "fac/5-1\n" },
+      );
+      const t = rig([], { config: { ssh: ssh.runner, hosts: HOSTS } });
+      yield* seed(t.data, hostRecord());
+      const threads = NodePath.join(t.data, "paradev", "threads");
+      const later = `${H5_PATH}-2`;
+      yield* t.run((s) =>
+        Effect.gen(function* () {
+          assert.deepStrictEqual(yield* s.worktreeCheckout(H5_PATH), { head, branch: "fac/5-1" });
+          // A records folder that cannot be read: a second read of it would fail the lookup.
+          NodeFS.rmSync(threads, { recursive: true });
+          NodeFS.writeFileSync(threads, "");
+          assert.deepStrictEqual(yield* s.worktreeCheckout(H5_PATH), { head, branch: "fac/5-1" });
+          NodeFS.rmSync(threads);
+          yield* seed(t.data, hostRecord({ workspaceId: "b1c2d3e4-0000-4000-8000-000000000002", worktreePath: later }));
+          assert.deepStrictEqual(yield* s.worktreeCheckout(later), { head, branch: "fac/5-1" });
+        }),
+      );
+      assert.strictEqual(ssh.calls.filter(([, command]) => command.startsWith("test -e ")).length, 3);
+      assert.deepStrictEqual(t.gitCalls, []);
     }),
   );
 });
