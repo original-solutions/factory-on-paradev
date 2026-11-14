@@ -40,7 +40,7 @@ export interface BeltV2 {
   readonly v: 2;
   readonly updatedAt: string; // ISO 8601
   readonly runner: BeltV1["runner"] & {
-    /** One row per target, as `status` shows them: at most four. */
+    /** One row per target, as `status` shows them. */
     readonly targets: ReadonlyArray<TargetRow>;
   };
   readonly counts: BeltV1["counts"];

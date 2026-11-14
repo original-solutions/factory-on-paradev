@@ -1058,7 +1058,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
   // The last belt written, and the run reads it was made from: kept across reloads.
   const beltMemo = newBeltMemo();
   const beltRuns: RunReadCache = new Map();
-  let beltWriting = false;
+  let afterPassRunning = false;
   let sweeping = false;
   let checkingHosts = false;
 
@@ -1103,15 +1103,15 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     // The target rows and the belt go beside the loop, one write at a time, so a hung Paradev
     // holds up no pass and no shutdown. A pass that ends while a write is still going hands
     // nothing over: the next one does.
-    const belt = Effect.suspend(() => {
-      if (beltWriting) return Effect.void;
-      beltWriting = true;
+    const afterPass = Effect.suspend(() => {
+      if (afterPassRunning) return Effect.void;
+      afterPassRunning = true;
       return current.afterPass.pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
         Effect.ensuring(
           Effect.sync(() => {
-            beltWriting = false;
+            afterPassRunning = false;
           }),
         ),
         Effect.interruptible,
@@ -1127,7 +1127,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         attention.passEnded(outcomeOf(exit, () => lastError)).pipe(
           // A pass that died hands the belt over too, so the page shows the failures; a pass
           // stopped by a shutdown or reload does not.
-          Effect.andThen(Exit.hasInterrupts(exit) ? Effect.void : belt),
+          Effect.andThen(Exit.hasInterrupts(exit) ? Effect.void : afterPass),
         ),
       ),
     );

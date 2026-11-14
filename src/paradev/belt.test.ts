@@ -175,7 +175,7 @@ describe("beltPayload", () => {
       [
         "this Mac's load or disk check holds claims; factory-runner status says why",
         "its hosts check failed; factory-runner status says why",
-        "its proxy check did not pass; factory-runner status says why",
+        "its proxy check has not passed; factory-runner status says why",
       ],
     );
     const text = JSON.stringify(belt.runner.targets);
@@ -186,7 +186,7 @@ describe("beltPayload", () => {
     const belt = payload([]);
     assert.deepStrictEqual(
       belt.runner.targets.map((target) => target.reason),
-      ["slots full: 1 of 1 running", null, "its proxy check did not pass; factory-runner status says why"],
+      ["slots full: 1 of 1 running", null, "its proxy check has not passed; factory-runner status says why"],
     );
   });
 

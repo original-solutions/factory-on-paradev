@@ -121,7 +121,7 @@ const fit = (payload: BeltV2): BeltV2 => {
 const NOT_READY: Readonly<Record<TargetRow["kind"], string>> = {
   local: "this Mac's load or disk check holds claims; factory-runner status says why",
   host: "its hosts check failed; factory-runner status says why",
-  cloud: "its proxy check did not pass; factory-runner status says why",
+  cloud: "its proxy check has not passed; factory-runner status says why",
 };
 
 /**
@@ -130,7 +130,7 @@ const NOT_READY: Readonly<Record<TargetRow["kind"], string>> = {
  * can, so it says only which check failed; `status` has the line. A ready target's reason is
  * placement's own words and numbers.
  */
-const beltTarget = (row: TargetRow): TargetRow => (row.ready ? row : { ...row, reason: NOT_READY[row.kind] });
+const beltRow = (row: TargetRow): TargetRow => (row.ready ? row : { ...row, reason: NOT_READY[row.kind] });
 
 export interface BeltInput {
   readonly nowMs: number;
@@ -153,7 +153,7 @@ export const beltPayload = (input: BeltInput): BeltV2 => {
   return fit({
     v: 2,
     updatedAt: new Date(input.nowMs).toISOString(),
-    runner: { ...input.runner, targets: input.runner.targets.map(beltTarget) },
+    runner: { ...input.runner, targets: input.runner.targets.map(beltRow) },
     counts: {
       triage: count("triage"),
       building: count("building"),

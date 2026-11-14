@@ -13,31 +13,23 @@ import { isPlainId } from "./sessions.ts";
 import { readTextOrNull } from "./syncFiles.ts";
 
 /** One place runs go: this Mac, a host or cloud, as the last pass read it. */
-export interface TargetRow {
-  readonly kind: "local" | "host" | "cloud";
-  /** "local", the host's name, or "cloud". */
-  readonly name: string;
-  /** Its snapshot answered this pass. */
-  readonly online: boolean;
-  /** Its 1-minute load and cores; null for cloud, and for a host whose load was not read. */
-  readonly load: { readonly oneMinute: number; readonly cores: number } | null;
-  /** The runs on it and its `max_runs`; `used` is null when they could not be counted. */
-  readonly slots: { readonly used: number | null; readonly max: number };
-  /** Its own check passed: P1's load and disk checks for this Mac, `hosts check` for a host, the proxy check for cloud. */
-  readonly ready: boolean;
-  /** Why placement would not use it now; null when it would. */
-  readonly reason: string | null;
-}
-
 const TargetRowSchema = Schema.Struct({
   kind: Schema.Literals(["local", "host", "cloud"]),
+  /** "local", the host's name, or "cloud". */
   name: Schema.String,
+  /** Its running agents were counted this pass: its snapshot answered, and the thread records read. */
   online: Schema.Boolean,
+  /** Its 1-minute load and cores; null for cloud, and for a host whose load was not read. */
   load: Schema.NullOr(Schema.Struct({ oneMinute: Schema.Number, cores: Schema.Number })),
+  /** The runs on it and its `max_runs`; `used` is null when they could not be counted. */
   slots: Schema.Struct({ used: Schema.NullOr(Schema.Number), max: Schema.Number }),
+  /** Its own check passed: P1's load and disk checks for this Mac, `hosts check` for a host, the proxy check for cloud. */
   ready: Schema.Boolean,
+  /** Why placement would not use it now; null when it would. */
   reason: Schema.NullOr(Schema.String),
 });
+export type TargetRow = typeof TargetRowSchema.Type;
+
 const decodeRows = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(TargetRowSchema)));
 
 /** The file the runner writes the rows to, in the data dir. */
