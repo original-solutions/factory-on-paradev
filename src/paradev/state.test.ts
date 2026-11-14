@@ -6,12 +6,14 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
 
 import { useTempDirs } from "../ledger/testSupport.ts";
 import {
   listThreads,
   readLaunch,
   readThread,
+  runnerId,
   targetOf,
   type ThreadRecord,
   threadIdOf,
@@ -167,6 +169,57 @@ describe("launch files", () => {
       assert.deepStrictEqual(JSON.parse(NodeFS.readFileSync(file, "utf8")), { threadId: `local:${WS}` });
       NodeFS.writeFileSync(file, "{\"thread");
       assert.isNull(yield* readLaunch(data, id));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("the runner id", () => {
+  const idFile = (data: string) => NodePath.join(data, "paradev", "runner-id");
+
+  it.effect("is written once to <data>/paradev/runner-id and read back after that; a fresh data dir gets a new one", () =>
+    Effect.gen(function* () {
+      const data = tempDir("state");
+      assert.isFalse(NodeFS.existsSync(idFile(data)));
+      const first = yield* runnerId(data);
+      assert.match(first, /^[0-9a-f-]{36}$/);
+      assert.strictEqual(NodeFS.readFileSync(idFile(data), "utf8").trim(), first);
+      const written = NodeFS.statSync(idFile(data)).ino;
+      assert.strictEqual(yield* runnerId(data), first);
+      // A read never rewrites the file.
+      assert.strictEqual(NodeFS.statSync(idFile(data)).ino, written);
+      assert.notStrictEqual(yield* runnerId(tempDir("state")), first);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a file that does not read back as an id is replaced by a new one, with one warning naming both", () =>
+    Effect.gen(function* () {
+      const data = tempDir("state");
+      NodeFS.mkdirSync(NodePath.dirname(idFile(data)), { recursive: true });
+      for (const torn of ["", "not an id\n", "../x"]) {
+        NodeFS.writeFileSync(idFile(data), torn);
+        const logs: Array<string> = [];
+        const capture = Logger.make(({ logLevel, message }) => {
+          logs.push(`${logLevel} ${(Array.isArray(message) ? message : [message]).join(" ")}`);
+        });
+        const id = yield* runnerId(data).pipe(Effect.provide(Logger.layer([capture], { mergeWithExisting: false })));
+        assert.match(id, /^[0-9a-f-]{36}$/);
+        assert.strictEqual(logs.length, 1, logs.join("\n"));
+        assert.match(logs[0]!, /^Warn /);
+        assert.include(logs[0], JSON.stringify(torn.trim()));
+        assert.include(logs[0], id);
+        assert.strictEqual(yield* runnerId(data), id);
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a missing file is written with no warning", () =>
+    Effect.gen(function* () {
+      const logs: Array<string> = [];
+      const capture = Logger.make(({ message }) => {
+        logs.push(String(message));
+      });
+      yield* runnerId(tempDir("state")).pipe(Effect.provide(Logger.layer([capture], { mergeWithExisting: false })));
+      assert.deepStrictEqual(logs, []);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
