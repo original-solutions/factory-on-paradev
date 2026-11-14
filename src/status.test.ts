@@ -10,6 +10,7 @@ import { formatTs } from "./ledger/time.ts";
 import { catchLedgerError, T0, useTempDirs } from "./ledger/testSupport.ts";
 import { scanMachineLog } from "./ledger/machineLog.ts";
 import { buildStatus, readMachineLog, type FactoryStatus, type StatusReport } from "./status.ts";
+import type { TargetRow } from "./targets.ts";
 
 /** 2026-10-05T10:13:16.123Z */
 const NOW = T0 + 86_400_000;
@@ -37,6 +38,7 @@ const state = (ms: number, from: string, to: string) => line(ms, "state_changed"
 const launched = (ms: number, thread: string, title?: string) =>
   line(ms, "session_launched", {
     thread_id: thread,
+    target: null,
     worktree: null,
     branch: null,
     ...(title === undefined ? {} : { title }),
@@ -176,6 +178,7 @@ describe("buildStatus: nothing recorded", () => {
       },
       slots: { used: 0, max: 5 },
       threads: { running: 0 },
+      targets: [],
       paused_by_hand: null,
       runs: [],
       left_out: [],
@@ -234,6 +237,7 @@ describe("buildStatus: nothing recorded", () => {
       "passes",
       "slots",
       "threads",
+      "targets",
       "paused_by_hand",
       "runs",
       "left_out",
@@ -253,6 +257,100 @@ describe("buildStatus: nothing recorded", () => {
       "stale",
     ]);
     expect(Object.keys(JSON.parse(JSON.stringify(status)))).toEqual(Object.keys(status));
+  });
+});
+
+/** The rows a runner with this Mac, one host and cloud writes after a pass. */
+const TARGETS: ReadonlyArray<TargetRow> = [
+  {
+    kind: "local",
+    name: "local",
+    online: true,
+    load: { oneMinute: 2.5, cores: 10 },
+    slots: { used: 1, max: 1 },
+    ready: true,
+    reason: "slots full: 1 of 1 running",
+  },
+  {
+    kind: "host",
+    name: "trilogy-mac",
+    online: true,
+    load: { oneMinute: 1, cores: 8 },
+    slots: { used: 1, max: 2 },
+    ready: true,
+    reason: null,
+  },
+  {
+    kind: "cloud",
+    name: "cloud",
+    online: false,
+    load: null,
+    slots: { used: null, max: 1 },
+    ready: false,
+    reason: "the proxy check failed: down",
+  },
+];
+
+const HOSTS = new Map([["c9c39956e0c1756e30d6bb9f4f907ff1", "trilogy-mac"]]);
+
+const withTargets = (): FactoryStatus => ({
+  state: "running",
+  settings: { pollSeconds: 60, maxConcurrentRuns: 3, repos: ["acme/widgets"], hostNames: HOSTS },
+});
+
+const writeTargets = (dir: string, text: string) =>
+  NodeFS.writeFileSync(NodePath.join(dir, "targets.json"), text);
+
+describe("buildStatus: targets", () => {
+  it("a config with this Mac, one host and cloud shows a row for each, and each run where it is", () => {
+    const dir = tempDir();
+    writeTargets(dir, `${JSON.stringify(TARGETS)}\n`);
+    writeRun(dir, "acme__widgets__1__1", [claimed(ago(HOUR)), launched(ago(HOUR - MIN), "local:ws-1")]);
+    writeRun(dir, "acme__widgets__2__1", [
+      claimed(ago(HOUR - 2 * MIN)),
+      launched(ago(HOUR - 3 * MIN), "host:c9c39956e0c1756e30d6bb9f4f907ff1:ws-2"),
+    ]);
+    writeRun(dir, "acme__widgets__3__1", [claimed(ago(HOUR - 4 * MIN)), launched(ago(HOUR - 5 * MIN), "cloud:ws-3")]);
+    // A host the config no longer lists shows by its id; a run with no thread yet is nowhere.
+    writeRun(dir, "acme__widgets__4__1", [claimed(ago(HOUR - 6 * MIN)), launched(ago(HOUR - 7 * MIN), "host:gone:ws-4")]);
+    writeRun(dir, "acme__widgets__5__1", [claimed(ago(HOUR - 8 * MIN))]);
+    const status = report(dir, { status: withTargets() });
+    expect(status.targets).toEqual(TARGETS);
+    expect(status.runs.map((run) => [run.id, run.target])).toEqual([
+      ["acme__widgets__1__1", "local"],
+      ["acme__widgets__2__1", "trilogy-mac"],
+      ["acme__widgets__3__1", "cloud"],
+      ["acme__widgets__4__1", "gone"],
+      ["acme__widgets__5__1", null],
+    ]);
+    expect(Object.keys(status.targets[0]!)).toEqual(["kind", "name", "online", "load", "slots", "ready", "reason"]);
+  });
+
+  it("no targets before the runner has written any", () => {
+    expect(report(tempDir(), { status: withTargets() }).targets).toEqual([]);
+  });
+
+  it("no targets while the runner is idle: the file is from a runner that has stopped", () => {
+    const dir = tempDir();
+    writeTargets(dir, JSON.stringify(TARGETS));
+    expect(report(dir, { status: { state: "idle", reason: "the runner is not running" } }).targets).toEqual([]);
+  });
+
+  it("a targets file that does not read back as rows is no targets, and the report still answers", () => {
+    for (const text of ["", "{", "{}", JSON.stringify([{ ...TARGETS[0], kind: "moon" }])]) {
+      const dir = tempDir();
+      writeTargets(dir, text);
+      expect(report(dir, { status: withTargets() }).targets).toEqual([]);
+    }
+  });
+
+  it("a run's target reads without host names: a host shows by its id", () => {
+    const dir = tempDir();
+    writeRun(dir, "acme__widgets__2__1", [
+      claimed(ago(HOUR)),
+      launched(ago(HOUR - MIN), "host:c9c39956e0c1756e30d6bb9f4f907ff1:ws-2"),
+    ]);
+    expect(report(dir).runs[0]!.target).toBe("c9c39956e0c1756e30d6bb9f4f907ff1");
   });
 });
 
@@ -290,6 +388,7 @@ describe("buildStatus: runs and slots", () => {
         for_ms: 2 * HOUR + 10 * MIN,
         pr_url: "https://github.com/original-solutions/answer-bot/pull/4",
         thread_id: "thread:b",
+        target: null,
         pr_reported: true,
         unreadable: false,
       },
@@ -302,6 +401,7 @@ describe("buildStatus: runs and slots", () => {
         for_ms: 34 * MIN,
         pr_url: "https://github.com/rawphp/softfac/pull/63",
         thread_id: "thread:a",
+        target: null,
         pr_reported: false,
         unreadable: false,
       },
@@ -314,6 +414,7 @@ describe("buildStatus: runs and slots", () => {
         for_ms: 5 * MIN,
         pr_url: null,
         thread_id: null,
+        target: null,
         pr_reported: false,
         unreadable: false,
       },
@@ -326,6 +427,7 @@ describe("buildStatus: runs and slots", () => {
         for_ms: null,
         pr_url: null,
         thread_id: null,
+        target: null,
         pr_reported: false,
         unreadable: false,
       },
@@ -340,6 +442,7 @@ describe("buildStatus: runs and slots", () => {
               for_ms: null,
               pr_url: null,
               thread_id: null,
+              target: null,
               pr_reported: false,
               unreadable: true,
             },
@@ -729,6 +832,7 @@ describe("buildStatus: the rest of the report", () => {
       },
       slots: { used: 1, max: 5 },
       threads: { running: 0 },
+      targets: [],
       paused_by_hand: null,
       runs: [
         {
@@ -740,6 +844,7 @@ describe("buildStatus: the rest of the report", () => {
           for_ms: 34 * MIN,
           pr_url: "https://github.com/rawphp/softfac/pull/63",
           thread_id: "thread:a",
+          target: null,
           pr_reported: false,
           unreadable: false,
         },

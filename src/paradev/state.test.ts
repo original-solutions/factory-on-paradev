@@ -18,7 +18,6 @@ import {
   targetOf,
   type ThreadRecord,
   threadIdOf,
-  workspaceIdOf,
   writeLaunch,
   writePlacement,
   writeThread,
@@ -305,13 +304,6 @@ describe("thread ids", () => {
       `LOCAL:${WS}`,
     ]) {
       assert.isNull(targetOf(bad), bad);
-    }
-  });
-
-  it("workspaceIdOf answers local thread ids only, and only a plain id parses back", () => {
-    assert.strictEqual(workspaceIdOf(`local:${WS}`), WS);
-    for (const bad of [WS, "local:", "host:m:abc", "local:../etc", "local:a/b", "cloud:abc"]) {
-      assert.isNull(workspaceIdOf(bad), bad);
     }
   });
 });

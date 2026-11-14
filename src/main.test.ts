@@ -75,6 +75,7 @@ import {
   ThreadNotFoundError,
   type FactorySessions,
 } from "./sessions.ts";
+import { TARGETS_FILE } from "./targets.ts";
 import { MARKER } from "./tracker/github.ts";
 
 /**
@@ -451,6 +452,23 @@ const runtimeOver = (
   });
 
 /**
+ * The real file system, with the rename that lands `targets.json` watched: `seen` gets whether a
+ * file was there to replace, and while `failing()` the rename fails as a full disk would.
+ */
+const targetsFileSystem = (seen: Array<boolean>, failing: () => boolean) =>
+  Layer.effect(FileSystem.FileSystem)(
+    Effect.map(FileSystem.FileSystem, (real) => ({
+      ...real,
+      rename: (from: string, to: string) => {
+        if (NodePath.basename(to) !== TARGETS_FILE) return real.rename(from, to);
+        seen.push(NodeFS.existsSync(to));
+        // A rename into a directory that is not there fails with a real error.
+        return real.rename(from, failing() ? NodePath.join(to, "missing", "rows") : to);
+      },
+    })),
+  );
+
+/**
  * The runtime over a temp base dir holding `config` (or no file), in the caller's scope, with a
  * scripted Paradev and `other` for gh, git and osascript.
  */
@@ -590,7 +608,7 @@ it.effect("logs runner started once for a valid machine file, then runs the firs
     assert.strictEqual(logs.at(-1), "pass done: 0 runs, 0 claimed, 1 errors, 0 need attention");
     assert.deepStrictEqual(status, {
       state: "running",
-      settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"] },
+      settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"], hostNames: new Map() },
     });
     assert.deepStrictEqual(events, ["pass_started", "repo_skipped", "pass_finished"]);
   }),
@@ -883,7 +901,7 @@ describe("on the Paradev CLI", () => {
           v: number;
           runner: { version: string; paradevCli: string; paradevOnline: boolean; claimsPaused: boolean };
         };
-        assert.strictEqual(written.v, 1);
+        assert.strictEqual(written.v, 2);
         assert.strictEqual(written.runner.paradevCli, "2.0.8");
         assert.isTrue(written.runner.paradevOnline);
         assert.isFalse(written.runner.claimsPaused);
@@ -1042,6 +1060,74 @@ describe("on the Paradev CLI", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("after each pass the runner writes the target rows status reads, with the belt off too", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        const off = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    enabled: false\n`;
+        const { loop, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", off), noGhProcess, {}, paradev);
+        yield* idleAfter(loop, factoryDir, 1);
+        const file = NodePath.join(factoryDir, "targets.json");
+        yield* waitUntil("the targets file", () => NodeFS.existsSync(file));
+        const rows = JSON.parse(NodeFS.readFileSync(file, "utf8")) as Array<{
+          kind: string;
+          name: string;
+          online: boolean;
+          slots: { used: number | null; max: number };
+        }>;
+        assert.deepStrictEqual(
+          rows.map((row) => ({ kind: row.kind, name: row.name, online: row.online, slots: row.slots })),
+          [{ kind: "local", name: "local", online: true, slots: { used: 0, max: 1 } }],
+        );
+        assert.deepStrictEqual(
+          paradev.calls.filter((argv) => argv[0] === "pages"),
+          [],
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a start removes the rows a stopped runner left, so status shows none until this runner's first pass", () => {
+    const seen: Array<boolean> = [];
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const off = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    enabled: false\n`;
+        const { loop, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", off), noGhProcess, {}, newParadev(), (paths) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            yield* fs.writeFileString(NodePath.join(paths.factoryDir, TARGETS_FILE), "[]\n");
+          }),
+        );
+        yield* idleAfter(loop, factoryDir, 1);
+        const file = NodePath.join(factoryDir, TARGETS_FILE);
+        yield* waitUntil("the targets file", () => NodeFS.existsSync(file));
+        // The first write found no file to replace: the stopped runner's rows went at start.
+        assert.deepStrictEqual(seen, [false]);
+      }),
+    ).pipe(Effect.provide(targetsFileSystem(seen, () => false)), Effect.provide(NodeServices.layer));
+  });
+
+  it.effect("a write of the target rows that fails removes the last rows, with a warning and no pass error", () => {
+    let failing = false;
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const off = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    enabled: false\n`;
+        const { loop, logs, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh", "", off), noGhProcess, {}, newParadev());
+        yield* idleAfter(loop, factoryDir, 1);
+        const file = NodePath.join(factoryDir, TARGETS_FILE);
+        yield* waitUntil("the targets file", () => NodeFS.existsSync(file));
+        failing = true;
+        // A pass that ends while the last write is still finishing hands nothing over, and the
+        // next one does: wake passes until one has written under the failure.
+        const warned = (line: string) => line.includes("the target rows were not written");
+        for (let n = 0; n < 5 && !logs.some(warned); n++) yield* onePassMore(loop, factoryDir);
+        yield* waitUntil("the write warning", () => logs.some(warned));
+        yield* waitUntil("the rows removed", () => !NodeFS.existsSync(file));
+        assert.deepStrictEqual(eventsOf(factoryDir, "error"), []);
+      }),
+    ).pipe(Effect.provide(targetsFileSystem([], () => failing)), Effect.provide(NodeServices.layer));
+  });
+
   it.effect("with the belt off, no pass publishes or writes a belt", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1174,7 +1260,7 @@ describe("on the Paradev CLI", () => {
         assert.strictEqual(skipped(), 1);
         assert.deepStrictEqual(loop.status, {
           state: "running",
-          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: [] },
+          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: [], hostNames: new Map() },
         });
         paradev.listDown = "Host service for this machine isn't running";
         yield* onePassMore(loop, factoryDir);
@@ -1183,7 +1269,7 @@ describe("on the Paradev CLI", () => {
         assert.strictEqual(skipped(), 1);
         assert.deepStrictEqual(loop.status, {
           state: "running",
-          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"] },
+          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"], hostNames: new Map() },
         });
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
@@ -1321,7 +1407,7 @@ describe("on the Paradev CLI", () => {
         assert.deepStrictEqual(yield* items(), []);
         assert.deepStrictEqual(loop.status, {
           state: "running",
-          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"] },
+          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"], hostNames: new Map() },
         });
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
@@ -3748,7 +3834,7 @@ describe("reloading the machine config", () => {
         assert.strictEqual((yield* Fiber.join(pass))?.errors, 1);
         assert.deepStrictEqual(loop.status, {
           state: "running",
-          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"] },
+          settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"], hostNames: new Map() },
         });
         assert.ok(
           calls.some((call) => call.startsWith("gh ") && call.includes("a/b")),
@@ -3802,7 +3888,7 @@ describe("reloading the machine config", () => {
           // The pass under way listed a/b, and what was listed last is what the status reports.
           assert.deepStrictEqual(loop.status, {
             state: "running",
-            settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"] },
+            settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["a/b"], hostNames: new Map() },
           });
           yield* Deferred.succeed(release, undefined);
           yield* Fiber.join(first);
@@ -3814,7 +3900,7 @@ describe("reloading the machine config", () => {
           yield* Fiber.join(next);
           assert.deepStrictEqual(loop.status, {
             state: "running",
-            settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["c/d"] },
+            settings: { pollSeconds: 60, maxConcurrentRuns: 1, repos: ["c/d"], hostNames: new Map() },
           });
           const lastOld = calls.findLastIndex((call) => call.includes("a/b"));
           const firstNew = calls.findIndex((call) => call.includes("c/d"));
@@ -4203,6 +4289,72 @@ describe("liveWorld: the hosts", () => {
         assert.isTrue(hostsListed(paradev) > 0);
         assert.deepStrictEqual(worlds[0]!.hostLoads.get("h1"), { oneMinute: 2.11, cores: 12 });
         assert.strictEqual(worlds[0]!.hostsNotReady.get("h1"), "not checked yet since the config load");
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("the belt carries the pass's target rows and names a run on a host by the host's name", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        const writes: Array<{
+          runner: { targets: Array<{ kind: string; name: string }> };
+          runs: Array<{ id: string; target: string | null; workspaceId: string | null }>;
+        }> = [];
+        paradev.pages = (argv) => {
+          if (argv[1] === "publish") return reply(0, readFixture("pages-publish-probe-ws").stdout);
+          writes.push(JSON.parse(argv[8]!) as (typeof writes)[number]);
+          return reply(0, readFixture("pages-storage-set-belt").stdout);
+        };
+        const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n`;
+        const { loop, factoryDir } = yield* started(
+          configFor([["a/b", "/b"]], "/gh", HOSTS, belt),
+          noGhProcess,
+          { ssh: refused },
+          paradev,
+        );
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* waitUntil("the first belt write", () => writes.length > 0);
+        assert.deepStrictEqual(
+          writes[0]!.runner.targets.map((target) => [target.kind, target.name]),
+          [
+            ["local", "local"],
+            ["host", "mini"],
+          ],
+        );
+        // A run that went to the host and finished: the pass leaves it alone, the belt lists it.
+        const run = newRunId("a/b", "7", 1);
+        const ledger = Ledger.create(factoryDir, run, { clock: () => Date.now() });
+        ledger.append(
+          {
+            event: "session_launched",
+            data: {
+              thread_id: "host:h1:ws-7",
+              worktree: null,
+              branch: null,
+              model_instance: null,
+              model: null,
+              model_options: null,
+              resumed_from: null,
+            },
+          },
+          makeCause("start", "seed"),
+        );
+        ledger.append(
+          {
+            event: "finished",
+            data: { outcome: "pr-open", total_ms: 1, gate_attempts: 1, review_cycles: null, pr_url: null, pr_end: null },
+          },
+          makeCause("start", "seed"),
+        );
+        ledger.close();
+        const before = writes.length;
+        yield* onePassMore(loop, factoryDir);
+        yield* waitUntil("the belt write after the seeded run", () => writes.length > before);
+        assert.deepStrictEqual(
+          writes.at(-1)!.runs.map((entry) => [entry.id, entry.target, entry.workspaceId]),
+          [[runIdToString(run), "mini", "ws-7"]],
+        );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
