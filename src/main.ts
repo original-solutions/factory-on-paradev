@@ -902,6 +902,8 @@ export interface RuntimeOptions {
   readonly proxyGet?: ProxyGet;
   /** What the Paradev adapter is built with beyond the `paradev` block: a test's remote base and waits. */
   readonly sessions?: Partial<Omit<ParadevSessionsConfig, "agent" | "model" | "effort">>;
+  /** What the factory keeps across reloads. Default a fresh one; a test passes its own to read or seed it. */
+  readonly shared?: LiveShared;
   /** Makes the self-update the factory forks and checks after each pass. Default the real one; a test passes its own. */
   readonly selfUpdate?: (options: SelfUpdateOptions) => Effect.Effect<SelfUpdate>;
 }
@@ -1029,7 +1031,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     watched: [],
     started: false,
   };
-  const shared = newShared();
+  const shared = options.shared ?? newShared();
   // The watched repo's name of each local Paradev project, from the last project listing that
   // answered. It stays across a reload, which resolves the name against its own config at lookup.
   let repoNameOfProject = new Map<string, string>();

@@ -28,17 +28,17 @@ export interface StatusSettings {
 }
 
 /**
- * What the factory is doing: running, or idle for a reason (no config, or one it cannot read).
- * `running` means the pass loop started; it says nothing about whether passes succeed, which the
- * server log records. The reason names no path and no error, as every reading client gets it;
- * the log has the detail.
- */
-/**
  * The idle reason of a live runner whose machine config does not load. Older runners' self-update
  * smoke matches this exact text in a newer version's `status --json`, so it must not change.
  */
 export const CONFIG_NOT_LOADED_REASON = "the machine config does not load";
 
+/**
+ * What the factory is doing: running, or idle for a reason (no config, or one it cannot read).
+ * `running` means the pass loop started; it says nothing about whether passes succeed, which the
+ * server log records. The reason names no path and no error, as every reading client gets it;
+ * the log has the detail.
+ */
 export type FactoryStatus =
   | { readonly state: "running"; readonly settings: StatusSettings }
   | { readonly state: "idle"; readonly reason: string };
