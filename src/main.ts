@@ -1135,7 +1135,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         scope,
         ...(options.readLoad !== undefined && { readLoad: options.readLoad }),
         ...(options.ssh !== undefined && { ssh: options.ssh }),
-        superset: (argv) => cli.run(argv, { timeoutMs: 30_000 }).pipe(Effect.mapError((e) => e.text)),
+        superset: (argv) => cli.run(argv, { timeoutMs: 30_000 }).pipe(Effect.mapError((e) => e.text.split("\n")[0] ?? e.text)),
       },
       options.gateRemoteBase,
       undefined,

@@ -1,8 +1,10 @@
 /**
  * `factory-runner hosts check`: the ten checks a host must pass before it gets runs, read over SSH
  * and through the Superset CLI, each with the fix the person runs when it fails. It writes nothing
- * on the host (decision U4). The same checks run at `install` and at every config reload, where a
- * host that fails raises one `host-not-ready` attention item and is not a launch candidate.
+ * on the host (decision U4). The same checks run at `install`, and in the pass: the first pass
+ * after each config load checks every host, and a host that is not ready is checked again every 5
+ * minutes. A host that fails raises one `host-not-ready` attention item and is not a launch
+ * candidate until a check passes.
  */
 import * as Effect from "effect/Effect";
 
@@ -35,11 +37,16 @@ export interface HostCheckIo {
 /** How the checks ask the Paradev CLI: the parsed answer, or the error text. */
 export type CliCall = HostCheckIo["superset"];
 
-/** One check's result: `text` is `ok` or the fix; the line printed is `<check>: <text>`. */
+/**
+ * One check's result: `text` is `ok` or the fix; the line printed is `<check>: <text>`, then
+ * ` (<detail>)` when there is a cause to show. The detail is volatile (an error's wording), so
+ * the attention item is built from the check and text alone.
+ */
 export interface CheckLine {
   readonly check: string;
   readonly ok: boolean;
   readonly text: string;
+  readonly detail?: string;
 }
 
 /** The id prefix of a host's `host-not-ready` attention item; the host id follows. */
@@ -54,21 +61,23 @@ const addHostFix = (host: HostConfig): string =>
   `add it with superset hosts add ${host.ssh} --name ${host.name}, or start its host service (sh.superset.host)`;
 
 /** Sets `hasTrustDialogAccepted` for the folder in `~/.claude.json`. Printed for the person to run on the host, never sent. */
-const trustFixScript =
+const TRUST_FIX_SCRIPT =
   'import json,os,sys;f=os.path.expanduser("~/.claude.json");d=json.load(open(f));' +
   'd.setdefault("projects",{}).setdefault(sys.argv[1],{})["hasTrustDialogAccepted"]=True;' +
   'json.dump(d,open(f,"w"),indent=2)';
 
-/** The fix for a CLI or ssh command that is not on a non-interactive ssh shell's PATH, else `fix`. */
-const missingOrFix = (
+/** The cause to show after the fix when `tool` is not on a non-interactive ssh shell's PATH (exit 127); else none. */
+const missingFrom = (
   answer: { readonly _tag: "Failure"; readonly failure: SshError } | { readonly _tag: "Success" },
   tool: string,
-  folder: string,
-  fix: string,
-): string =>
+): string | undefined =>
   answer._tag === "Failure" && answer.failure.message.startsWith("exit 127")
-    ? `${tool} is not on the PATH of a non-interactive ssh shell; add its folder (e.g. ${folder}) to PATH in ~/.zshenv on the host`
-    : fix;
+    ? `${tool} is not on the PATH of a non-interactive ssh shell; add its folder (e.g. /opt/homebrew/bin or ~/.local/bin) to PATH in ~/.zshenv on the host`
+    : undefined;
+
+/** The one-liner the trusted fix prints for `path`. */
+export const trustFixCommand = (path: string): string =>
+  `python3 -c '${TRUST_FIX_SCRIPT}' ${shellQuote(path)}`;
 
 /** The last folder of a path: the project name `projects create` is given. */
 const lastFolder = (path: string): string => path.split("/").filter((part) => part !== "").at(-1) ?? path;
@@ -84,8 +93,10 @@ const rowsOf = (answer: unknown): ReadonlyArray<Record<string, unknown>> =>
     ? answer.filter((row): row is Record<string, unknown> => typeof row === "object" && row !== null)
     : [];
 
-const line = (check: string, fix: string | null): CheckLine =>
-  fix === null ? { check, ok: true, text: "ok" } : { check, ok: false, text: fix };
+const line = (check: string, fix: string | null, detail?: string): CheckLine =>
+  fix === null
+    ? { check, ok: true, text: "ok" }
+    : { check, ok: false, text: fix, ...(detail !== undefined && { detail }) };
 
 /**
  * The proxy env fix: the missing names when the host printed only names, else both. What the host
@@ -127,9 +138,8 @@ export const checkHost = (
         "online",
         online
           ? null
-          : hostsList._tag === "Failure"
-            ? `superset hosts list failed: ${hostsList.failure}`
-            : addHostFix(host),
+          : addHostFix(host),
+        hostsList._tag === "Failure" ? `superset hosts list failed: ${hostsList.failure}` : undefined,
       ),
     );
 
@@ -140,7 +150,8 @@ export const checkHost = (
         "ssh",
         sshOk
           ? null
-          : `install this Mac's ssh key on the host: ssh-copy-id ${host.ssh} (ssh -o BatchMode=yes ${host.ssh} true failed: ${reached.failure.message})`,
+          : `install this Mac's ssh key on the host: ssh-copy-id ${host.ssh}`,
+        sshOk ? undefined : `ssh -o BatchMode=yes ${host.ssh} true failed: ${reached.failure.message}`,
       ),
     );
 
@@ -150,7 +161,10 @@ export const checkHost = (
         "cli",
         projects._tag === "Success"
           ? null
-          : `superset projects list --host ${host.id} failed: ${projects.failure}`,
+          : addHostFix(host),
+        projects._tag === "Failure"
+          ? `superset projects list --host ${host.id} failed: ${projects.failure}`
+          : undefined,
       ),
     );
 
@@ -189,7 +203,7 @@ export const checkHost = (
           check,
           trusted
             ? null
-            : `open Claude Code once in ${path} on the host and accept the trust dialog, or run this on the host: python3 -c '${trustFixScript}' ${shellQuote(path)}`,
+            : `open Claude Code once in ${path} on the host and accept the trust dialog, or run this on the host: ${trustFixCommand(path)}`,
         ),
       );
     }
@@ -213,7 +227,8 @@ export const checkHost = (
     lines.push(
       line(
         "gh",
-        gh._tag === "Success" ? null : missingOrFix(gh, "gh", "/opt/homebrew/bin", "gh auth login on the host"),
+        gh._tag === "Success" ? null : "gh auth login on the host",
+        missingFrom(gh, "gh"),
       ),
     );
     const claude = yield* ssh(CLAUDE_VERSION);
@@ -222,19 +237,23 @@ export const checkHost = (
         "claude",
         claude._tag === "Success"
           ? null
-          : missingOrFix(claude, "claude", "~/.local/bin", "install Claude Code on the host"),
+          : "install Claude Code on the host",
+        missingFrom(claude, "claude"),
       ),
     );
     return lines;
   });
 
-/** What a host's check prints: its name and ssh destination, then one indented `<check>: <text>` per line. */
+/** What a host's check prints: its name and ssh destination, then one indented `<check>: <text>` per line, with ` (<detail>)` after a fix that has a cause. */
 export const formatHostCheck = (
   host: HostConfig,
   lines: ReadonlyArray<CheckLine>,
 ): ReadonlyArray<string> => [
   `${host.name} (${host.ssh})`,
-  ...lines.map((entry) => `  ${entry.check}: ${entry.text}`),
+  ...lines.map(
+    (entry) =>
+      `  ${entry.check}: ${entry.text}${entry.detail === undefined ? "" : ` (${entry.detail})`}`,
+  ),
 ];
 
 /** `<check>: <text>` of the first failing line; null when every line is ok. */

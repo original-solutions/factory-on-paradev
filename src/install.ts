@@ -244,7 +244,9 @@ const WAIT_TEXT = `${WAIT_MS / 1000} s`;
 
 /**
  * Prints `hosts check` for every configured host. A host that fails does not stop the install:
- * the runner starts either way and gives that host no run until a reload passes the check.
+ * the runner starts either way and gives that host no run until a check passes. The first pass
+ * after a config load checks every host, and a host that is not ready is checked again every 5
+ * minutes.
  */
 const checkHosts = async (env: InstallEnv, config: MachineConfig, cli: string): Promise<void> => {
   const io = hostCheckIoFromCommands(env.run, cli);

@@ -161,7 +161,7 @@ P1's table, with two rows now seen on a host and one new state:
 
 ## `factory-runner hosts check [<name>]`
 
-Reads every configured host, or one, over SSH and through the CLI. Prints one line per check, `ok` or the fix, exits 1 when any fails. Runs at `install` and at every config reload; a host that fails is not a candidate until the next reload that passes, and the failure is one attention item `host-not-ready` with the first failing line.
+Reads every configured host, or one, over SSH and through the CLI. Prints one line per check, `ok` or the fix, exits 1 when any fails. Runs at `install` and in the pass: the first pass after each config load checks every host, and a not-ready host is checked again every 5 minutes. A host that fails is not a candidate until a check passes, and the failure is one attention item `host-not-ready` with the first failing line.
 
 | Check | How | Fix printed |
 |---|---|---|
