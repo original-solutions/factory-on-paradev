@@ -4,6 +4,7 @@
  * command id, through `place`. Everything it reads is read at most once per pass.
  */
 import * as Effect from "effect/Effect";
+import * as Semaphore from "effect/Semaphore";
 
 import type { Attention } from "../attention.ts";
 import type { MachineConfig, WatchedRepo } from "../config.ts";
@@ -58,6 +59,8 @@ export const makePlacer = (deps: PlacerDeps) => {
   let recorded = new Set<string>();
   /** Passes in a row the proxy was down; kept across passes. */
   let proxyMisses = 0;
+  /** One placement at a time: a re-gate relaunch and a pass launch never read or bump the counts at once. */
+  const exclusive = Semaphore.makeUnsafe(1);
 
   const countsOf = Effect.gen(function* () {
     if (counts === null) {
@@ -150,6 +153,12 @@ export const makePlacer = (deps: PlacerDeps) => {
       return candidates;
     });
 
+  /** One more running agent on `key`, when its count is known. */
+  const bump = (running: Map<string, number | null>, key: string): void => {
+    const before = running.get(key);
+    if (before !== null && before !== undefined) running.set(key, before + 1);
+  };
+
   const keyOfPlaced = (target: LaunchTarget): string =>
     target.kind === "host" ? `host:${target.machineId}` : target.kind;
 
@@ -170,7 +179,11 @@ export const makePlacer = (deps: PlacerDeps) => {
         // A repo with no hosts and no cloud runs as in P1: on this Mac, with nothing read.
         const hosted = (repo?.hosts?.length ?? 0) > 0;
         const clouded = repo?.cloud !== undefined && machine.cloud !== undefined;
-        if (repo === null || (!hosted && !clouded)) return { kind: "local" } as const;
+        if (repo === null || (!hosted && !clouded)) {
+          // It still takes a slot on this Mac, when this pass has counted them.
+          if (counts !== null) bump(counts, "local");
+          return { kind: "local" } as const;
+        }
         const running = yield* countsOf;
         const placement = choosePlacement(yield* candidatesOf(repo, running));
         for (const dropped of placement.dropped) {
@@ -184,10 +197,8 @@ export const makePlacer = (deps: PlacerDeps) => {
         }
         if (placement.kind === "refused") return yield* Effect.fail(new NoTargetHasRoom());
         // The slot is taken for the rest of the pass: the next launch counts it.
-        const key = keyOfPlaced(placement.target);
-        const before = running.get(key);
-        if (before !== null && before !== undefined) running.set(key, before + 1);
+        bump(running, keyOfPlaced(placement.target));
         return placement.target;
-      }),
+      }).pipe(exclusive.withPermits(1)),
   };
 };
