@@ -249,6 +249,16 @@ const samples: ReadonlyArray<{ readonly event: MachineEvent; readonly line: stri
     ),
   },
   {
+    event: {
+      event: "placement",
+      data: { repo: "rawphp/softfac", target: "mini", reason: "slots full: 2 of 2 running" },
+    },
+    line: lineAtT0(
+      "placement",
+      `{"repo":"rawphp/softfac","target":"mini","reason":"slots full: 2 of 2 running"}`,
+    ),
+  },
+  {
     event: { event: "worktrees_swept", data: { paths: ["/t3/worktrees/a", "/t3/worktrees/b"] } },
     line: lineAtT0("worktrees_swept", `{"paths":["/t3/worktrees/a","/t3/worktrees/b"]}`),
   },
@@ -453,9 +463,9 @@ describe("append", () => {
       seen.add(event.event);
       expect(readText(logFile(dataDir)), event.event).toBe(expected);
     }
-    // Every one of the 21 event types has at least one exact line.
+    // Every one of the 22 event types has at least one exact line.
     expect([...seen].sort()).toEqual(Object.keys(MACHINE_EVENT_FIELDS).sort());
-    expect(seen.size).toBe(21);
+    expect(seen.size).toBe(22);
   });
 
   it("the claims paused line has a reason and nothing else", () => {
@@ -604,6 +614,15 @@ describe("append", () => {
 describe("scan machine log", () => {
   const machineLine = (ms: number, event: string, note: string) =>
     `{"ts":"2026-10-04T10:13:16.123Z","ms":${ms},"event":"${event}","data":{"note":"${note}"}}\n`;
+
+  it("a placement line written by append is read back by both readers with its data", () => {
+    const dataDir = tempDir();
+    const log = open(dataDir, ticking(T0, 1000));
+    const data = { repo: "rawphp/softfac", target: "cloud", reason: "the proxy check failed: answered HTTP 503" };
+    log.append({ event: "placement", data });
+    expect(scanMachineLog(dataDir).map((entry) => [entry.event, entry.data])).toEqual([["placement", data]]);
+    expect(machineLogSince(dataDir, 0).map((entry) => [entry.event, entry.data])).toEqual([["placement", data]]);
+  });
 
   it("scanMachineLog gives the lines oldest first", () => {
     const dataDir = tempDir();
