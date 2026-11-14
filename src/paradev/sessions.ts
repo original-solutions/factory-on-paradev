@@ -1719,7 +1719,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * each; a workspace that fails to archive is one warning, and the rest go on.
    */
   const sweepOrphans = Effect.gen(function* () {
-    // First, so a fresh data dir has its id before this pass can launch in the cloud.
+    // First: the sweep starts beside the pass, so a fresh data dir has its id long before the
+    // pass's own CLI calls reach a cloud launch. That is timing, not a lock.
     const mine = runnerTag(yield* local(runnerId(dataDir)));
     const argv = ["workspaces", "list", ...at({ kind: "cloud" })];
     const rows = yield* callWithRetry(cli, argv, 30_000).pipe(
