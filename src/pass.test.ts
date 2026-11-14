@@ -7045,6 +7045,36 @@ describe("the cloud proxy check", () => {
     }),
   );
 
+  it.effect("[down, down, guarded, down, down]: no cloud-proxy-down is ever raised", () =>
+    Effect.gen(function* () {
+      const fake = cloudy([down, down, guarded, down, down]);
+      yield* passes(fake, 5, (f, _r, i) => {
+        assert.ok(!f.items.some((item) => item.id === "cloud-proxy-down"), `pass ${i}`);
+      });
+    }),
+  );
+
+  it.effect("a down item and a pass where no repo names cloud: the item clears and the misses start over", () =>
+    Effect.gen(function* () {
+      const fake = cloudy([down]);
+      yield* passes(fake, 3, () => undefined);
+      assert.deepEqual(ids(fake), ["cloud-proxy-down"]);
+      assert.equal(fake.proxyMisses.passes, 3);
+      fake.machineRepos = [{ repo: REPO, path: "/work/softfac" }];
+      yield* pass(fake, [REPO], 5);
+      assert.deepEqual(ids(fake), []);
+      assert.equal(fake.proxyMisses.passes, 0);
+      // And with `cloud` unset.
+      fake.machineRepos = [{ repo: REPO, path: "/work/softfac", cloud: "env-1" }];
+      yield* passes(fake, 3, () => undefined);
+      assert.deepEqual(ids(fake), ["cloud-proxy-down"]);
+      fake.cloud = undefined;
+      yield* pass(fake, [REPO], 5);
+      assert.deepEqual(ids(fake), []);
+      assert.equal(fake.proxyMisses.passes, 0);
+    }),
+  );
+
   it.effect("the proxy is asked once per pass, and not at all when no repo names cloud", () =>
     Effect.gen(function* () {
       const fake = cloudy([guarded]);

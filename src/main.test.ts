@@ -1597,6 +1597,32 @@ describe("the default-branch reads of a runner clone", () => {
 });
 
 describe("liveWorld", () => {
+  it.effect("checkProxy asks <proxy>/v1/models through the injected call and answers open, then down", () =>
+    Effect.gen(function* () {
+      const asked: Array<string> = [];
+      const statuses = [200, 503];
+      const world = liveWorld(
+        { ...baseMachine, cloud: { machineSize: "small", maxRuns: 1, proxy: "https://proxy.example.ts.net/" } },
+        tempDir(),
+        {} as never,
+        NodeServices.layer,
+        {} as never,
+        () => NOW,
+        "mac-mini",
+        noAttention,
+        {
+          gate: { run: () => Effect.die("no gate") },
+          wake: Effect.void,
+          scope: yield* Scope.make(),
+          proxyGet: (url) => Effect.sync(() => (asked.push(url), statuses.shift()!)),
+        },
+      );
+      assert.deepStrictEqual(yield* world.checkProxy(), { kind: "open" });
+      assert.deepStrictEqual(yield* world.checkProxy(), { kind: "down", reason: "answered HTTP 503" });
+      assert.deepStrictEqual(asked, ["https://proxy.example.ts.net/v1/models", "https://proxy.example.ts.net/v1/models"]);
+    }),
+  );
+
   it.effect("a new world built from the same shared state goes on counting the cloud proxy's misses", () =>
     Effect.gen(function* () {
       const shared = newShared();

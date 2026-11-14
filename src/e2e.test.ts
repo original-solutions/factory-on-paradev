@@ -1116,7 +1116,22 @@ it.live("sends a failed gate back into the session, then passes it on the second
  * and the host's snapshot is read for the counts. Only Paradev, GitHub and ssh are fakes; the
  * runtime, the adapter, the pass and the placer are real. The run is not followed past its launch.
  */
-it.live("a ready issue on a repo that lists a host launches on the quiet host when this Mac is busier", () =>
+/** What a placement run is told: the machine config's targets, and how the proxy answers. */
+interface PlacementSpec {
+  /** The repo lists the host, and the machine config has it. */
+  readonly host: boolean;
+  /** The repo names a cloud environment, and the machine config has a `cloud` block. */
+  readonly cloud: boolean;
+  /** `local.max_runs`. */
+  readonly localMaxRuns: number;
+  readonly load: { readonly oneMinute: number; readonly cores: number };
+  /** The status the cloud proxy answers a call with no key. */
+  readonly proxyStatus?: number;
+  /** The run is over for the test when this is true. */
+  readonly done: (seen: { paradev: ReturnType<typeof makeParadev>; logs: ReadonlyArray<string> }) => boolean;
+}
+
+const placementRun = (spec: PlacementSpec) =>
   Effect.scoped(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -1149,17 +1164,17 @@ it.live("a ready issue on a repo that lists a host launches on the quiet host wh
           "notify: false",
           "min_free_gib: 0",
           "max_load_per_core: 0",
-          "hosts:",
-          `  - id: ${HOST_ID}`,
-          `    name: ${HOST_NAME}`,
-          "    ssh: me@e2e-mini",
-          "    max_runs: 2",
+          "local:",
+          `  max_runs: ${spec.localMaxRuns}`,
+          ...(spec.host
+            ? ["hosts:", `  - id: ${HOST_ID}`, `    name: ${HOST_NAME}`, "    ssh: me@e2e-mini", "    max_runs: 2"]
+            : []),
+          ...(spec.cloud ? ["cloud:", "  machine_size: small", "  max_runs: 1", `  proxy: ${PROXY_URL}`] : []),
           "repos:",
           `  - repo: ${REPO}`,
           `    path: ${clone}`,
-          "    hosts:",
-          `      - id: ${HOST_ID}`,
-          `        path: ${clone}`,
+          ...(spec.host ? ["    hosts:", `      - id: ${HOST_ID}`, `        path: ${clone}`] : []),
+          ...(spec.cloud ? [`    cloud: ${CLOUD_ENV}`] : []),
           "paradev:",
           `  cli: ${CLI}`,
           "  agent: claude",
@@ -1210,9 +1225,9 @@ it.live("a ready issue on a repo that lists a host launches on the quiet host wh
         });
       const factory = factoryRuntime({
         gateRemoteBase: `file://${remotes}`,
-        // This Mac is the busier machine: 5 per core against the host's 0.01.
-        readLoad: () => ({ oneMinute: 5, cores: 1 }),
+        readLoad: () => spec.load,
         ssh,
+        proxyGet: () => Effect.succeed(spec.proxyStatus ?? 401),
         sessions: {
           remoteBase: `file://${remotes}`,
           fetchRetryDelaysMs: [],
@@ -1245,7 +1260,7 @@ it.live("a ready issue on a repo that lists a host launches on the quiet host wh
       // a later pass, which the 10 s poll brings.
       const driven = yield* Effect.gen(function* () {
         for (;;) {
-          if (created() !== undefined) return;
+          if (spec.done({ paradev, logs })) return;
           yield* loop.awaitPass;
         }
       }).pipe(Effect.timeoutOption("60 seconds"));
@@ -1255,12 +1270,61 @@ it.live("a ready issue on a repo that lists a host launches on the quiet host wh
         `ssh: ${sshCalls.join(" | ")}`,
         `factory log (last 60):\n${logs.slice(-60).join("\n")}`,
       ].join("\n\n");
-      if (Option.isNone(driven)) assert.fail(`no workspace was created\n${diagnosis}`);
-      assert.deepStrictEqual(created()!.slice(0, 3), ["workspaces", "create", "--host"], diagnosis);
-      assert.strictEqual(created()![3], HOST_ID);
-      // The counts came from the host's snapshot, read for the placement.
-      assert.isAbove(snapshots().length, 0, diagnosis);
-      assert.strictEqual(snapshots()[0]![2], HOST_ID);
+      if (Option.isNone(driven)) assert.fail(`the run did not reach what the test waits for\n${diagnosis}`);
+      return { paradev, logs, created, snapshots, diagnosis };
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(NodeServices.layer));
+
+const PROXY_URL = "https://proxy.example.ts.net";
+const CLOUD_ENV = "e2e-env";
+const waitsNoRoom = (logs: ReadonlyArray<string>) => logs.some((line) => line.includes("waits: no target has room"));
+
+it.live("a ready issue on a repo that lists a host launches on the quiet host when this Mac is busier", () =>
+  Effect.gen(function* () {
+    // This Mac is the busier machine: 5 per core against the host's 0.01.
+    const run = yield* placementRun({
+      host: true,
+      cloud: false,
+      localMaxRuns: 2,
+      load: { oneMinute: 5, cores: 1 },
+      done: ({ paradev }) => paradev.calls.some((call) => call[0] === "workspaces" && call[1] === "create"),
+    });
+    assert.deepStrictEqual(run.created()!.slice(0, 3), ["workspaces", "create", "--host"], run.diagnosis);
+    assert.strictEqual(run.created()![3], HOST_ID);
+    // The counts came from the host's snapshot, read for the placement.
+    assert.isAbove(run.snapshots().length, 0, run.diagnosis);
+    assert.strictEqual(run.snapshots()[0]![2], HOST_ID);
+  }),
+);
+
+it.live("cloud takes no run while the proxy answers 200, and the issue waits for room", () =>
+  Effect.gen(function* () {
+    const run = yield* placementRun({
+      host: false,
+      cloud: true,
+      localMaxRuns: 0,
+      load: { oneMinute: 0, cores: 1 },
+      proxyStatus: 200,
+      done: ({ logs }) => waitsNoRoom(logs),
+    });
+    assert.isUndefined(run.created(), run.diagnosis);
+    assert.isAbove(run.snapshots().length, 0, run.diagnosis);
+  }),
+);
+
+it.live("with the proxy answering 401 and this Mac full, a cloud workspace is asked for", () =>
+  Effect.gen(function* () {
+    const run = yield* placementRun({
+      host: false,
+      cloud: true,
+      localMaxRuns: 0,
+      load: { oneMinute: 0, cores: 1 },
+      proxyStatus: 401,
+      // The fake Paradev cannot make a cloud workspace: the attempt is what is seen.
+      done: ({ paradev }) => paradev.calls.some((call) => call[0] === "workspaces" && call[1] === "create"),
+    });
+    assert.deepStrictEqual(run.created()!.slice(0, 4), ["workspaces", "create", "--host", "cloud"], run.diagnosis);
+    assert.isAbove(run.snapshots().length, 0, run.diagnosis);
+    assert.strictEqual(run.snapshots()[0]![2], "cloud");
+  }),
 );
