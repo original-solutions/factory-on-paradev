@@ -145,9 +145,13 @@ export interface HostConfig {
   readonly ghLogin?: string;
 }
 
+/** The `gh_login` a run on `host` is configured with: the repo's for that host, else the host's; absent when neither names one. */
+export const configuredGhLogin = (host: HostConfig | undefined, on?: RepoHost): string | undefined =>
+  on?.ghLogin ?? host?.ghLogin;
+
 /**
- * The GitHub login a run of `repo` on host `machineId` acts as: the repo's `gh_login` for that
- * host, else the host's, else `runnerLogin`.
+ * The GitHub login a run of `repo` on host `machineId` acts as: the configured one, else
+ * `runnerLogin`.
  */
 export const hostGhLogin = (
   hosts: ReadonlyArray<HostConfig>,
@@ -155,9 +159,10 @@ export const hostGhLogin = (
   machineId: string,
   runnerLogin: string,
 ): string =>
-  repo.hosts?.find((on) => on.id === machineId)?.ghLogin ??
-  hosts.find((host) => host.id === machineId)?.ghLogin ??
-  runnerLogin;
+  configuredGhLogin(
+    hosts.find((host) => host.id === machineId),
+    repo.hosts?.find((on) => on.id === machineId),
+  ) ?? runnerLogin;
 
 export type MachineSize = "small" | "medium" | "large";
 

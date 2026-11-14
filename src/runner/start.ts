@@ -145,6 +145,12 @@ export const ownLogins = (ctx: {
   readonly hostLogins: ReadonlyMap<string, string>;
 }): ReadonlyArray<string> => [ctx.trackerUser, ...ctx.hostLogins.values()];
 
+/** The login a run of this repo acts as on host `machineId`: the host's resolved one, else the runner's. */
+export const hostLoginOf = (
+  ctx: { readonly trackerUser: string; readonly hostLogins: ReadonlyMap<string, string> },
+  machineId: string,
+): string => ctx.hostLogins.get(machineId) ?? ctx.trackerUser;
+
 /**
  * Whether a session can be launched onto `pull` and told to push to its branch: it is in this
  * repo, merges into `base`, and its head is a name a command can be handed (`isSafeBranchName`:
@@ -815,7 +821,7 @@ const launchSession = Effect.fn("RunnerStart.launchSession")(function* (
         hostLaunchMessage(
           ctx.repo,
           issue,
-          ctx.hostLogins.get(machineId) ?? ctx.trackerUser,
+          hostLoginOf(ctx, machineId),
           resumed ?? undefined,
           named ? base : undefined,
         ),

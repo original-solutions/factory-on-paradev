@@ -9,7 +9,7 @@
 import * as Effect from "effect/Effect";
 
 import type { NewItem } from "../attention.ts";
-import type { HostConfig, MachineConfig } from "../config.ts";
+import { configuredGhLogin, type HostConfig, type MachineConfig } from "../config.ts";
 import { CLI_ENV, classify } from "./cli.ts";
 import {
   CLAUDE_VERSION,
@@ -131,7 +131,7 @@ export const checkHost = (
     const repos = machine.repos.flatMap((entry) =>
       (entry.hosts ?? [])
         .filter((on) => on.id === host.id)
-        .map((on) => ({ repo: entry.repo, path: on.path, ghLogin: on.ghLogin })),
+        .map((on) => ({ repo: entry.repo, path: on.path, ghLogin: configuredGhLogin(host, on) })),
     );
     const lines: Array<CheckLine> = [];
 
@@ -215,11 +215,11 @@ export const checkHost = (
     }
 
     // The logins a run on this host acts as: the host's, then each repo's; none named means the runner's.
-    const named = [host.ghLogin, ...repos.map((r) => r.ghLogin ?? host.ghLogin)];
+    const named = [configuredGhLogin(host), ...repos.map((r) => r.ghLogin)];
     const runner = named.includes(undefined) ? yield* Effect.result(io.runnerLogin) : null;
     const logins: Array<string> = [];
     for (const login of named.map((l) => l ?? (runner?._tag === "Success" ? runner.success : undefined))) {
-      if (login !== undefined && !logins.some((seen) => seen.toLowerCase() === login.toLowerCase())) logins.push(login);
+      if (login !== undefined && !logins.includes(login)) logins.push(login);
     }
     const loginLines = Effect.gen(function* () {
       const out: Array<CheckLine> = [];
@@ -326,7 +326,8 @@ const cliErrorText = (done: SyncCommandResult): string =>
 export const hostCheckIoFromCommands = (
   run: SyncCommandRun,
   cli: string,
-): Omit<HostCheckIo, "runnerLogin"> => ({
+  ghConfigDir: string,
+): HostCheckIo => ({
   ssh: fromCommandRunner(run),
   superset: (argv) =>
     Effect.suspend(() => {
@@ -337,22 +338,15 @@ export const hostCheckIoFromCommands = (
         catch: (error) => `the answer is not JSON: ${error instanceof Error ? error.message : String(error)}`,
       });
     }),
-});
-
-/** The runner's gh login, read with the runner's own `gh_config_dir`. */
-const runnerLoginFromCommands = (run: SyncCommandRun, config: MachineConfig): Effect.Effect<string, string> =>
-  Effect.suspend(() => {
-    const done = run(
-      "env",
-      [`GH_CONFIG_DIR=${config.ghConfigDir}`, "gh", "api", "user", "--jq", ".login"],
-      30_000,
-      CLI_ENV,
-    );
+  // The CLI and install have no async process service, so the runner's login is read here, with the runner's own `gh_config_dir`.
+  runnerLogin: Effect.suspend(() => {
+    const done = run("env", [`GH_CONFIG_DIR=${ghConfigDir}`, "gh", "api", "user", "--jq", ".login"], 30_000, CLI_ENV);
     const login = done.stdout.trim();
     return done.status === 0 && login !== ""
       ? Effect.succeed(login)
       : Effect.fail(done.status === 0 ? "gh printed no login" : cliErrorText(done));
-  });
+  }),
+});
 
 /**
  * Runs and prints `hosts check` for each of `hosts`, one after another, as the CLI and install do:
@@ -364,7 +358,7 @@ export const printHostChecks = async (
   hosts: ReadonlyArray<HostConfig>,
   out: (line: string) => void,
 ): Promise<boolean> => {
-  const io = { ...hostCheckIoFromCommands(run, config.paradev.cli), runnerLogin: runnerLoginFromCommands(run, config) };
+  const io = hostCheckIoFromCommands(run, config.paradev.cli, config.ghConfigDir);
   let ok = true;
   for (const host of hosts) {
     const lines = await Effect.runPromise(checkHost(io, config, host));

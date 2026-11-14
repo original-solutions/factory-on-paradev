@@ -435,7 +435,7 @@ describe("hostCheckIoFromCommands", () => {
     const io = hostCheckIoFromCommands((command, args, timeoutMs, inheritEnv) => {
       calls.push({ command, args, timeoutMs, inheritEnv });
       return { status: 0, stdout: '[{"id":"h1"}]', stderr: "" };
-    }, "/opt/superset");
+    }, "/opt/superset", "/gh");
     assert.deepStrictEqual(await Effect.runPromise(io.superset(["hosts", "list"])), [{ id: "h1" }]);
     assert.deepStrictEqual(calls, [
       {
@@ -451,21 +451,34 @@ describe("hostCheckIoFromCommands", () => {
     const failing = hostCheckIoFromCommands(
       () => ({ status: 1, stdout: "", stderr: "noise\nError: PARADEV_OFFLINE: not running\nHint: open it\n" }),
       "superset",
+      "/gh",
     );
     assert.strictEqual(
       await Effect.runPromise(Effect.flip(failing.superset(["hosts", "list"]))),
       "PARADEV_OFFLINE: not running",
     );
-    const silent = hostCheckIoFromCommands(() => ({ status: 3, stdout: "", stderr: "" }), "superset");
+    const silent = hostCheckIoFromCommands(() => ({ status: 3, stdout: "", stderr: "" }), "superset", "/gh");
     assert.strictEqual(await Effect.runPromise(Effect.flip(silent.superset(["x"]))), "exit 3");
-    const spawn = hostCheckIoFromCommands(() => ({ status: null, stdout: "", stderr: "spawnSync superset ENOENT\n" }), "superset");
+    const spawn = hostCheckIoFromCommands(() => ({ status: null, stdout: "", stderr: "spawnSync superset ENOENT\n" }), "superset", "/gh");
     assert.strictEqual(await Effect.runPromise(Effect.flip(spawn.superset(["x"]))), "spawnSync superset ENOENT");
-    const garbage = hostCheckIoFromCommands(() => ({ status: 0, stdout: "not json", stderr: "" }), "superset");
+    const garbage = hostCheckIoFromCommands(() => ({ status: 0, stdout: "not json", stderr: "" }), "superset", "/gh");
     assert.isString(await Effect.runPromise(Effect.flip(garbage.superset(["x"]))));
   });
 
+  it("reads the runner's login with the runner's gh_config_dir, and says so when it cannot", async () => {
+    const seen: Array<ReadonlyArray<string>> = [];
+    const io = hostCheckIoFromCommands((_command, args) => {
+      seen.push(args);
+      return { status: 0, stdout: "rawphp\n", stderr: "" };
+    }, "superset", "/gh/rawphp");
+    assert.strictEqual(await Effect.runPromise(io.runnerLogin), "rawphp");
+    assert.deepStrictEqual(seen, [["GH_CONFIG_DIR=/gh/rawphp", "gh", "api", "user", "--jq", ".login"]]);
+    const down = hostCheckIoFromCommands(() => ({ status: 1, stdout: "", stderr: "gh: no" }), "superset", "/gh");
+    assert.isString(await Effect.runPromise(Effect.flip(down.runnerLogin)));
+  });
+
   it("reads ssh through the same runner", async () => {
-    const io = hostCheckIoFromCommands((command, args) => ({ status: 0, stdout: `${command} ${args.at(-1)}`, stderr: "" }), "superset");
+    const io = hostCheckIoFromCommands((command, args) => ({ status: 0, stdout: `${command} ${args.at(-1)}`, stderr: "" }), "superset", "/gh");
     const done = await Effect.runPromise(io.ssh(["-o", "x", "me@h", "true"], 10_000));
     assert.strictEqual(done.stdout, "ssh true");
   });

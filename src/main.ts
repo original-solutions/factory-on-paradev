@@ -852,10 +852,15 @@ export const liveWorld = (
         {
           ssh,
           superset: live.superset ?? (() => Effect.fail("no Paradev CLI to ask")),
-          // The login ignores the repo: any configured one will do.
-          runnerLogin: withProcess(
-            makeGitHub({ repo: machine.repos[0]?.repo ?? "", ghConfigDir: machine.ghConfigDir }).login(),
-          ).pipe(Effect.mapError((error) => error.message)),
+          // The login the pass already read for some repo; a read of GitHub's own only when none is known yet.
+          runnerLogin: Effect.suspend(() => {
+            const known = [...lastGood.values()].find((good) => good.trackerUser !== undefined)?.trackerUser;
+            return known !== undefined
+              ? Effect.succeed(known)
+              : withProcess(
+                  makeGitHub({ repo: machine.repos[0]?.repo ?? "", ghConfigDir: machine.ghConfigDir }).login(),
+                ).pipe(Effect.mapError((error) => error.message));
+          }),
         },
         machine,
         host,

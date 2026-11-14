@@ -23,6 +23,7 @@ import {
 } from "./messages.ts";
 import { launchable } from "./launchTarget.ts";
 import { relaunchCommandId, type Relaunch } from "./progress.ts";
+import { hostLoginOf } from "./start.ts";
 import {
   describe,
   goStuck,
@@ -104,7 +105,7 @@ export const relaunchSession = Effect.fn("RunnerRelaunch.relaunchSession")(funct
       baseRef: relaunch.branch,
       message,
       hostMessage: (machineId) =>
-        `${hostLaunchMessage(ctx.repo, issue, ctx.hostLogins.get(machineId) ?? ctx.trackerUser, resumed)}${tail}`,
+        `${hostLaunchMessage(ctx.repo, issue, hostLoginOf(ctx, machineId), resumed)}${tail}`,
       model: project.model,
       pullRequestUrl: from.prUrl,
     }),
