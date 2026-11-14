@@ -469,12 +469,17 @@ describe("hostCheckIoFromCommands", () => {
     const seen: Array<ReadonlyArray<string>> = [];
     const io = hostCheckIoFromCommands((_command, args) => {
       seen.push(args);
-      return { status: 0, stdout: "rawphp\n", stderr: "" };
+      return { status: 0, stdout: '{"login":"rawphp","id":1}\n', stderr: "" };
     }, "superset", "/gh/rawphp");
     assert.strictEqual(await Effect.runPromise(io.runnerLogin), "rawphp");
-    assert.deepStrictEqual(seen, [["GH_CONFIG_DIR=/gh/rawphp", "gh", "api", "user", "--jq", ".login"]]);
+    // The call `GitHub.login` makes, under the runner's gh_config_dir.
+    assert.deepStrictEqual(seen, [["GH_CONFIG_DIR=/gh/rawphp", "gh", "api", "user"]]);
     const down = hostCheckIoFromCommands(() => ({ status: 1, stdout: "", stderr: "gh: no" }), "superset", "/gh");
-    assert.isString(await Effect.runPromise(Effect.flip(down.runnerLogin)));
+    assert.strictEqual(await Effect.runPromise(Effect.flip(down.runnerLogin)), "gh: no");
+    for (const stdout of ['{"login":"","id":1}', '{"id":1}', "rawphp\n", ""]) {
+      const none = hostCheckIoFromCommands(() => ({ status: 0, stdout, stderr: "" }), "superset", "/gh");
+      assert.strictEqual(await Effect.runPromise(Effect.flip(none.runnerLogin)), "gh printed no login", stdout);
+    }
   });
 
   it("reads ssh through the same runner", async () => {

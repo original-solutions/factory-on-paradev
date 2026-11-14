@@ -2840,6 +2840,22 @@ describe("launch in the cloud", () => {
   ];
   const getArgv = ["workspaces", "get", C3_WS, "--host", "cloud"];
 
+  it.live("a cloud launch keeps message as the prompt, whatever hostMessage says", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
+        ],
+        { config: onCloud },
+      );
+      yield* t.run((s) => s.launch(request({ hostMessage: () => "host message" })));
+      const argv = t.calls.find(argvIs("agents", "create"))!;
+      assert.strictEqual(argv[argv.indexOf("--prompt") + 1], "/factory original-solutions/factory-paradev-spike#1");
+    }),
+  );
+
   it.live("creates with no --branch or --agent, records before the ready poll, starts the agent once ready, keeps Paradev's branch", () =>
     Effect.gen(function* () {
       const recordedFirst: Array<string> = [];

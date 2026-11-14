@@ -140,6 +140,7 @@ import {
 import {
   bindProcess,
   ClaimMemo,
+  ghLogin,
   makeGitHub,
   type GitHubError,
   type IssueSummary,
@@ -857,9 +858,7 @@ export const liveWorld = (
             const known = [...lastGood.values()].find((good) => good.trackerUser !== undefined)?.trackerUser;
             return known !== undefined
               ? Effect.succeed(known)
-              : withProcess(
-                  makeGitHub({ repo: machine.repos[0]?.repo ?? "", ghConfigDir: machine.ghConfigDir }).login(),
-                ).pipe(Effect.mapError((error) => error.message));
+              : withProcess(ghLogin(machine.ghConfigDir)).pipe(Effect.mapError((error) => error.message));
           }),
         },
         machine,

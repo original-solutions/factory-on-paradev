@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 
 import type { NewItem } from "../attention.ts";
 import { configuredGhLogin, type HostConfig, type MachineConfig } from "../config.ts";
+import { LOGIN_ARGS, loginOf } from "../tracker/github.ts";
 import { CLI_ENV, classify } from "./cli.ts";
 import {
   CLAUDE_VERSION,
@@ -338,13 +339,13 @@ export const hostCheckIoFromCommands = (
         catch: (error) => `the answer is not JSON: ${error instanceof Error ? error.message : String(error)}`,
       });
     }),
-  // The CLI and install have no async process service, so the runner's login is read here, with the runner's own `gh_config_dir`.
+  // The CLI and install have no async process service, so the tracker's login call (its arguments and
+  // its reading of the answer) runs through the synchronous runner, with the runner's own `gh_config_dir`.
   runnerLogin: Effect.suspend(() => {
-    const done = run("env", [`GH_CONFIG_DIR=${ghConfigDir}`, "gh", "api", "user", "--jq", ".login"], 30_000, CLI_ENV);
-    const login = done.stdout.trim();
-    return done.status === 0 && login !== ""
-      ? Effect.succeed(login)
-      : Effect.fail(done.status === 0 ? "gh printed no login" : cliErrorText(done));
+    const done = run("env", [`GH_CONFIG_DIR=${ghConfigDir}`, "gh", ...LOGIN_ARGS], 30_000, CLI_ENV);
+    if (done.status !== 0) return Effect.fail(cliErrorText(done));
+    const login = loginOf(done.stdout);
+    return login === null ? Effect.fail("gh printed no login") : Effect.succeed(login);
   }),
 });
 
