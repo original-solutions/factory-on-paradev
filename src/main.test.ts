@@ -4167,6 +4167,72 @@ describe("liveWorld: the hosts", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("the belt carries the pass's target rows and names a run on a host by the host's name", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        const writes: Array<{
+          runner: { targets: Array<{ kind: string; name: string }> };
+          runs: Array<{ id: string; target: string | null; workspaceId: string | null }>;
+        }> = [];
+        paradev.pages = (argv) => {
+          if (argv[1] === "publish") return reply(0, readFixture("pages-publish-probe-ws").stdout);
+          writes.push(JSON.parse(argv[8]!) as (typeof writes)[number]);
+          return reply(0, readFixture("pages-storage-set-belt").stdout);
+        };
+        const belt = `paradev:\n  agent: claude\n  cli: ${CLI}\n`;
+        const { loop, factoryDir } = yield* started(
+          configFor([["a/b", "/b"]], "/gh", HOSTS, belt),
+          noGhProcess,
+          { ssh: refused },
+          paradev,
+        );
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* waitUntil("the first belt write", () => writes.length > 0);
+        assert.deepStrictEqual(
+          writes[0]!.runner.targets.map((target) => [target.kind, target.name]),
+          [
+            ["local", "local"],
+            ["host", "mini"],
+          ],
+        );
+        // A run that went to the host and finished: the pass leaves it alone, the belt lists it.
+        const run = newRunId("a/b", "7", 1);
+        const ledger = Ledger.create(factoryDir, run, { clock: () => Date.now() });
+        ledger.append(
+          {
+            event: "session_launched",
+            data: {
+              thread_id: "host:h1:ws-7",
+              worktree: null,
+              branch: null,
+              model_instance: null,
+              model: null,
+              model_options: null,
+              resumed_from: null,
+            },
+          },
+          makeCause("start", "seed"),
+        );
+        ledger.append(
+          {
+            event: "finished",
+            data: { outcome: "pr-open", total_ms: 1, gate_attempts: 1, review_cycles: null, pr_url: null, pr_end: null },
+          },
+          makeCause("start", "seed"),
+        );
+        ledger.close();
+        const before = writes.length;
+        yield* onePassMore(loop, factoryDir);
+        yield* waitUntil("the belt write after the seeded run", () => writes.length > before);
+        assert.deepStrictEqual(
+          writes.at(-1)!.runs.map((entry) => [entry.id, entry.target, entry.workspaceId]),
+          [[runIdToString(run), "mini", "ws-7"]],
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("a world starts with every host not checked yet, so placement sees none as ready", () =>
     Effect.scoped(
       Effect.gen(function* () {

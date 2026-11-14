@@ -205,6 +205,10 @@ describe("belt.html", () => {
     expect(stripText).toContain("trilogy-mac");
     expect(stripText).toContain("offline");
     expect(stripText).toContain("?/2");
+    expect(stripText).toContain("load 0.25/core");
+    expect(stripText).toContain("not ready");
+    const boxes = Array.from(strip.querySelectorAll(".target"));
+    expect(boxes.map((box) => box.classList.contains("down"))).toEqual([false, true]);
     // The strip comes before the runs.
     const runsTable = document.querySelector("table")!;
     expect(strip.compareDocumentPosition(runsTable as unknown as typeof strip) & 4).toBe(4);
