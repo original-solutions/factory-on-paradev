@@ -1021,11 +1021,13 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     started: false,
   };
   const shared = newShared();
+  // The watched repo's name of each local Paradev project, from the last project listing that
+  // answered. It stays across a reload, which resolves the name against its own config at lookup.
+  let repoNameOfProject = new Map<string, string>();
   // What the one placer reads from the current start; a reload sets it again, and the placer, with
   // its launches in flight, stays. A gate fiber that outlives a reload places through it too.
   let placing: {
     readonly machine: MachineConfig;
-    readonly repoOfProject: (projectId: string) => WatchedRepo | null;
     readonly hostsNotReady: () => ReadonlyMap<string, string>;
     readonly running: Effect.Effect<ReadonlyArray<TargetCount>>;
     readonly record: (event: MachineEvent) => Effect.Effect<void>;
@@ -1038,7 +1040,12 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     get machine() {
       return placingNow().machine;
     },
-    repoOfProject: (projectId) => placingNow().repoOfProject(projectId),
+    repoOfProject: (projectId) => {
+      const name = repoNameOfProject.get(projectId);
+      if (name === undefined) return null;
+      // A repo the current config no longer watches is unknown, not placed as its old self.
+      return placingNow().machine.repos.find((entry) => asciiLower(entry.repo) === asciiLower(name)) ?? null;
+    },
     hostLoads: shared.hostLoads,
     hostsNotReady: () => placingNow().hostsNotReady(),
     readLoad: options.readLoad ?? readLoad,
@@ -1139,20 +1146,6 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       }),
       paradev,
     );
-    // The watched repo of each local Paradev project, from the last project listing that answered.
-    let repoOfProject = new Map<string, WatchedRepo>();
-    // Placement reads the world's host readings and the adapter's counts; both are built after it,
-    // and neither is read before a launch, so its dependencies are looked up when it asks.
-    placing = {
-      machine,
-      repoOfProject: (projectId) => repoOfProject.get(projectId) ?? null,
-      hostsNotReady: () => base.hostsNotReady,
-      running: Effect.suspend(() => sessions.runningByTarget),
-      record: (event) =>
-        base.record(event).pipe(
-          Effect.catch((error) => Effect.logWarning(`the machine log could not take a placement: ${error.message}`)),
-        ),
-    };
     const sessions = yield* makeParadevSessions({
       ...options.sessions,
       agent: machine.paradev.agent,
@@ -1263,7 +1256,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       // One `projects list` answers every repo.
       const listing = yield* Effect.result(sessions.findProjects(machine.repos.map((entry) => entry.path)));
       const projects = Result.isSuccess(listing) ? listing.success : null;
-      const byProject = new Map<string, WatchedRepo>();
+      const byProject = new Map<string, string>();
       for (const [index, entry] of machine.repos.entries()) {
         if (projects !== null) {
           const project = projects[index] ?? null;
@@ -1302,7 +1295,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
             });
             continue;
           }
-          if (project !== null) byProject.set(project.id, entry);
+          if (project !== null) byProject.set(project.id, entry.repo);
         }
         if (machine.defaultProject === undefined) {
           repos.push({ ...entry, title: entry.repo });
@@ -1313,7 +1306,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         else repos.push({ ...entry, title: entry.repo, defaulted });
       }
       // A lookup that failed keeps the last listing: placement then still knows each project's repo.
-      if (projects !== null) repoOfProject = byProject;
+      if (projects !== null) repoNameOfProject = byProject;
       const listed = new Set(machine.repos.map((entry) => asciiLower(entry.repo)));
       const departed = [
         ...new Set(
@@ -1357,6 +1350,17 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         ),
     };
     options.onWorld?.(world);
+    // Placement reads the world's host readings and the adapter's counts, built by now. This is
+    // where the start takes over, so a start that failed before it leaves the last one placing.
+    placing = {
+      machine,
+      hostsNotReady: () => base.hostsNotReady,
+      running: Effect.suspend(() => sessions.runningByTarget),
+      record: (event) =>
+        base.record(event).pipe(
+          Effect.catch((error) => Effect.logWarning(`the machine log could not take a placement: ${error.message}`)),
+        ),
+    };
     state.current = { machine, world, afterPass, sweep };
     state.status = {
       state: "running",

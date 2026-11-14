@@ -4225,7 +4225,7 @@ describe("liveWorld: the hosts", () => {
         const drops = eventsOf(factoryDir, "placement").map((entry) => entry.data);
         assert.deepStrictEqual(drops, [
           { repo: "a/b", target: "local", reason: "slots full: 1 of 1 running" },
-          { repo: "a/b", target: "mini", reason: "not ready: not checked yet since the config load" },
+          { repo: "a/b", target: "mini", reason: "its load was not read this pass" },
         ]);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
