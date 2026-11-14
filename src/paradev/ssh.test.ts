@@ -16,6 +16,7 @@ import {
   CLAUDE_VERSION,
   fromCommandRunner,
   GH_AUTH_STATUS,
+  ghTokenCheck,
   GIT_EMAIL,
   hostGit,
   isAllowed,
@@ -85,6 +86,7 @@ const ALLOWED: ReadonlyArray<string> = [
   GIT_EMAIL,
   GH_AUTH_STATUS,
   CLAUDE_VERSION,
+  ghTokenCheck("tomkaczocha"),
   // The adapter's calls in a worktree on a host (#67).
   hostGit("/wt", ["rev-parse", "--verify", "HEAD^{commit}"]),
   hostGit("/wt", ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=dirty"], ["--no-optional-locks"]),
@@ -122,6 +124,8 @@ describe("isAllowed", () => {
       `python3 -c '${TRUST_SCRIPT}' /Users/me/repo`,
       `python3 -c '${TRUST_SCRIPT}' 'a'b'`,
       `python3 -c '${TRUST_SCRIPT}' 'a' 'b'`,
+      ghTokenCheck("x").replace("'x'", "x"),
+      ghTokenCheck("x").replace("'x'", "'x' 'y'"),
     ];
     for (const command of refused) assert.isFalse(isAllowed(command), command);
   });

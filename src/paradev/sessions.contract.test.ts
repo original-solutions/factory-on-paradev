@@ -255,6 +255,20 @@ const launchScript = (r: ReturnType<typeof repos>): ReadonlyArray<Step> => [
 ];
 
 describe("launch", () => {
+  it.live("a local launch keeps message as the prompt, whatever hostMessage says", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const t = rig(
+        [...launchScript(r), { argv: argvIs("agents", "explain"), fixture: "agents-explain-local-starting" }],
+        { config: { remoteBase: r.remoteBase } },
+      );
+      yield* t.run((s) => s.launch(request({ hostMessage: () => "host message" })));
+      const argv = t.calls.find(argvIs("agents", "create"))!;
+      assert.strictEqual(argv[argv.indexOf("--prompt") + 1], "/factory original-solutions/factory-paradev-spike#1");
+    }),
+  );
+
   it.live("creates the workspace with no --agent, starts the agent with agents create, records the thread", () =>
     Effect.gen(function* () {
       const r = repos();
@@ -2736,6 +2750,17 @@ describe("launch on a host", () => {
         yield* readLaunch(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)),
         `host:${HOST}:${H5_WS}`,
       );
+    }),
+  );
+
+  it.live("starts the agent with the host's message, built for the machine it was placed on", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      const ssh = fakeSsh((command) => (command.includes("'rev-parse'") ? { tail: `${r.main}\n` } : { exitCode: 1 }));
+      const t = rig(hostScript(r), { config: { remoteBase: r.remoteBase, ssh: ssh.runner, ...onHost } });
+      yield* t.run((s) => s.launch(request({ hostMessage: (machineId) => `host message for ${machineId}` })));
+      const argv = t.calls.find(argvIs("agents", "create"))!;
+      assert.strictEqual(argv[argv.indexOf("--prompt") + 1], `host message for ${HOST}`);
     }),
   );
 

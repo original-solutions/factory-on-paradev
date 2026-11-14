@@ -720,6 +720,7 @@ const rigFor = (events: ReadonlyArray<RunEvent> = STARTED): Rig => {
   rig.ctx = {
     repo: REPO,
     trackerUser: "rawphp",
+    hostLogins: new Map(),
     machine: "mac-mini",
     get project() {
       return rig.project;
@@ -1410,6 +1411,25 @@ describe("feedback: the step", () => {
         const since = secondBefore(T0 + 5_000_000);
         assert.deepStrictEqual(rig.gh.calls, feedbackReads(since, since));
       }),
+  );
+
+  it.effect("a relaunch names the login its host resolves to: the host's key, or a repo's override", () =>
+    Effect.gen(function* () {
+      for (const login of ["tomkaczocha", "tomk-bot"]) {
+        const rig = yield* reviewedRun();
+        rig.ctx = { ...rig.ctx, hostLogins: new Map([["h1", login]]) };
+        assert.deepStrictEqual(yield* feedbackIn(rig), relaunched(1));
+        const req = rig.t3.launches[0]!;
+        const hosted = req.hostMessage!("h1");
+        assert.ok(hosted.includes(`You act on GitHub as ${login}.`), hosted);
+        assert.ok(hosted.includes(`GH_TOKEN=$(gh auth token --user ${login})`), hosted);
+        assert.ok(hosted.endsWith(`${END_WITH_DONE}\n\n${reviewBlock()}`), hosted);
+        assert.ok(hosted.includes("waits for review, and an instructor left feedback"), hosted);
+        // A machine the repo has no login for, and every other target, keep the runner's login.
+        assert.ok(req.hostMessage!("h2").includes("You act on GitHub as rawphp."));
+        assert.ok(req.message.includes("You act on GitHub as rawphp."));
+      }
+    }),
   );
 
   it.effect(

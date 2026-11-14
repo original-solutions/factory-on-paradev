@@ -524,6 +524,7 @@ const rigFor = (
   const ctx: InterruptContext = {
     repo: REPO,
     trackerUser: "rawphp",
+    hostLogins: new Map(),
     machine: "mac-mini",
     project: projectConfig(),
     repoProject: projectConfig(),
