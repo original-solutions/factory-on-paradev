@@ -1596,6 +1596,31 @@ describe("the default-branch reads of a runner clone", () => {
 });
 
 describe("liveWorld", () => {
+  it.effect("a new world built from the same shared state goes on counting the cloud proxy's misses", () =>
+    Effect.gen(function* () {
+      const shared = newShared();
+      const scope = yield* Scope.make();
+      const build = () =>
+        liveWorld(
+          machine,
+          tempDir(),
+          {} as never,
+          NodeServices.layer,
+          {} as never,
+          () => NOW,
+          "mac-mini",
+          noAttention,
+          { gate: { run: () => Effect.die("no gate") }, wake: Effect.void, scope },
+          undefined,
+          undefined,
+          shared,
+        );
+      const first = build();
+      first.proxyMisses.passes = 2;
+      assert.strictEqual(build().proxyMisses.passes, 2);
+    }),
+  );
+
   const REPO = "rawphp/softfac";
   const NOW = Date.UTC(2026, 9, 8, 2, 0, 0);
   const MINUTE = 60 * 1000;
