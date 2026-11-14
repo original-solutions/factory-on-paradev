@@ -102,9 +102,9 @@ const drops = (events: ReadonlyArray<MachineEvent>) =>
 const full = (target: TargetCount["target"]): TargetCount => ({ target, running: 1 });
 
 describe("placer", () => {
-  it.effect("a repo with no hosts and no cloud runs here, with nothing read", () =>
+  it.effect("a repo with no hosts and no cloud runs here, with nothing read, when local.max_runs reaches the core's cap", () =>
     Effect.gen(function* () {
-      const t = setup();
+      const t = setup({ machine: machine({ local: { maxRuns: 4 } }) });
       t.placer.beginPass({ localHeld: null, proxy: null });
       assert.deepStrictEqual(yield* t.placer.place(request("mac")), { kind: "local" });
       assert.deepStrictEqual(t.reads, { running: 0, load: 0 });
@@ -114,16 +114,49 @@ describe("placer", () => {
 
   it.effect("a project no watched repo is known for runs here too", () =>
     Effect.gen(function* () {
-      const t = setup();
+      const t = setup({ machine: machine({ local: { maxRuns: 4 } }) });
       t.placer.beginPass({ localHeld: null, proxy: null });
       assert.deepStrictEqual(yield* t.placer.place(request("nobody")), { kind: "local" });
       assert.deepStrictEqual(t.reads, { running: 0, load: 0 });
     }),
   );
 
+  it.effect("a repo with no hosts and no cloud is refused when this Mac's slots are full, and the drop is recorded", () =>
+    Effect.gen(function* () {
+      const t = setup({ counts: [{ target: { kind: "local" }, running: 1 }] });
+      t.placer.beginPass({ localHeld: null, proxy: null });
+      const error = yield* t.placer.place(request("mac")).pipe(Effect.flip);
+      assert.instanceOf(error, NoTargetHasRoom);
+      assert.deepStrictEqual(drops(t.events), [
+        { repo: "acme/mac", target: "local", reason: "slots full: 1 of 1 running" },
+      ]);
+    }),
+  );
+
+  it.effect("a project no watched repo is known for gets the same slot check on this Mac", () =>
+    Effect.gen(function* () {
+      const t = setup({ counts: [{ target: { kind: "local" }, running: 1 }] });
+      t.placer.beginPass({ localHeld: null, proxy: null });
+      const error = yield* t.placer.place(request("nobody")).pipe(Effect.flip);
+      assert.instanceOf(error, NoTargetHasRoom);
+      assert.strictEqual(drops(t.events).length, 1);
+    }),
+  );
+
+  it.effect("a repo with no hosts takes this Mac's last slot once, and the check adds no load or held test", () =>
+    Effect.gen(function* () {
+      const t = setup({ counts: [{ target: { kind: "local" }, running: 0 }] });
+      t.placer.beginPass({ localHeld: "high load", proxy: null });
+      assert.deepStrictEqual(yield* t.placer.place(request("mac", 1)), { kind: "local" });
+      const second = yield* t.placer.place(request("mac", 2)).pipe(Effect.flip);
+      assert.instanceOf(second, NoTargetHasRoom);
+      assert.strictEqual(t.reads.running, 1);
+    }),
+  );
+
   it.effect("a repo with a cloud environment on a machine with no cloud block runs as one with no cloud", () =>
     Effect.gen(function* () {
-      const t = setup({ machine: machine({ hosts: [], cloud: undefined }) });
+      const t = setup({ machine: machine({ hosts: [], cloud: undefined, local: { maxRuns: 4 } }) });
       t.placer.beginPass({ localHeld: null, proxy: null });
       assert.deepStrictEqual(yield* t.placer.place(request("cloudy")), { kind: "local" });
       assert.deepStrictEqual(t.reads, { running: 0, load: 0 });
