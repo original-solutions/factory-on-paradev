@@ -508,6 +508,11 @@ export type MachineEvent =
       readonly event: "retro_finished";
       readonly data: { n: number; thread_id: string; result: RetroResult; duration_ms: number };
     }
+  | {
+      /** A launch's placement dropped `target` (this Mac, a host's name or cloud) for `reason`. */
+      readonly event: "placement";
+      readonly data: { repo: string; target: string; reason: string };
+    }
   | { readonly event: "worktrees_swept"; readonly data: { paths: ReadonlyArray<string> } }
   /** This server started, at `started_at` (epoch ms, its process start). Written once at boot; `interrupted` weighs a session that ended badly against the starts in the last day. */
   | { readonly event: "server_started"; readonly data: { started_at: number } }
@@ -533,7 +538,7 @@ type MachineDataKeys<N extends MachineEventName> = KeysOfEach<
 >;
 
 /**
- * The 21 event types the machine log can hold, each with the names of its `data` fields in the
+ * The 22 event types the machine log can hold, each with the names of its `data` fields in the
  * order they are written. A type with more than one shape lists the fields of all of them: the
  * ones that are absent are left out, and the shapes share no field that is ordered differently.
  */
@@ -565,6 +570,7 @@ export const MACHINE_EVENT_FIELDS = {
   fleet_desired: ["what", "asked", "state", "reason", "detail"],
   retro_started: ["n", "thread_id", "runs", "since_ms", "model_instance", "model"],
   retro_finished: ["n", "thread_id", "result", "duration_ms"],
+  placement: ["repo", "target", "reason"],
   worktrees_swept: ["paths"],
   server_started: ["started_at"],
   server_stopping: ["stopping_at"],
