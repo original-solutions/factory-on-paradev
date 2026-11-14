@@ -18,7 +18,14 @@ import { CONFIG_NOT_LOADED_REASON } from "./status.ts";
 const EXEC_PATH = "/opt/node/bin/node";
 const GH_DIR = "/gh/factory";
 const TEN_MINUTES = 10 * 60 * 1000;
-const LS_REFS = ["api", "repos/o/r/git/matching-refs/tags/v", "--jq", ".[].ref"];
+const TAG_JQ = '.[] | "\\(.ref) \\(.object.sha) \\(.object.type)"';
+const LS_REFS = ["api", "repos/o/r/git/matching-refs/tags/v", "--jq", TAG_JQ];
+/** The commit a tag of `version` names; `tagObjectSha` is its annotated tag object. */
+const commitSha = (version: string) => `${version.replace(/\./g, "")}c`.padEnd(40, "0");
+const tagObjectSha = (version: string) => `${version.replace(/\./g, "")}a`.padEnd(40, "0");
+const OTHER_SHA = "f".repeat(40);
+/** The version of a `refs/tags/vX.Y.Z`; another ref shape keeps its text as a stand-in. */
+const versionOfRef = (ref: string) => ref.replace(/^refs\/tags\/v/, "");
 
 let tmp: string;
 
@@ -53,8 +60,12 @@ interface Answers {
   /** What else that report says: an idle reason, or output longer than the tail kept. */
   smokeReason: string | null;
   smokeTruncated: boolean;
-  /** Whether the clone's HEAD carries the tag; false is a clone that took a branch of that name. */
+  /** Whether the clone's HEAD is the tag's commit; false is a moved tag or a branch of its name. */
   tagAtHead: boolean;
+  /** Whether each tag ref names its commit or an annotated tag object to peel. */
+  tagObject: "commit" | "tag";
+  /** What reading an annotated tag object answers. */
+  peel: "ok" | "fail" | "garbage";
   /** Gate calls this process is running now. */
   gates: number;
   /** `self_update` of the config loaded now. */
@@ -105,6 +116,8 @@ const fixture = (underVersions = true): Fixture => {
       smokeReason: null,
       smokeTruncated: false,
       tagAtHead: true,
+      tagObject: "commit",
+      peel: "ok",
       gates: 0,
       enabled: true,
       defaultBranch: "main",
@@ -143,20 +156,30 @@ const fakeProcess = (f: Fixture) =>
               ? result(1, "", "HTTP 404: Not Found")
               : result(0, `${f.answers.compare}\n`);
           }
+          if (path.includes("/git/tags/")) {
+            if (f.answers.peel === "fail") return result(1, "", "HTTP 404: Not Found");
+            if (f.answers.peel === "garbage") return result(0, "null\n");
+            const version = (f.answers.refs as ReadonlyArray<string>)
+              .map(versionOfRef)
+              .find((candidate) => tagObjectSha(candidate) === path.slice(path.lastIndexOf("/") + 1))!;
+            return result(0, `${commitSha(version)}\n`);
+          }
           if (f.answers.refs === "fail") return result(1, "", "HTTP 502: Bad Gateway");
           if (f.answers.refs === "too-long") {
-            return { ...result(0, "refs/tags/v0.2.0\n"), truncated: true, tailTruncated: true };
+            return { ...result(0, `refs/tags/v0.2.0 ${commitSha("0.2.0")} commit\n`), truncated: true, tailTruncated: true };
           }
-          return result(0, f.answers.refs.map((ref) => `${ref}\n`).join(""));
+          const object = (version: string) =>
+            f.answers.tagObject === "tag" ? `${tagObjectSha(version)} tag` : `${commitSha(version)} commit`;
+          return result(0, f.answers.refs.map((ref) => `${ref} ${object(versionOfRef(ref))}\n`).join(""));
         }
         if (input.command === "git") {
           const args = input.args ?? [];
-          if (args.includes("--points-at")) {
+          if (args.includes("rev-parse")) {
             const dir = args[args.indexOf("-C") + 1]!;
             const { version } = JSON.parse(NodeFS.readFileSync(NodePath.join(dir, "package.json"), "utf8")) as {
               version: string;
             };
-            return result(0, f.answers.tagAtHead ? `v${version}\n` : "");
+            return result(0, `${f.answers.tagAtHead ? commitSha(version) : OTHER_SHA}\n`);
           }
           const tag = args[args.indexOf("--branch") + 1]!;
           fakeClone(args.at(-1)!, tag.slice(1));
@@ -390,12 +413,12 @@ describe("self-update", () => {
           expect(read).toMatchObject({ command: "gh", env: { GH_CONFIG_DIR: GH_DIR }, timeoutMs: 60_000 });
         }
         expect(branch!.args).toEqual(["api", "repos/o/r", "--jq", ".default_branch"]);
-        expect(compared!.args).toEqual(["api", "repos/o/r/compare/v0.2.0...main", "--jq", ".status"]);
+        expect(compared!.args).toEqual(["api", `repos/o/r/compare/${commitSha("0.2.0")}...main`, "--jq", ".status"]);
         const dir = clone!.args!.at(-1)!;
         expect(NodePath.dirname(dir)).toBe(installPathsOf(f.home).versions);
         expect(clone!.env).toMatchObject({ GH_CONFIG_DIR: GH_DIR });
         expect(clone!.args).toEqual(expect.arrayContaining(["credential.helper=!gh auth git-credential"]));
-        expect(tagCheck).toMatchObject({ command: "git", args: ["-C", dir, "tag", "--points-at", "HEAD"] });
+        expect(tagCheck).toMatchObject({ command: "git", args: ["-C", dir, "rev-parse", "HEAD"] });
         expect(npm).toMatchObject({ command: "npm", args: ["ci", "--omit=dev"], cwd: dir });
         expect(npm!.env!["PATH"]!.split(":")[0]).toBe("/opt/node/bin");
         expect(smoke).toMatchObject({
@@ -488,7 +511,7 @@ describe("self-update", () => {
     );
   });
 
-  it.effect("a clone whose HEAD is not the tag (a branch of the same name) is removed and not tried again", () => {
+  it.effect("a clone whose HEAD is not the checked commit (a moved tag, a branch of its name) is removed and not tried again", () => {
     const f = fixture();
     f.answers.refs = ["refs/tags/v0.2.0"];
     f.answers.tagAtHead = false;
@@ -497,7 +520,7 @@ describe("self-update", () => {
         yield* TestClock.adjust(TEN_MINUTES);
         expect(versionDirs(f)).toEqual(["0.1.0"]);
         expect(loud(f).map((log) => log.level)).toEqual(["Warn"]);
-        expect(loud(f)[0]!.text).toContain("not the tag v0.2.0");
+        expect(loud(f)[0]!.text).toContain(`the clone's HEAD ${OTHER_SHA} is not the checked commit ${commitSha("0.2.0")} of v0.2.0`);
         yield* TestClock.adjust(TEN_MINUTES);
         expect(commands(f)).toEqual(["gh", "gh", "gh", "git", "git", "gh"]);
       }),
@@ -586,9 +609,12 @@ describe("self-update", () => {
       Effect.gen(function* () {
         yield* TestClock.adjust(TEN_MINUTES);
         expect(commands(f)).toEqual(["gh", "gh", "gh"]);
-        expect(f.calls[2]!.args).toEqual(["api", "repos/o/r/compare/v0.2.0...main", "--jq", ".status"]);
+        expect(f.calls[2]!.args).toEqual(["api", `repos/o/r/compare/${commitSha("0.2.0")}...main`, "--jq", ".status"]);
         expect(loud(f)).toEqual([
-          { level: "Warn", text: "update v0.2.0 not staged: v0.2.0 is not on main: GitHub compares them as diverged" },
+          {
+            level: "Warn",
+            text: `update v0.2.0 not staged: v0.2.0 (${commitSha("0.2.0")}) is not on main: GitHub compares them as diverged`,
+          },
         ]);
         expect(versionDirs(f)).toEqual(["0.1.0"]);
         yield* TestClock.adjust(TEN_MINUTES);
@@ -598,13 +624,13 @@ describe("self-update", () => {
         f.answers.compare = "behind";
         yield* TestClock.adjust(TEN_MINUTES);
         expect(loud(f)).toHaveLength(2);
-        expect(loud(f)[1]!.text).toContain("v0.3.0 is not on main");
+        expect(loud(f)[1]!.text).toContain(`v0.3.0 (${commitSha("0.3.0")}) is not on main: GitHub compares them as behind`);
         f.answers.refs = ["refs/tags/v0.4.0"];
         f.answers.defaultBranch = "trunk";
         f.answers.compare = "identical";
         f.answers.smoke = "0.4.0";
         yield* TestClock.adjust(TEN_MINUTES);
-        expect(f.calls.at(-5)!.args).toEqual(["api", "repos/o/r/compare/v0.4.0...trunk", "--jq", ".status"]);
+        expect(f.calls.at(-5)!.args).toEqual(["api", `repos/o/r/compare/${commitSha("0.4.0")}...trunk`, "--jq", ".status"]);
         expect(versionDirs(f)).toEqual(["0.1.0", "0.4.0"]);
       }),
     );
@@ -675,10 +701,13 @@ describe("self-update", () => {
         expect(yield* Deferred.isDone(update.stopped)).toBe(false);
         expect(currentTarget(f)).toBe(versionPath(f, "0.1.0"));
         expect(loud(f).filter((log) => log.text === OFF_LINE)).toHaveLength(2);
+        // With the key off the restart cannot fire, so gates must start again: nothing is staged to them.
+        expect(update.staged()).toBe(false);
         yield* TestClock.adjust(TEN_MINUTES);
         expect(commands(f)).toEqual(STAGING);
         // On again: the restart fires at the next pass end.
         f.answers.enabled = true;
+        expect(update.staged()).toBe(true);
         yield* update.afterPass;
         expect(yield* Deferred.isDone(update.stopped)).toBe(true);
         expect(currentTarget(f)).toBe(versionPath(f, "0.2.0"));
@@ -755,6 +784,51 @@ describe("self-update", () => {
         expect(commands(f)).toEqual([...STAGING, "gh"]);
         yield* update.afterPass;
         expect(yield* Deferred.isDone(update.stopped)).toBe(false);
+      }),
+    );
+  });
+
+  it.effect("an annotated tag is peeled to its commit, which the compare and the clone check use", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.tagObject = "tag";
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual(["gh", "gh", "gh", "gh", "git", "git", "npm", EXEC_PATH]);
+        expect(f.calls[1]).toMatchObject({
+          command: "gh",
+          args: ["api", `repos/o/r/git/tags/${tagObjectSha("0.2.0")}`, "--jq", ".object.sha"],
+          env: { GH_CONFIG_DIR: GH_DIR },
+          timeoutMs: 60_000,
+        });
+        expect(f.calls[3]!.args).toEqual(["api", `repos/o/r/compare/${commitSha("0.2.0")}...main`, "--jq", ".status"]);
+        expect(versionDirs(f)).toEqual(["0.1.0", "0.2.0"]);
+        expect(loud(f).map((log) => log.level)).toEqual(["Info"]);
+      }),
+    );
+  });
+
+  it.effect("an annotated tag whose object cannot be read, or names no commit, is one warning and not tried again", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.tagObject = "tag";
+    f.answers.peel = "fail";
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual(["gh", "gh"]);
+        expect(loud(f).map((log) => log.level)).toEqual(["Warn"]);
+        expect(loud(f)[0]!.text).toContain("tag read exited 1");
+        f.answers.refs = ["refs/tags/v0.3.0"];
+        f.answers.peel = "garbage";
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual(["gh", "gh", "gh", "gh"]);
+        expect(loud(f)).toHaveLength(2);
+        expect(loud(f)[1]!.text).toContain("the tag object of v0.3.0 names no commit");
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual(["gh", "gh", "gh", "gh", "gh"]);
+        expect(versionDirs(f)).toEqual(["0.1.0"]);
       }),
     );
   });

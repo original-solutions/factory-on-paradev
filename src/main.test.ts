@@ -4278,6 +4278,7 @@ describe("self-update wiring", () => {
         const stop = yield* Deferred.make<void>();
         const runs: Array<() => boolean> = [];
         let afterPasses = 0;
+        let staged = false;
         const made: Array<SelfUpdateOptions> = [];
         const selfUpdate = (options: SelfUpdateOptions) =>
           Effect.sync(() => {
@@ -4291,13 +4292,15 @@ describe("self-update wiring", () => {
                 afterPasses += 1;
               }),
               stopped: stop,
-              staged: () => false,
+              staged: () => staged,
             };
           });
         const shared = newShared();
+        const worlds: Array<PassWorld> = [];
         const { loop, factoryDir, write } = yield* started(`${VALID}self_update: false\n`, noGhProcess, {
           selfUpdate,
           shared,
+          onWorld: (world) => worlds.push(world),
         });
         yield* idleAfter(loop, factoryDir, 1);
         yield* onePassMore(loop, factoryDir);
@@ -4310,6 +4313,20 @@ describe("self-update wiring", () => {
         yield* loop.reload;
         assert.strictEqual(runs[0]!(), true);
         assert.strictEqual(runs.length, 1);
+        // The gate path reads the updater's `staged`: no gate starts while an update is staged.
+        const repo: Repo = {
+          watched: { repo: "a/b", path: "/b" },
+          project: { ...timeLimitOnlyProjectConfig(), base: "main" },
+          trackerUser: "rawphp",
+        };
+        const run = newRunId("a/b", "11", 1);
+        const world = worlds.at(-1)!;
+        staged = true;
+        assert.deepStrictEqual(yield* world.gate(repo, run), { kind: "draining" });
+        assert.strictEqual(world.gateRunning(run), false);
+        staged = false;
+        assert.deepStrictEqual(yield* world.gate(repo, run), { kind: "started" });
+        yield* waitUntil("the gate to end", () => !world.gateRunning(run));
         const options = made[0]!;
         assert.strictEqual(options.dataDir, factoryDir);
         assert.strictEqual(options.ghConfigDir(), "/gh");

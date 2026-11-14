@@ -46,7 +46,10 @@ const WARN_TAIL_CHARS = 2_000;
 const CLONE_PREFIX = ".clone-";
 /** What GitHub's compare of the tag with the default branch says when the tag is on it. */
 const ON_BRANCH = new Set(["identical", "ahead"]);
-const TAG = /^refs\/tags\/v(\d+)\.(\d+)\.(\d+)$/;
+/** How the tag read prints each ref: `refs/tags/vX.Y.Z <object sha> <object type>`. */
+const TAG_JQ = '.[] | "\\(.ref) \\(.object.sha) \\(.object.type)"';
+const TAG_LINE = /^refs\/tags\/v(\d+)\.(\d+)\.(\d+) ([0-9a-f]{40}) (commit|tag)$/;
+const SHA = /^[0-9a-f]{40}$/;
 const REPOSITORY = /^github:([^/\s]+)\/([^/\s]+)$/;
 const OFF_LINE = "self-update off: self_update is false";
 
@@ -59,14 +62,23 @@ const parseVersion = (text: string): Version | null => {
   return match === null ? null : [Number(match[1]), Number(match[2]), Number(match[3])];
 };
 
-/** The highest `refs/tags/vX.Y.Z` among `refs`; any other shape is not a release. */
-const highestTag = (refs: ReadonlyArray<string>): Version | null => {
-  let best: Version | null = null;
-  for (const ref of refs) {
-    const match = TAG.exec(ref.trim());
+/** A `vX.Y.Z` tag and the object its ref names: a commit, or an annotated tag to peel. */
+interface Candidate {
+  readonly version: Version;
+  readonly sha: string;
+  readonly annotated: boolean;
+}
+
+/** The highest `vX.Y.Z` among the tag read's lines; any other shape is not a release. */
+const highestTag = (lines: ReadonlyArray<string>): Candidate | null => {
+  let best: Candidate | null = null;
+  for (const line of lines) {
+    const match = TAG_LINE.exec(line.trim());
     if (match === null) continue;
     const version: Version = [Number(match[1]), Number(match[2]), Number(match[3])];
-    if (best === null || compare(version, best) > 0) best = version;
+    if (best === null || compare(version, best.version) > 0) {
+      best = { version, sha: match[4]!, annotated: match[5] === "tag" };
+    }
   }
   return best;
 };
@@ -134,7 +146,10 @@ export interface SelfUpdate {
   readonly afterPass: Effect.Effect<void>;
   /** Completed once, when the runner should end so launchd starts the staged version. */
   readonly stopped: Deferred.Deferred<void>;
-  /** Whether an update is staged: no gate starts then, so the restart is not put off. */
+  /**
+   * Whether an update is staged and `enabled` holds: no gate starts then, so the restart is not put
+   * off. With the key off the restart cannot fire, so gates start as before.
+   */
   readonly staged: () => boolean;
 }
 
@@ -196,11 +211,12 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
     });
 
   /**
-   * Checks the tag is on the default branch, clones it, checks the clone is the tag, installs and
-   * smokes it, and places it under `versions/`; a failure warns once and marks the tag. A runner
-   * stopped part way leaves its clone for the next start.
+   * Pins the tag to the commit its ref named at the read, checks that commit is on the default
+   * branch, clones the tag and checks the clone is that commit, installs and smokes it, and places
+   * it under `versions/`; a failure warns once and marks the tag. A runner stopped part way leaves
+   * its clone for the next start.
    */
-  const stageTag = (repository: Repository, version: string, running: string) =>
+  const stageTag = (repository: Repository, candidate: Candidate, version: string, running: string) =>
     Effect.gen(function* () {
       const tag = `v${version}`;
       const repo = `repos/${repository.owner}/${repository.repo}`;
@@ -209,16 +225,25 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
           failed.add(tag);
         }).pipe(Effect.andThen(Effect.logWarning(`update ${tag} not staged: ${why}`)));
 
+      // One commit, by sha, from here on: a tag moved between the check and the clone, or a branch
+      // of the tag's name, is not what was checked. An annotated tag's ref names the tag object.
+      let sha = candidate.sha;
+      if (candidate.annotated) {
+        const peeled = yield* ghApi("tag read", `${repo}/git/tags/${sha}`, ".object.sha");
+        if ("failed" in peeled) return yield* fail(peeled.failed);
+        sha = peeled.ok.trim();
+        if (!SHA.test(sha)) return yield* fail(`tag read: the tag object of ${tag} names no commit: ${tailOf(peeled.ok)}`);
+      }
       // A release is a tag on the default branch: whoever can push a tag could otherwise run any
       // commit on every runner, with the factory's login.
       const branch = yield* ghApi("default branch read", repo, ".default_branch");
       if ("failed" in branch) return yield* fail(branch.failed);
       const defaultBranch = branch.ok.trim();
-      const compared = yield* ghApi("branch check", `${repo}/compare/${tag}...${defaultBranch}`, ".status");
+      const compared = yield* ghApi("branch check", `${repo}/compare/${sha}...${defaultBranch}`, ".status");
       if ("failed" in compared) return yield* fail(compared.failed);
       const status = compared.ok.trim();
       if (!ON_BRANCH.has(status)) {
-        return yield* fail(`${tag} is not on ${defaultBranch}: GitHub compares them as ${status || "nothing"}`);
+        return yield* fail(`${tag} (${sha}) is not on ${defaultBranch}: GitHub compares them as ${status || "nothing"}`);
       }
 
       NodeFS.mkdirSync(versions, { recursive: true });
@@ -245,16 +270,19 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
           env: { ...HARDENED_GIT_ENV, ...fetchCredentialEnv(options.ghConfigDir()) },
         });
         if ("failed" in cloned) return yield* failClone(cloned.failed);
-        // `--branch` takes a branch of the same name over the tag; only the tag is a release.
-        const tagged = yield* step("tag check", {
+        // The clone is the checked commit, or nothing of it runs: `--branch` takes a branch of the
+        // same name over the tag, and a tag can be moved between the check and the clone.
+        const head = yield* step("commit check", {
           command: "git",
-          args: ["-C", clone, "tag", "--points-at", "HEAD"],
+          args: ["-C", clone, "rev-parse", "HEAD"],
           env: HARDENED_GIT_ENV,
           separateStderr: true,
         });
-        if ("failed" in tagged) return yield* failClone(tagged.failed);
-        if (!tagged.ok.split("\n").some((line) => line.trim() === tag)) {
-          return yield* failClone(`the clone's HEAD is not the tag ${tag}: a branch of that name was cloned`);
+        if ("failed" in head) return yield* failClone(head.failed);
+        if (head.ok.trim() !== sha) {
+          return yield* failClone(
+            `the clone's HEAD ${head.ok.trim()} is not the checked commit ${sha} of ${tag}: the tag moved, or a branch of its name was cloned`,
+          );
         }
 
         const nodeDir = NodePath.dirname(options.execPath);
@@ -316,7 +344,7 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
       const read = yield* Effect.result(
         process.run({
           command: "gh",
-          args: ["api", `repos/${repository.owner}/${repository.repo}/git/matching-refs/tags/v`, "--jq", ".[].ref"],
+          args: ["api", `repos/${repository.owner}/${repository.repo}/git/matching-refs/tags/v`, "--jq", TAG_JQ],
           env: { GH_CONFIG_DIR: options.ghConfigDir() },
           timeoutMs: GH_TIMEOUT_MS,
           tailBytes: REFS_BYTES,
@@ -337,10 +365,10 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
         return yield* Effect.logWarning(`self-update could not read the tags of ${repository.owner}/${repository.repo}: ${why}`);
       }
       const candidate = highestTag(read.success.tail.split("\n"));
-      if (candidate === null || compare(candidate, running) <= 0) return;
-      const version = candidate.join(".");
+      if (candidate === null || compare(candidate.version, running) <= 0) return;
+      const version = candidate.version.join(".");
       if (failed.has(`v${version}`)) return;
-      yield* stageTag(repository, version, runningText);
+      yield* stageTag(repository, candidate, version, runningText);
     });
 
   const run = Effect.fn("SelfUpdate.run")(function* (isEnabled: () => boolean) {
@@ -402,5 +430,5 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
     yield* Deferred.succeed(stopped, undefined);
   });
 
-  return { run, afterPass, stopped, staged: () => staged !== null } satisfies SelfUpdate;
+  return { run, afterPass, stopped, staged: () => staged !== null && enabled() } satisfies SelfUpdate;
 });
