@@ -1393,18 +1393,22 @@ describe("on the Paradev CLI", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("with a cloud block each pass sweeps the cloud for orphaned workspaces once, and with none never", () =>
+  it.effect("each pass sweeps the cloud for orphans beside the pass while a repo names an environment, and never otherwise", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const sweeps = (calls: ReadonlyArray<ReadonlyArray<string>>) =>
           calls.filter((argv) => argv.join(" ") === "workspaces list --host cloud").length;
-        const cloud = yield* started(configFor([["a/b", "/b"]], "/gh", "cloud:\n  proxy: https://proxy.example\n"));
+        const cloudBlock = "cloud:\n  proxy: https://proxy.example\n";
+        const named = `gh_config_dir: /gh\nmax_concurrent_runs: 1\nmin_free_gib: 0\n${cloudBlock}repos:\n  - repo: a/b\n    path: /b\n    cloud: edad9805-e48d-40f3-a06c-e19a4105f974\n${PARADEV_BLOCK}`;
+        const cloud = yield* started(named);
         yield* idleAfter(cloud.loop, cloud.factoryDir, 1);
-        assert.strictEqual(sweeps(cloud.paradev.calls), 1);
+        yield* waitUntil("the first sweep", () => sweeps(cloud.paradev.calls) === 1);
         yield* onePassMore(cloud.loop, cloud.factoryDir);
-        assert.strictEqual(sweeps(cloud.paradev.calls), 2);
-        const none = yield* started(VALID);
+        yield* waitUntil("the second sweep", () => sweeps(cloud.paradev.calls) === 2);
+        // A cloud block with no repo naming an environment has nothing of its own to sweep.
+        const none = yield* started(configFor([["a/b", "/b"]], "/gh", cloudBlock));
         yield* idleAfter(none.loop, none.factoryDir, 1);
+        yield* onePassMore(none.loop, none.factoryDir);
         assert.strictEqual(sweeps(none.paradev.calls), 0);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),

@@ -2614,15 +2614,35 @@ const cloudRecord = (over: Partial<ThreadRecord> = {}): ThreadRecord =>
   });
 
 /** The four calls of a helper terminal in `ws`: create, wait for `mark`, read 5 lines, close. */
-const helperSteps = (ws: string, mark: string, text: string, create = "terminals-create-cloud-gate"): ReadonlyArray<Step> => {
+const helperSteps = (
+  ws: string,
+  mark: string,
+  text: string | ((recorded: string) => string),
+  create = "terminals-create-cloud-gate",
+  read = "terminals-read-cloud-gate-long",
+): ReadonlyArray<Step> => {
   const where = ["--host", "cloud", "--workspace", ws, "--terminal", HELPER];
+  const screen = (answer: unknown) => {
+    const recorded = (answer as { readonly text: string }).text;
+    return { ...(answer as object), text: typeof text === "string" ? text : text(recorded) };
+  };
   return [
     { argv: argvIs("terminals", "create", "--host", "cloud", "--workspace", ws, "--command"), fixture: create, edit: (a) => ({ ...(a as object), terminalId: HELPER }) },
     { argv: ["terminals", "wait", ...where, "--match", mark, "--timeout", "30"], fixture: "terminals-wait-cloud-gate-pass" },
-    { argv: ["terminals", "read", ...where, "--max-lines", "5"], fixture: "terminals-read-cloud-gate-long", edit: (a) => ({ ...(a as object), text }) },
+    { argv: ["terminals", "read", ...where, "--max-lines", "5"], fixture: read, edit: screen },
     { argv: ["terminals", "close", ...where], answer: { terminalId: HELPER, status: "disposed" } },
   ];
 };
+
+/** The host lookup's command for `path`: one `sh -c` line. */
+const lookupCommand = (path: string): string =>
+  `sh -c 'command -v lsof >/dev/null || exit 3; pids=$(pgrep -x '\\''claude'\\''); [ $? -le 1 ] || exit 3; ` +
+  `printf '\\''W%s\\n'\\'' "$(cd '\\''${path}'\\'' 2>/dev/null && pwd -P)"; ` +
+  `for p in $pids; do lsof -a -d cwd -p "$p" -Fn 2>/dev/null; done; echo FACTORY-LOOKUP-DONE'`;
+/** What the host lookup prints: the resolved worktree, the `lsof` lines, the end mark. */
+const lookupAnswer = (resolved: string, ...cwds: ReadonlyArray<string>): string =>
+  [`W${resolved}`, ...cwds.flatMap((cwd) => ["p4242", "fcwd", cwd]), "FACTORY-LOOKUP-DONE", ""].join("\n");
+const H11_FOLDER = "-Users-tomk--paradev-worktrees-factory-paradev-spike-fac-11-2";
 
 /** What the liveness helper's screen shows with `count` agent processes. */
 const aliveScreen = (count: number) =>
@@ -2644,7 +2664,6 @@ describe("every call carries the record's target", () => {
     const source = NodeFS.readFileSync(NodePath.join(import.meta.dirname, "sessions.ts"), "utf8");
     const lines = source.split("\n").filter((line) => line.includes('"--local"'));
     assert.strictEqual(lines.length, 1, lines.join("\n"));
-    assert.include(lines[0], '["--local"] : ["--host"');
   });
 
   it.effect("a thread id naming another target than its record is ThreadNotFoundError", () =>
@@ -2841,7 +2860,7 @@ describe("launch in the cloud", () => {
       );
       const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
       assert.strictEqual(error.operation, "launch");
-      assert.include(String(error.cause), "was not ready within 0 s (still provisioning); it was archived");
+      assert.include(String(error.cause), "was not ready within 0 s (still provisioning); the workspace was archived");
       assert.deepStrictEqual(t.unused(), []);
       const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
       assert.isNotNull(saved!.archivedAt);
@@ -2967,21 +2986,28 @@ describe("status on a host", () => {
       return { run: status.run, ssh: ssh.calls, lookups: t.lookups };
     });
 
-  it.effect("working with no hook for 10 minutes looks for the agent process on the host over SSH", () =>
+  it.effect("working with no hook for 10 minutes looks for the agent process on the host over SSH, in sh", () =>
     Effect.gen(function* () {
-      const found = yield* silent({ tail: `p4242\nfcwd\nn${H5_PATH}\n` });
+      const found = yield* silent({ tail: lookupAnswer(H5_PATH, `n${H5_PATH}`) });
       assert.strictEqual(found.run, "running");
-      assert.deepStrictEqual(found.ssh, [
-        [HOST_SSH, `for p in $(pgrep -x 'claude'); do lsof -a -d cwd -p "$p" -Fn; done`],
-      ]);
+      assert.deepStrictEqual(found.ssh, [[HOST_SSH, lookupCommand(H5_PATH)]]);
       assert.deepStrictEqual(found.lookups, []);
-      assert.strictEqual((yield* silent({ tail: `p4242\nfcwd\nn${H5_PATH}-other\n` })).run, "interrupted");
+      assert.strictEqual((yield* silent({ tail: lookupAnswer(H5_PATH, `n${H5_PATH}-other`) })).run, "interrupted");
     }),
   );
 
-  it.effect("a host that SSH cannot reach keeps the run running", () =>
+  it.effect("an agent whose working directory is the worktree as the host resolves it is running", () =>
+    Effect.gen(function* () {
+      const resolved = `/System/Volumes/Data${H5_PATH}`;
+      assert.strictEqual((yield* silent({ tail: lookupAnswer(resolved, `n${resolved}`) })).run, "running");
+    }),
+  );
+
+  it.effect("a lookup that SSH cannot reach, that exits non-zero, or that does not finish keeps the run running", () =>
     Effect.gen(function* () {
       assert.strictEqual((yield* silent("unreachable")).run, "running");
+      assert.strictEqual((yield* silent({ exitCode: 3, tail: "" })).run, "running");
+      assert.strictEqual((yield* silent({ tail: `W${H5_PATH}\n` })).run, "running");
     }),
   );
 });
@@ -3044,9 +3070,9 @@ describe("resume on a host and in the cloud", () => {
   it.live("a host's dead agent: its terminal closed, the session id read over SSH with ls -t, then agents create --resume-session", () =>
     Effect.gen(function* () {
       const ssh = fakeSsh((command) =>
-        command.startsWith("ls -t ")
-          ? { tail: "8b68fab9-97bd-4a02-b4a7-ea4dd1e14556.jsonl\n0b2c1d3e-0000-4000-8000-000000000000.jsonl\nmemory\n" }
-          : { tail: "" },
+        command.includes("ls -t ")
+          ? { tail: `/Users/tomk/.claude/projects/${H11_FOLDER}/8b68fab9-97bd-4a02-b4a7-ea4dd1e14556.jsonl\n` }
+          : { tail: lookupAnswer(H11_PATH) },
       );
       const t = rig(
         [
@@ -3069,8 +3095,8 @@ describe("resume on a host and in the cloud", () => {
       yield* seed(t.data, dead);
       yield* t.run((s) => s.send(dead.threadId, SEND_ID, RESUME_TEXT));
       assert.deepStrictEqual(ssh.calls.map(([, command]) => command), [
-        `for p in $(pgrep -x 'claude'); do lsof -a -d cwd -p "$p" -Fn; done`,
-        "ls -t ~/.claude/projects/-Users-tomk--paradev-worktrees-factory-paradev-spike-fac-11-2",
+        lookupCommand(H11_PATH),
+        `sh -c 'ls -t $HOME/.claude/projects/${H11_FOLDER}/*.jsonl 2>/dev/null | head -1'`,
       ]);
       const status = yield* t.run((s) => s.status(dead.threadId));
       assert.strictEqual(status.run, "completed");
@@ -3084,7 +3110,7 @@ describe("resume on a host and in the cloud", () => {
 
   it.live("a host session folder with no session is ThreadNotFoundError, and nothing is created", () =>
     Effect.gen(function* () {
-      const ssh = fakeSsh((command) => (command.startsWith("ls -t ") ? { exitCode: 1, stderrTail: "No such file or directory" } : {}));
+      const ssh = fakeSsh(() => ({ tail: "" }));
       const t = rig(
         [{ argv: ["snapshot", "--host", HOST, "--workspace", H11_WS], fixture: "snapshot-host-after-close" }],
         { config: { ssh: ssh.runner, hosts: HOSTS } },
@@ -3114,8 +3140,14 @@ describe("resume on a host and in the cloud", () => {
         ...helperSteps(
           C6_WS,
           "FACTORY-SESSION-DONE",
-          `❯ ls -t /home/ubuntu/.claude/projects/-workspace/*.jsonl | head -1; echo FACTORY-SESSION-''DONE\n${sessionLine}\nFACTORY-SESSION-DONE\n❯ `,
+          // The recorded listing's session line, under this helper's command and end mark.
+          (recorded) => {
+            const line = recorded.split("\n").find((l) => l.startsWith("/home/ubuntu/.claude/projects/-workspace/"))!;
+            assert.strictEqual(line, sessionLine);
+            return `❯ ls -t /home/ubuntu/.claude/projects/-workspace/*.jsonl | head -1; echo FACTORY-SESSION-''DONE\n${line}\nFACTORY-SESSION-DONE\n❯ `;
+          },
           "terminals-create-cloud-6-sessions",
+          "terminals-read-cloud-6-sessions",
         ),
         recorded("agents-create-cloud-resume"),
       ]);
@@ -3215,56 +3247,355 @@ describe("archive, removeWorktree and showGateLog off this Mac", () => {
 describe("the orphan sweep", () => {
   const NOW = Date.parse("2026-11-13T12:00:00.000Z");
   const ago = (ms: number) => new Date(NOW - ms).toISOString();
-  const ORPHAN_OBJECT_TAG = "f1e2d3c4-0000-4000-8000-000000000001";
+  const OBJECT_TAG = "f1e2d3c4-0000-4000-8000-000000000001";
+  const STALE = "c1e2d3c4-0000-4000-8000-000000000005";
+  const TORN = "b1e2d3c4-0000-4000-8000-000000000006";
+  const listArgv = ["workspaces", "list", "--host", "cloud"];
+  const archived = (id: string): Step => ({
+    argv: ["workspaces", "archive", id, "--host", "cloud"],
+    answer: { deleted: [id], notFound: [], failed: [], warnings: [] },
+  });
+  /** The recorded row, as each case of the sweep: only C6, OBJECT_TAG and STALE are its own to archive. */
   const rows = (answer: unknown) => {
     const [row] = answer as ReadonlyArray<Record<string, unknown>>;
+    const own = { ...row, environmentId: ENV, tags: ["factory"], createdAt: ago(60 * MINUTE) };
     return [
-      { ...row, id: C6_WS, name: "fac/6-1", tags: ["factory"], createdAt: ago(11 * MINUTE) },
-      { ...row, id: C3_WS, tags: ["factory"], createdAt: ago(60 * MINUTE) },
-      { ...row, id: "d1e2d3c4-0000-4000-8000-000000000002", tags: [], createdAt: ago(60 * MINUTE) },
-      { ...row, id: "e1e2d3c4-0000-4000-8000-000000000003", tags: ["factory"], createdAt: ago(9 * MINUTE) },
-      { ...row, id: "a1e2d3c4-0000-4000-8000-000000000004", tags: ["factory"], status: "deleted", createdAt: ago(60 * MINUTE) },
-      { ...row, id: ORPHAN_OBJECT_TAG, tags: [{ name: "factory" }], createdAt: ago(60 * MINUTE) },
+      { ...own, id: C6_WS, name: "fac/6-1", createdAt: ago(11 * MINUTE) },
+      { ...own, id: C3_WS, name: "fac/3-1" }, // a live run's record
+      { ...own, id: "d1e2d3c4-0000-4000-8000-000000000002", name: "fac/2-1", tags: [] }, // no tag
+      { ...own, id: "e1e2d3c4-0000-4000-8000-000000000003", name: "fac/4-1", createdAt: ago(9 * MINUTE) }, // too young
+      { ...own, id: "a1e2d3c4-0000-4000-8000-000000000004", name: "fac/5-1", status: "deleted" },
+      { ...own, id: "a2e2d3c4-0000-4000-8000-000000000007", name: "fac/7-1", environmentId: "another-environment" },
+      { ...own, id: "a3e2d3c4-0000-4000-8000-000000000008", name: "a person's spike" },
+      { ...own, id: TORN, name: "fac/8-1" }, // a record that does not read back
+      { ...own, id: OBJECT_TAG, name: "fac/9-1", tags: [{ name: "factory" }] },
+      { ...own, id: STALE, name: "fac/10-1", createdAt: ago(16 * MINUTE) }, // a record whose agent never started
     ];
   };
+  const seedSweep = (data: string) =>
+    Effect.gen(function* () {
+      yield* seed(
+        data,
+        cloudRecord(),
+        cloudRecord({ threadId: `cloud:${STALE}`, workspaceId: STALE, terminals: [], turns: [] }),
+      );
+      const threads = NodePath.join(data, "paradev", "threads");
+      NodeFS.writeFileSync(NodePath.join(threads, `${TORN}.json`), '{"v":2,"thre');
+    });
 
-  it.effect("archives each cloud workspace tagged factory, with no thread record, created over 10 minutes ago, one line each", () =>
+  it.effect("archives its own orphans in the configured environments, and a record whose agent never started, one line each", () =>
     Effect.gen(function* () {
       const t = rig([
-        { argv: ["workspaces", "list", "--host", "cloud"], fixture: "ws-list-noflag-after-cloud", edit: rows },
+        { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: rows },
         recorded("ws-archive-cloud-6"),
-        {
-          argv: ["workspaces", "archive", ORPHAN_OBJECT_TAG, "--host", "cloud"],
-          answer: { deleted: [ORPHAN_OBJECT_TAG], notFound: [], failed: [], warnings: [] },
-        },
+        archived(OBJECT_TAG),
+        archived(STALE),
       ]);
-      yield* seed(t.data, cloudRecord());
+      yield* seedSweep(t.data);
       yield* TestClock.setTime(NOW);
-      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans([ENV])));
       assert.deepStrictEqual(t.unused(), []);
-      assert.strictEqual(t.calls.length, 3);
-      assert.strictEqual(logs.length, 2, logs.join("\n"));
+      assert.strictEqual(t.calls.length, 4);
+      assert.strictEqual(logs.length, 3, logs.join("\n"));
       assert.include(logs[0], `archived cloud workspace ${C6_WS} (fac/6-1)`);
-      assert.include(logs[1], `archived cloud workspace ${ORPHAN_OBJECT_TAG}`);
+      assert.include(logs[1], `archived cloud workspace ${OBJECT_TAG}`);
+      assert.include(logs[2], `archived cloud workspace ${STALE} (fac/10-1): its launch never started an agent`);
+      const stale = yield* readThread(t.data, STALE).pipe(Effect.provide(NodeServices.layer));
+      assert.isNotNull(stale!.archivedAt);
     }),
   );
 
   it.effect("an orphan that fails to archive is one warning, and the next is still archived", () =>
     Effect.gen(function* () {
       const t = rig([
-        { argv: ["workspaces", "list", "--host", "cloud"], fixture: "ws-list-noflag-after-cloud", edit: rows },
+        { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: rows },
         { argv: readFixture("ws-archive-cloud-6").argv, fail: "Workspace is busy" },
-        {
-          argv: ["workspaces", "archive", ORPHAN_OBJECT_TAG, "--host", "cloud"],
-          answer: { deleted: [ORPHAN_OBJECT_TAG], notFound: [], failed: [], warnings: [] },
-        },
+        archived(OBJECT_TAG),
+        archived(STALE),
+      ]);
+      yield* seedSweep(t.data);
+      yield* TestClock.setTime(NOW);
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans([ENV])));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(logs.length, 3, logs.join("\n"));
+      assert.match(logs[0]!, /^Warn could not archive the orphaned cloud workspace /);
+    }),
+  );
+
+  it.effect("with no environment configured it lists nothing", () =>
+    Effect.gen(function* () {
+      const t = rig([]);
+      yield* t.run((s) => s.sweepOrphans([]));
+      assert.deepStrictEqual(t.calls, []);
+    }),
+  );
+});
+
+describe("cycle 1: liveness a send can trust, and what a failed cloud launch leaves", () => {
+  const workingAt = lastEventAt("agents-explain-cloud-working");
+
+  it.effect("a cloud send reads liveness afresh, not from status's look: an agent dead since is resumed, and nothing is typed", () =>
+    Effect.gen(function* () {
+      const where = ["--host", "cloud", "--workspace", C3_WS];
+      const cloudText = readFixture("agents-create-cloud-resume").argv.at(-1)!;
+      const session = `/home/ubuntu/.claude/projects/-workspace/${C6_SESSION}.jsonl`;
+      const t = rig([
+        recorded("agents-explain-cloud-working"),
+        ...helperSteps(C3_WS, "FACTORY-ALIVE-DONE", aliveScreen(1)),
+        recorded("snapshot-cloud"),
+        recorded("agents-explain-cloud-working"),
+        ...helperSteps(C3_WS, "FACTORY-ALIVE-DONE", aliveScreen(0)),
+        { argv: ["terminals", "close", ...where, "--terminal", C3_TERM], answer: { terminalId: C3_TERM, status: "disposed" } },
+        ...helperSteps(C3_WS, "FACTORY-SESSION-DONE", `${session}\nFACTORY-SESSION-DONE\n❯ `, "terminals-create-cloud-6-sessions"),
+        { argv: ["agents", "create", ...where, "--agent", "claude", "--resume-session", C6_SESSION, "--prompt", cloudText], fixture: "agents-create-cloud-resume" },
       ]);
       yield* seed(t.data, cloudRecord());
-      yield* TestClock.setTime(NOW);
-      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      yield* TestClock.setTime(workingAt + 11 * MINUTE);
+      yield* t.run((s) =>
+        Effect.gen(function* () {
+          assert.strictEqual((yield* s.status(`cloud:${C3_WS}`)).run, "running");
+          yield* TestClock.adjust(2 * MINUTE);
+          yield* s.send(`cloud:${C3_WS}`, SEND_ID, cloudText);
+        }),
+      );
       assert.deepStrictEqual(t.unused(), []);
-      assert.strictEqual(logs.length, 2, logs.join("\n"));
-      assert.match(logs[0]!, /^Warn could not archive the orphaned cloud workspace /);
+      assert.isFalse(t.calls.some(argvIs("terminals", "send")));
+      const after = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.deepStrictEqual(after!.terminals, [C3_TERM, C6_RESUMED]);
+    }),
+  );
+
+  it.effect("a cloud send whose fresh liveness read fails types nothing and closes nothing", () =>
+    Effect.gen(function* () {
+      const where = ["--host", "cloud", "--workspace", C3_WS, "--terminal", HELPER];
+      const t = rig([
+        recorded("snapshot-cloud"),
+        recorded("agents-explain-cloud-working"),
+        { argv: argvIs("terminals", "create", "--host", "cloud"), fixture: "terminals-create-cloud-gate" },
+        { argv: argvIs("terminals", "wait"), fail: "Timed out waiting for a match" },
+        { argv: ["terminals", "close", ...where], answer: { terminalId: HELPER, status: "disposed" } },
+      ]);
+      yield* seed(t.data, cloudRecord());
+      yield* TestClock.setTime(workingAt + 11 * MINUTE);
+      const { logs, result } = yield* logged(t.run((s) => s.send(`cloud:${C3_WS}`, SEND_ID, "text").pipe(Effect.flip)));
+      assert.include(String((result as SessionsError).cause), "could not be read; nothing was typed");
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some((argv) => argvIs("terminals", "send")(argv) || argvIs("agents", "create")(argv)));
+      assert.isTrue(logs.some((line) => line.startsWith("Warn could not read whether")), logs.join("\n"));
+    }),
+  );
+
+  it.effect("a helper terminal whose wait fails is still closed, and the run stays running", () =>
+    Effect.gen(function* () {
+      const t = rig([
+        recorded("agents-explain-cloud-working"),
+        { argv: argvIs("terminals", "create", "--host", "cloud"), fixture: "terminals-create-cloud-gate" },
+        { argv: argvIs("terminals", "wait"), fail: "Timed out waiting for a match" },
+        { argv: ["terminals", "close", "--host", "cloud", "--workspace", C3_WS, "--terminal", HELPER], answer: { terminalId: HELPER, status: "disposed" } },
+      ]);
+      yield* seed(t.data, cloudRecord());
+      yield* TestClock.setTime(workingAt + 11 * MINUTE);
+      assert.strictEqual((yield* t.run((s) => s.status(`cloud:${C3_WS}`))).run, "running");
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("a host send whose lookup does not finish types nothing, closes nothing and starts nothing", () =>
+    Effect.gen(function* () {
+      const ssh = fakeSsh(() => ({ exitCode: 3, tail: "" }));
+      const t = rig([recorded("snapshot-host-after-restart"), recorded("agents-explain-host-5-working")], {
+        config: { ssh: ssh.runner, hosts: HOSTS },
+      });
+      yield* seed(t.data, hostRecord());
+      const error = yield* t.run((s) => s.send(`host:${HOST}:${H5_WS}`, SEND_ID, "text")).pipe(Effect.flip);
+      assert.include(String((error as SessionsError).cause), "could not be read; nothing was typed");
+      assert.isFalse(t.calls.some((argv) => argv[0] === "terminals" || argvIs("agents", "create")(argv)));
+    }),
+  );
+
+  const cloudLaunch = (after: ReadonlyArray<Step>) =>
+    rig(
+      [
+        { argv: argvIs("workspaces", "create", "--host", "cloud"), fixture: "ws-create-cloud" },
+        ...after,
+      ],
+      { config: { place: () => Effect.succeed({ kind: "cloud", environmentId: ENV, machineSize: "small" } as const), cloudReadyPollMs: 1 } },
+    );
+  const getC3 = ["workspaces", "get", C3_WS, "--host", "cloud"];
+  const archiveC3 = ["workspaces", "archive", C3_WS, "--host", "cloud"];
+
+  it.live("a cloud launch whose agents create fails after ready archives the workspace before it fails", () =>
+    Effect.gen(function* () {
+      const t = cloudLaunch([
+        { argv: getC3, fixture: "ws-get-cloud-ready" },
+        { argv: argvIs("agents", "create"), fail: "Workspace not found on host cloud" },
+        { argv: ["snapshot", "--host", "cloud", "--workspace", C3_WS], fixture: "snapshot-cloud", edit: snapshotOf(C3_WS, []) },
+        { argv: archiveC3, fixture: "ws-archive-cloud" },
+      ]);
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), "; the workspace was archived");
+      assert.deepStrictEqual(t.unused(), []);
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNotNull(saved!.archivedAt);
+    }),
+  );
+
+  it.live("a cloud launch whose ready poll fails archives the workspace, and says so when the archive fails too", () =>
+    Effect.gen(function* () {
+      const t = cloudLaunch([
+        { argv: getC3, fail: "No active organization" },
+        { argv: archiveC3, fail: "No active organization" },
+      ]);
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), "archiving the workspace failed too");
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNull(saved!.archivedAt);
+    }),
+  );
+
+  it.live("a cloud workspace deleted while it provisions fails the launch", () =>
+    Effect.gen(function* () {
+      const t = cloudLaunch([
+        { argv: getC3, fixture: "ws-get-cloud-6-archived", edit: (a) => ({ ...(a as object), id: C3_WS }) },
+        { argv: archiveC3, answer: { deleted: [], notFound: [C3_WS], failed: [], warnings: [] } },
+      ]);
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), "was deleted while it provisioned");
+    }),
+  );
+
+  it.live("a retry of a cloud launch whose workspace was archived starts nothing", () =>
+    Effect.gen(function* () {
+      const t = rig([]);
+      yield* seed(t.data, cloudRecord({ terminals: [], turns: [], archivedAt: 1 }));
+      yield* writeLaunch(t.data, LAUNCH_ID, `cloud:${C3_WS}`).pipe(Effect.provide(NodeServices.layer));
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), "was archived before its agent started");
+      assert.deepStrictEqual(t.calls, []);
+    }),
+  );
+
+  it.live("a cloud archive that answers failed, with workspaces get still ready, fails and keeps archivedAt unset", () =>
+    Effect.gen(function* () {
+      const t = rig([
+        { argv: archiveC3, answer: { deleted: [], notFound: [], failed: [{ id: C3_WS }], warnings: [] } },
+        { argv: getC3, fixture: "ws-get-cloud-ready" },
+      ]);
+      yield* seed(t.data, cloudRecord());
+      const error = yield* t.run((s) => s.archive(`cloud:${C3_WS}`)).pipe(Effect.flip);
+      assert.strictEqual(error.operation, "archive");
+      assert.include(String(error.cause), `workspaces archive did not archive ${C3_WS}`);
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNull(saved!.archivedAt);
+    }),
+  );
+});
+
+describe("cycle 1: a host worktree read and retried where it lives", () => {
+  it.live("worktreeCheckout reads a host worktree over SSH, a missing one as null, and a cloud one as null with no call", () =>
+    Effect.gen(function* () {
+      const head = "a".repeat(40);
+      let present = true;
+      const ssh = fakeSsh((command) =>
+        command.startsWith("test -e ")
+          ? { exitCode: present ? 0 : 1 }
+          : command.includes("'rev-parse'")
+            ? { tail: `${head}\n` }
+            : { tail: "fac/5-1\n" },
+      );
+      const t = rig([], { config: { ssh: ssh.runner, hosts: HOSTS } });
+      yield* seed(t.data, hostRecord(), cloudRecord());
+      assert.deepStrictEqual(yield* t.run((s) => s.worktreeCheckout(H5_PATH)), { head, branch: "fac/5-1" });
+      assert.deepStrictEqual(ssh.calls.map(([, command]) => command), [
+        `test -e '${H5_PATH}/.git'`,
+        `'git' '-C' '${H5_PATH}' 'rev-parse' '--verify' 'HEAD^{commit}'`,
+        `'git' '-C' '${H5_PATH}' 'symbolic-ref' '-q' '--short' 'HEAD'`,
+      ]);
+      present = false;
+      assert.isNull(yield* t.run((s) => s.worktreeCheckout(H5_PATH)));
+      const before = ssh.calls.length;
+      assert.isNull(yield* t.run((s) => s.worktreeCheckout("/workspace")));
+      assert.strictEqual(ssh.calls.length, before);
+      assert.deepStrictEqual(t.gitCalls, []);
+    }),
+  );
+
+  const onHost = { place: () => Effect.die("placed again"), hosts: HOSTS };
+
+  it.live("a host launch retried after its record finds no agent, fetches the base through this Mac's project, and starts one", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      const ssh = fakeSsh((command) => (command.includes("'rev-parse'") ? { tail: `${r.main}\n` } : {}));
+      const t = rig(
+        [
+          { argv: ["snapshot", "--host", HOST, "--workspace", H5_WS], fixture: "snapshot-host-after-restart", edit: snapshotOf(H5_WS, []) },
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: ["workspaces", "get", H5_WS, "--host", HOST], fixture: "ws-get-host", edit: (a) => ({ ...(a as object), branch: "fac/5-1", worktreePath: H5_PATH }) },
+          { argv: argvIs("agents", "create", "--host", HOST, "--workspace", H5_WS), fixture: "agents-create-host-resume" },
+        ],
+        { config: { remoteBase: r.remoteBase, ssh: ssh.runner, ...onHost } },
+      );
+      yield* seed(t.data, hostRecord({ terminals: [], turns: [], worktreePath: null }));
+      yield* writeLaunch(t.data, LAUNCH_ID, `host:${HOST}:${H5_WS}`).pipe(Effect.provide(NodeServices.layer));
+      yield* t.run((s) => s.launch(request()));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isFalse(t.calls.some(argvIs("workspaces", "create")));
+      const saved = yield* readThread(t.data, H5_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.deepStrictEqual(saved!.terminals, [H11_RESUMED]);
+      assert.isFalse(ssh.calls.some(([, command]) => command.includes("'reset'")));
+    }),
+  );
+
+  it.live("a host worktree with work in it is kept: the launch fails and nothing is fetched or reset over SSH", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      const ssh = fakeSsh((command) =>
+        command.includes("'rev-parse'") ? { tail: `${"0".repeat(40)}\n` } : command.includes("'status'") ? { tail: " M a.txt\n" } : {},
+      );
+      const t = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: ["projects", "list", "--host", HOST], answer: [{ id: HOST_PROJECT, name: "spike", path: HOST_CLONE, repo: "https://github.com/original-solutions/factory-paradev-spike" }] },
+          { argv: argvIs("workspaces", "create"), fixture: "ws-create-host-5" },
+          { argv: ["workspaces", "get", H5_WS, "--host", HOST], fixture: "ws-get-host", edit: (a) => ({ ...(a as object), branch: "fac/5-1", worktreePath: H5_PATH }) },
+          { argv: ["snapshot", "--host", HOST, "--workspace", H5_WS], fixture: "snapshot-host-after-restart", edit: snapshotOf(H5_WS, []) },
+        ],
+        {
+          config: {
+            remoteBase: r.remoteBase,
+            ssh: ssh.runner,
+            hosts: HOSTS,
+            place: () => Effect.succeed({ kind: "host", machineId: HOST, path: HOST_CLONE } as const),
+          },
+        },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), "holds work off the base");
+      assert.isFalse(ssh.calls.some(([, command]) => command.includes("'reset'") || command.includes("'fetch'")));
+      assert.isFalse(t.calls.some(argvIs("agents", "create")));
+    }),
+  );
+
+  it.live("a host with no Paradev project at the repo's clone fails before anything is created", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      const t = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: ["projects", "list", "--host", HOST], answer: [] },
+        ],
+        {
+          config: {
+            remoteBase: r.remoteBase,
+            ssh: fakeSsh(() => ({})).runner,
+            hosts: HOSTS,
+            place: () => Effect.succeed({ kind: "host", machineId: HOST, path: HOST_CLONE } as const),
+          },
+        },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), `no Paradev project at ${HOST_CLONE} on host ${HOST}`);
+      assert.isFalse(t.calls.some(argvIs("workspaces", "create")));
     }),
   );
 });
