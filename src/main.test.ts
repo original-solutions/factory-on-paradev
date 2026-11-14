@@ -70,6 +70,7 @@ import { CUT_SHORT_COMMENT } from "./runner/messages.ts";
 import { utcSecond, type StartContext } from "./runner/start.ts";
 import { stopRequestPath } from "./runner/stop.ts";
 import {
+  NoTargetHasRoom,
   SessionsError,
   ThreadNotFoundError,
   type FactorySessions,
@@ -2885,6 +2886,45 @@ archive: (threadId) => Effect.sync(() => void archived.push(threadId)),
         seen.some((args) => args.includes("view")),
         JSON.stringify(seen),
       );
+    }),
+  );
+
+  it.effect("a re-gate whose relaunch finds no room logs the wait and writes no error to the run", () =>
+    Effect.gen(function* () {
+      const dataDir = tempDir();
+      const run = prOpenRun(dataDir);
+      const gh: FactoryProcess["Service"] = { run: () => answered(PR_VIEW("MERGED", HEAD)) };
+      const logs: Array<string> = [];
+      const logLayer = Logger.layer(
+        [Logger.make(({ message }) => void logs.push(messageText(message)))],
+        { mergeWithExisting: false },
+      );
+      const world = liveWorld(
+        background,
+        dataDir,
+        gh,
+        NodeServices.layer,
+        // The gate step fails as a launch that found no room does.
+        sessionsOf({
+          archive: () => Effect.fail(new SessionsError({ operation: "launch", cause: new NoTargetHasRoom() })),
+        }),
+        () => 1_000,
+        "mac-mini",
+        noAttention,
+        {
+          gate: { run: () => Effect.die("no gate runs for a merged pull request") },
+          wake: Effect.void,
+          scope: yield* Scope.make(),
+        },
+      );
+      yield* world.gate(backgroundRepo, run).pipe(Effect.provide(logLayer));
+      yield* waitUntil("the gate to end", () => !world.gateRunning(run));
+      assert.deepStrictEqual(
+        readRun(dataDir, run).entries.filter((entry) => entry.event === "error"),
+        [],
+      );
+      assert.ok(logs.some((line) => line === "rawphp/softfac#10 pr-open: waits: no target has room"), logs.join("\n"));
+      assert.ok(!logs.some((line) => line.startsWith("error:")), logs.join("\n"));
     }),
   );
 
