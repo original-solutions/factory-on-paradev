@@ -33,6 +33,13 @@ max_load_per_core: 1
 # A macOS notification when something needs a person.
 notify: true
 
+# A runner installed by `factory-runner install` checks this repo's v* tags every ten minutes,
+# installs a newer one itself, and restarts into it after a pass when no gate runs. Defaults to true.
+# Set it to false before going back to an older version with `make deploy TAG=...`, or the older
+# runner installs the newer tag again. A version from before this key (v0.2.0 and earlier) rejects
+# it: delete the line instead when going back to one of those.
+self_update: true
+
 # Must stay empty: Paradev cannot move a running session to another model through the CLI.
 # model_fallbacks: {}
 

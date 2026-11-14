@@ -177,10 +177,14 @@ const supersetCli = (
 };
 
 /**
- * Copies the package beside `versions/<version>` and returns the copy, or null when the package
- * is that folder already. Nothing a loaded agent runs from changes until {@link swapIn}.
+ * Copies {@link PACKAGE_ENTRIES} of `env.packageRoot` beside `versions/<version>` and returns the
+ * copy, or null when the package is that folder already. Nothing a loaded agent runs from changes
+ * until {@link swapIn}. The self-update stages a clone of a tag through it too.
  */
-const stage = (env: InstallEnv, version: string): string | null => {
+export const stage = (
+  env: Pick<InstallEnv, "home" | "packageRoot">,
+  version: string,
+): string | null => {
   const { versions } = installPathsOf(env.home);
   const target = NodePath.join(versions, version);
   NodeFS.mkdirSync(versions, { recursive: true });
@@ -202,7 +206,7 @@ const stage = (env: InstallEnv, version: string): string | null => {
 };
 
 /** Puts the staged copy (when there is one) at `versions/<version>` and points `current` at it. */
-const swapIn = (env: InstallEnv, version: string, staged: string | null): void => {
+export const swapIn = (env: Pick<InstallEnv, "home">, version: string, staged: string | null): void => {
   const { versions, current } = installPathsOf(env.home);
   const target = NodePath.join(versions, version);
   if (staged !== null) {

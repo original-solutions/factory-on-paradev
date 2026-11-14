@@ -10,6 +10,7 @@ import * as NodePath from "node:path";
 
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Exit from "effect/Exit";
@@ -50,6 +51,7 @@ import { readLowestFreeSpace, type FreeSpace } from "./disk.ts";
 import { overload, readLoad, type Load } from "./load.ts";
 import { checkHost, type CliCall } from "./paradev/hostsCheck.ts";
 import { liveSshSpawn, type SshSpawn } from "./paradev/ssh.ts";
+import { makeSelfUpdate, type SelfUpdate, type SelfUpdateOptions } from "./selfUpdate.ts";
 import * as Gate from "./gate.ts";
 import { guardLogStreams } from "./logStreams.ts";
 import { FactoryGate, clearGateLocks, gateLockFile } from "./gate.ts";
@@ -163,6 +165,11 @@ export class FactoryLoop extends Context.Service<
      * leaves the factory idle.
      */
     readonly reload: Effect.Effect<void>;
+    /**
+     * Completes when the runner should end so launchd starts the update it staged: after a pass,
+     * with no gate running. `run` in `bin.ts` waits on it.
+     */
+    readonly stopped: Effect.Effect<void>;
   }
 >()("factory-runner/main/FactoryLoop") {}
 
@@ -897,6 +904,10 @@ export interface RuntimeOptions {
   readonly proxyGet?: ProxyGet;
   /** What the Paradev adapter is built with beyond the `paradev` block: a test's remote base and waits. */
   readonly sessions?: Partial<Omit<ParadevSessionsConfig, "agent" | "model" | "effort">>;
+  /** What the factory keeps across reloads. Default a fresh one; a test passes its own to read or seed it. */
+  readonly shared?: LiveShared;
+  /** Makes the self-update the factory forks and checks after each pass. Default the real one; a test passes its own. */
+  readonly selfUpdate?: (options: SelfUpdateOptions) => Effect.Effect<SelfUpdate>;
 }
 
 /** A pass of a factory with no config to run on. */
@@ -1022,7 +1033,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     watched: [],
     started: false,
   };
-  const shared = newShared();
+  const shared = options.shared ?? newShared();
   // The watched repo's name of each local Paradev project, from the last project listing that
   // answered. It stays across a reload, which resolves the name against its own config at lookup.
   let repoNameOfProject = new Map<string, string>();
@@ -1061,6 +1072,15 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
   let afterPassRunning = false;
   let sweeping = false;
   let checkingHosts = false;
+  let updating = false;
+  const selfUpdate = yield* (options.selfUpdate ?? makeSelfUpdate)({
+    home: NodeOS.homedir(),
+    dataDir: factoryDir,
+    packageRoot: NodePath.resolve(import.meta.dirname, ".."),
+    execPath: globalThis.process.execPath,
+    ghConfigDir: () => placingNow().machine.ghConfigDir,
+    gatesRunning: () => shared.gating.size,
+  });
 
   const onePass = Effect.gen(function* () {
     const current = state.current;
@@ -1082,6 +1102,16 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
             sweeping = false;
           }),
         ),
+        Effect.interruptible,
+        Effect.forkIn(scope),
+      );
+    }
+    // The self-update goes beside the pass too, once per start: it reads the tags every ten
+    // minutes, on the config of the first pass.
+    if (!updating) {
+      updating = true;
+      yield* selfUpdate.run(current.machine.selfUpdate).pipe(
+        Effect.provideService(FactoryProcess, process),
         Effect.interruptible,
         Effect.forkIn(scope),
       );
@@ -1128,6 +1158,8 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
           // A pass that died hands the belt over too, so the page shows the failures; a pass
           // stopped by a shutdown or reload does not.
           Effect.andThen(Exit.hasInterrupts(exit) ? Effect.void : afterPass),
+          // A staged update restarts the runner here, between passes, once no gate runs.
+          Effect.andThen(selfUpdate.afterPass),
         ),
       ),
     );
@@ -1447,6 +1479,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       return state.status;
     },
     reload,
+    stopped: Deferred.await(selfUpdate.stopped),
   } satisfies FactoryLoop["Service"];
 });
 

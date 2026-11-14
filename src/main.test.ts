@@ -2,6 +2,7 @@
 // @effect-diagnostics globalDate:off - the waits for a pass use the wall clock, as the loop does.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -57,6 +58,7 @@ import { readFixture } from "./paradev/fake-superset.ts";
 import { AgentProcess } from "./paradev/sessions.ts";
 import { writeThread } from "./paradev/state.ts";
 import * as Paths from "./paths.ts";
+import type { SelfUpdateOptions } from "./selfUpdate.ts";
 import { LOAD_COMMAND, PROXY_ENV_READ, type SshSpawn } from "./paradev/ssh.ts";
 import { PARADEV_HOLD_PASSES, PARADEV_OFFLINE_ITEM_ID, type PassWorld, type Repo } from "./pass.ts";
 import {
@@ -241,6 +243,7 @@ const baseMachine: MachineConfig = {
   maxConcurrentGates: 1,
   feedbackSeconds: 600,
   notify: true,
+  selfUpdate: true,
   minFreeGib: 0,
   maxLoadPerCore: 0,
   modelFallbacks: {},
@@ -4444,6 +4447,63 @@ describe("liveWorld: the hosts", () => {
           { repo: "a/b", target: "local", reason: "slots full: 1 of 1 running" },
           { repo: "a/b", target: "mini", reason: "its load was not read this pass" },
         ]);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("self-update wiring", () => {
+  it.effect("forks the self-update once with self_update, checks it after every pass, and stopped follows it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const stop = yield* Deferred.make<void>();
+        const runs: Array<boolean> = [];
+        let afterPasses = 0;
+        const made: Array<SelfUpdateOptions> = [];
+        const selfUpdate = (options: SelfUpdateOptions) =>
+          Effect.sync(() => {
+            made.push(options);
+            return {
+              run: (enabled: boolean) =>
+                Effect.sync(() => {
+                  runs.push(enabled);
+                }),
+              afterPass: Effect.sync(() => {
+                afterPasses += 1;
+              }),
+              stopped: stop,
+            };
+          });
+        const shared = newShared();
+        const { loop, factoryDir } = yield* started(`${VALID}self_update: false\n`, noGhProcess, {
+          selfUpdate,
+          shared,
+        });
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* onePassMore(loop, factoryDir);
+        assert.deepStrictEqual(runs, [false]);
+        assert.strictEqual(afterPasses, 2);
+        assert.strictEqual(made.length, 1);
+        const options = made[0]!;
+        assert.strictEqual(options.dataDir, factoryDir);
+        assert.strictEqual(options.ghConfigDir(), "/gh");
+        assert.strictEqual(options.home, NodeOS.homedir());
+        assert.strictEqual(options.gatesRunning(), 0);
+        // A gate call in flight counts before its attempt takes a lock file.
+        shared.gating.add("a~b~1~run");
+        assert.strictEqual(options.gatesRunning(), 1);
+        shared.gating.clear();
+        assert.strictEqual(options.packageRoot, NodePath.resolve(import.meta.dirname, ".."));
+        assert.strictEqual(options.execPath, process.execPath);
+        // `stopped` waits on the updater's signal, not less.
+        const before = yield* Effect.raceFirst(
+          loop.stopped.pipe(Effect.as("stopped")),
+          realDelay(50).pipe(Effect.as("waiting")),
+        );
+        assert.strictEqual(before, "waiting");
+        const waiting = yield* Effect.forkChild(loop.stopped, { startImmediately: true });
+        yield* Deferred.succeed(stop, undefined);
+        yield* Fiber.join(waiting);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );

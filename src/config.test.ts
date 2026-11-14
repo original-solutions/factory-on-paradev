@@ -466,6 +466,7 @@ describe("machine config", () => {
       maxConcurrentGates: 2,
       feedbackSeconds: 600,
       notify: true,
+      selfUpdate: true,
       minFreeGib: 10,
       maxLoadPerCore: 1,
       modelFallbacks: {},
@@ -708,6 +709,18 @@ describe("machine config", () => {
   it("machine notify that is not a boolean is rejected", () => {
     const errs = machineErr(edit(MACHINE, (t) => set(t, "notify", '"no"')));
     assertOne(errs, "notify", MFILE);
+    expect(errs[0]!.message).toBe("must be true or false");
+  });
+
+  it("machine self_update is on by default and can be set either way", () => {
+    expect(machine(MACHINE).selfUpdate).toBe(true);
+    expect(machine(edit(MACHINE, (t) => set(t, "self_update", "true"))).selfUpdate).toBe(true);
+    expect(machine(edit(MACHINE, (t) => set(t, "self_update", "false"))).selfUpdate).toBe(false);
+  });
+
+  it("machine self_update that is not a boolean is rejected", () => {
+    const errs = machineErr(edit(MACHINE, (t) => set(t, "self_update", '"no"')));
+    assertOne(errs, "self_update", MFILE);
     expect(errs[0]!.message).toBe("must be true or false");
   });
 
@@ -1081,6 +1094,7 @@ describe("the example machine config", () => {
             maxConcurrentGates: 1,
             feedbackSeconds: 600,
             notify: true,
+            selfUpdate: true,
             minFreeGib: 10,
             maxLoadPerCore: 1,
             modelFallbacks: {},

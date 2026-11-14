@@ -389,6 +389,8 @@ Kept from t3fac with the same meaning and defaults: `gh_config_dir`, `poll_secon
 
 Kept but must be empty: `model_fallbacks`.
 
+New: `self_update` (default `true`), whether an installed runner installs newer tags itself (Process model).
+
 Ignored with a warning, as t3fac does for retired keys: `model_instance`, `model`, `prune_branches_after_days`, `prune_branches_dry_run`, `deploy_wait_minutes`, `keep_versions`.
 
 New:
@@ -502,7 +504,12 @@ Timeout 20 s, no retry: the next pass writes again. A failure goes to the log as
 
   Before step 1 it checks, writing nothing on a failure, that the machine config loads when there is one (its `paradev.cli` names the CLI to check) and that `superset auth whoami --json` succeeds.
 
-  Older version folders stay, so going back is `install` from the older version. An install of the version already there replaces its folder, so going back to earlier code of the same version is `install` from a checkout of that code.
+  Older version folders stay, so going back is `install` from the older version. A version that has `self_update` needs it set to `false` first, so it does not install the newer tag again; a version from before it (v0.2.0 and earlier) rejects the key, so the line is deleted instead. An install of the version already there replaces its folder, so going back to earlier code of the same version is `install` from a checkout of that code. The running runner also installs newer tags itself (next bullet), into the same folders.
+- Self-update (`src/selfUpdate.ts`), forked once per start beside the sweep. With `self_update: false` in the machine config, or when the running package is not a folder under `versions/` (a checkout run by hand), it logs one line saying so and does nothing.
+  1. Ten minutes after start, and every ten minutes after, it reads the tags of the repo named in `package.json`'s `repository` with `gh api repos/<owner>/<repo>/git/matching-refs/tags/v`, as `gh_config_dir`. Only `vX.Y.Z` counts. The highest is the candidate; one equal to or lower than the running version does nothing, and a failed read is one warning.
+  2. A higher candidate is cloned (`git clone --depth 1 --branch vX.Y.Z`, with the gate fetch's `GH_CONFIG_DIR`) into a temp folder under `versions/`, whose HEAD must carry the tag (`--branch` takes a branch of the same name first), gets `npm ci --omit=dev` with the runner's node first on PATH, and must pass the smoke: `status --json` from the clone exits 0, reports version `X.Y.Z`, and does not say the machine config does not load. Each step has 10 minutes. A failed step removes the folder and warns once with the step and its output's tail, and that tag is not tried again until the runner restarts. A clone folder a stopped runner left is removed at the next start.
+  3. A clone that passes is placed with install's `stage` and `swapIn`, so `versions/X.Y.Z` holds what install would copy and `current` points at it, and the runner logs `update staged: vX.Y.Z (running A.B.C); restarting when no gate runs`.
+  4. After each pass that ends while an update is staged, no gate lock is held and no gate call is in flight, it logs `restarting into vX.Y.Z` and `run` ends by the normal path: the scope closes, the runner lock is released and the process exits 0. A held gate lock waits for the next pass. launchd's `KeepAlive` starts `current/src/bin.ts` again, and Paradev sessions keep running across the restart (What survives what).
 - `factory-runner uninstall` boots out both agents and removes the plists. It keeps the config, the data and the versions.
 - Logs: `~/Library/Logs/factory-runner/runner.log`, rotated by the second agent, as t3fac does, because a crash-looping process writes the most log and cannot rotate its own.
 - `status [--json]`, `runs stop <run id>` and `claims pause|resume` read and write the data dir through `status.ts` and `control.ts`. They do not talk to the running process. A stop takes effect on the next pass.

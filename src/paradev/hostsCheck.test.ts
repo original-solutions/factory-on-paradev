@@ -36,6 +36,7 @@ const machineOf = (hosts: ReadonlyArray<HostConfig>, repoHosts = [{ id: "h1", pa
   maxConcurrentGates: 2,
   feedbackSeconds: 600,
   notify: true,
+  selfUpdate: true,
   minFreeGib: 10,
   maxLoadPerCore: 1,
   modelFallbacks: {},
