@@ -49,7 +49,7 @@ import {
 import { readLowestFreeSpace, type FreeSpace } from "./disk.ts";
 import { overload, readLoad, type Load } from "./load.ts";
 import { checkHost, type CliCall } from "./paradev/hostsCheck.ts";
-import { liveSshRunner, type SshRunner } from "./paradev/ssh.ts";
+import { liveSshSpawn, type SshSpawn } from "./paradev/ssh.ts";
 import * as Gate from "./gate.ts";
 import { guardLogStreams } from "./logStreams.ts";
 import { FactoryGate, clearGateLocks, gateLockFile } from "./gate.ts";
@@ -313,7 +313,7 @@ export interface LiveGate {
   /** How the machine's load is read. Default `os.loadavg`; a test passes the load it needs. */
   readonly readLoad?: () => Load;
   /** How a host is read over ssh. Default the `ssh` binary; a test passes the answers it needs. */
-  readonly ssh?: SshRunner;
+  readonly ssh?: SshSpawn;
   /** Asks the Paradev CLI (with --json) for the host checks: the parsed answer, or the error text. */
   readonly superset?: CliCall;
 }
@@ -486,7 +486,7 @@ export const liveWorld = (
   }: LiveShared = newShared(),
 ): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown"> => {
   const load = live.readLoad ?? readLoad;
-  const ssh = live.ssh ?? liveSshRunner(process);
+  const ssh = live.ssh ?? liveSshSpawn(process);
   // Every host is not ready until the pass has checked it: a new world is a new config load.
   const hostsNotReady = new Map(
     machine.hosts.map((host) => [host.id, "not checked yet since the config load"] as const),
@@ -869,7 +869,7 @@ export interface RuntimeOptions {
   /** How the machine's load is read. Default `os.loadavg`; a test passes the load it needs. */
   readonly readLoad?: () => Load;
   /** How a host is read over ssh. Default the `ssh` binary; a test passes the answers it needs. */
-  readonly ssh?: SshRunner;
+  readonly ssh?: SshSpawn;
   /** What the Paradev adapter is built with beyond the `paradev` block: a test's remote base and waits. */
   readonly sessions?: Partial<Omit<ParadevSessionsConfig, "agent" | "model" | "effort">>;
 }
@@ -883,6 +883,8 @@ interface Current {
   readonly world: PassWorld;
   /** Hands the pass's status to the belt writer; does nothing with the belt off. Never fails. */
   readonly afterPass: Effect.Effect<void, never, FileSystem.FileSystem | Path.Path>;
+  /** Archives orphaned cloud workspaces; does nothing when no repo names a cloud environment. Never fails. */
+  readonly sweep: Effect.Effect<void>;
 }
 
 /** What the Paradev hold reads from a failed CLI call. */
@@ -1000,6 +1002,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
   const beltMemo = newBeltMemo();
   const beltRuns: RunReadCache = new Map();
   let beltWriting = false;
+  let sweeping = false;
 
   const onePass = Effect.gen(function* () {
     const current = state.current;
@@ -1012,6 +1015,19 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     const context = yield* Effect.context<never>();
     const log = Effect.runSyncWith(context);
     let lastError: string | null = null;
+    // The sweep goes beside the pass, one at a time, as the belt does: a slow cloud holds up no pass.
+    if (!sweeping) {
+      sweeping = true;
+      yield* current.sweep.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            sweeping = false;
+          }),
+        ),
+        Effect.interruptible,
+        Effect.forkIn(scope),
+      );
+    }
     // The belt goes to Paradev beside the loop, one write at a time, so a hung Paradev holds up
     // no pass and no shutdown. A pass that ends while a write is still going hands nothing over:
     // the next one does.
@@ -1066,7 +1082,18 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       ...(machine.paradev.model === undefined ? {} : { model: machine.paradev.model }),
       ...(machine.paradev.effort === undefined ? {} : { effort: machine.paradev.effort }),
       ghConfigDir: machine.ghConfigDir,
+      hosts: machine.hosts,
     }).pipe(Effect.provide(paradev));
+    // Only a repo that names a cloud environment can have a cloud run, and so an orphan.
+    const sweep = machine.repos.some((entry) => entry.cloud !== undefined)
+      ? sessions.sweepOrphans.pipe(
+          Effect.catch((error) =>
+            Effect.logWarning(
+              `the cloud orphan sweep failed: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
+            ),
+          ),
+        )
+      : Effect.void;
     // The CLI check runs at start and on every reload, and again each pass until it passes.
     let cliChecked = false;
     // What the belt says of Paradev: the version the check read, and the last pass's answer.
@@ -1244,7 +1271,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         ),
     };
     options.onWorld?.(world);
-    state.current = { machine, world, afterPass };
+    state.current = { machine, world, afterPass, sweep };
     state.status = {
       state: "running",
       settings: {

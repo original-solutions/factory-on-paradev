@@ -4,11 +4,11 @@ import * as Result from "effect/Result";
 
 import type { HostConfig } from "../config.ts";
 import { parseLoad, readHostLoad } from "./hostLoad.ts";
-import { LOAD_COMMAND, sshArgs, type SshAnswer, type SshRunner } from "./ssh.ts";
+import { LOAD_COMMAND, sshArgs, type SshAnswer, type SshSpawn } from "./ssh.ts";
 
 const HOST: HostConfig = { id: "h1", name: "mini", ssh: "me@mini", maxRuns: 2, maxLoadPerCore: 1 };
 
-const runnerAnswering = (reply: Partial<SshAnswer>): { run: SshRunner; calls: Array<ReadonlyArray<string>> } => {
+const runnerAnswering = (reply: Partial<SshAnswer>): { run: SshSpawn; calls: Array<ReadonlyArray<string>> } => {
   const calls: Array<ReadonlyArray<string>> = [];
   return {
     calls,

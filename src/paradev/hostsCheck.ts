@@ -22,14 +22,14 @@ import {
   shellQuote,
   trustRead,
   TRUE_COMMAND,
-  type SshError,
-  type SshRunner,
+  type SshReadError,
+  type SshSpawn,
   type SyncCommandResult,
 } from "./ssh.ts";
 
 /** What the checks read from: a host over ssh, and the Superset CLI. */
 export interface HostCheckIo {
-  readonly ssh: SshRunner;
+  readonly ssh: SshSpawn;
   /** Runs `superset <argv> --json`: the parsed answer, or the error text. */
   readonly superset: (argv: ReadonlyArray<string>) => Effect.Effect<unknown, string>;
 }
@@ -68,7 +68,7 @@ const TRUST_FIX_SCRIPT =
 
 /** The cause to show after the fix when `tool` is not on a non-interactive ssh shell's PATH (exit 127); else none. */
 const missingFrom = (
-  answer: { readonly _tag: "Failure"; readonly failure: SshError } | { readonly _tag: "Success" },
+  answer: { readonly _tag: "Failure"; readonly failure: SshReadError } | { readonly _tag: "Success" },
   tool: string,
 ): string | undefined =>
   answer._tag === "Failure" && answer.failure.message.startsWith("exit 127")

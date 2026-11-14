@@ -6,7 +6,7 @@ import * as Effect from "effect/Effect";
 
 import type { HostConfig } from "../config.ts";
 import type { Load } from "../load.ts";
-import { LOAD_COMMAND, runSsh, type SshRunner } from "./ssh.ts";
+import { LOAD_COMMAND, runSsh, type SshSpawn } from "./ssh.ts";
 
 /**
  * The host's answer to the load command: macOS prints `{ 1.52 1.73 1.80 }` then the core count,
@@ -28,7 +28,7 @@ export const parseLoad = (text: string): Load | null => {
 };
 
 /** Reads the host's load over ssh; fails with a plain reason when it cannot be read. */
-export const readHostLoad = (run: SshRunner, host: HostConfig): Effect.Effect<Load, string> =>
+export const readHostLoad = (run: SshSpawn, host: HostConfig): Effect.Effect<Load, string> =>
   runSsh(run, host.ssh, LOAD_COMMAND).pipe(
     Effect.mapError((error) => error.message),
     Effect.flatMap((text) => {

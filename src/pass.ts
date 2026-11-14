@@ -36,7 +36,7 @@ import {
   hostNotReadyItem,
   type CheckLine,
 } from "./paradev/hostsCheck.ts";
-import type { SshRunner } from "./paradev/ssh.ts";
+import type { SshSpawn } from "./paradev/ssh.ts";
 import type { LedgerError } from "./ledger/errors.ts";
 import type { CauseStep, ErrorKind, MachineEvent } from "./ledger/events.ts";
 import { holdsSlot, type RunInfo } from "./ledger/listRuns.ts";
@@ -391,7 +391,7 @@ export interface PassWorld {
   /** How many passes in a row the Paradev hold has held claims; kept from pass to pass. */
   readonly paradevHold: { passes: number };
   /** Reads a host over ssh: its load each pass, and what `hosts check` asks. */
-  readonly ssh: SshRunner;
+  readonly ssh: SshSpawn;
   /**
    * How many reads of a host's load have failed in a row, by host id; kept from pass to pass. At
    * `HOST_UNREACHABLE_PASSES` the pass raises `host-unreachable`; a good read clears the count.

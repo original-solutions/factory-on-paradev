@@ -84,7 +84,7 @@ import {
   type Model,
 } from "./sessions.ts";
 import type { CheckLine } from "./paradev/hostsCheck.ts";
-import type { SshAnswer, SshRunner } from "./paradev/ssh.ts";
+import type { SshAnswer, SshSpawn } from "./paradev/ssh.ts";
 import { GitHubFailed, type Blocker, type Mergeable } from "./tracker/github.ts";
 
 const REPO = "rawphp/softfac";
@@ -204,7 +204,7 @@ class Fake implements PassWorld {
   sshAnswers: Record<string, SshAnswer | "fail"> = {};
   /** `ssh <destination> <command>`, in the order the pass made them; also in `calls`. */
   sshCalls: Array<string> = [];
-  ssh: SshRunner = (args) =>
+  ssh: SshSpawn = (args) =>
     Effect.sync(() => {
       const destination = args[args.length - 2] ?? "";
       this.sshCalls.push(`${destination} ${args[args.length - 1] ?? ""}`);

@@ -1,13 +1,78 @@
 /**
- * Reads a host over SSH. Every command the runner sends goes through `runSsh`, which refuses any
- * text that is not one of the shapes below: the read-only commands of the host readings and
- * `hosts check`, and the two writing commands #53 uses to fetch and reset a worktree. Nothing
- * else is ever sent, so a bad path or a bug cannot become a shell on a host. The runner writes
- * nothing in a host's dotfiles (decision U4).
+ * The runner's way onto a Paradev host: `ssh` with `BatchMode=yes` and `ConnectTimeout=10`, so a
+ * host that wants a password or does not answer fails at once instead of hanging a pass.
+ *
+ * Two callers. The adapter (#53) runs its calls through `sshRunner`. The host readings and
+ * `hosts check` (#54) go through `runSsh`, which refuses any text that is not one of the shapes
+ * below: the read-only commands of the readings and the check, and the fetch and reset of a
+ * worktree. The runner writes nothing in a host's dotfiles (decision U4).
  */
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
-import type { FactoryProcess } from "../process.ts";
+import type { FactoryProcess, RunResult } from "../process.ts";
+
+/** The options every call passes: no prompt for a password or a host key, and a 10 s connect. */
+export const SSH_OPTIONS: ReadonlyArray<string> = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"];
+
+/** ssh's own exit code for a failure of its own: no connection, a refused key, a lost link. */
+const SSH_FAILED = 255;
+
+/** How long one ssh call may take, connect included. */
+export const SSH_TIMEOUT_MS = 10_000;
+
+/** An ssh call that did not reach the host, or did not end in time. */
+export class SshError extends Schema.TaggedError<SshError>()("ParadevSshError", {
+  destination: Schema.String,
+  what: Schema.String,
+}) {
+  override get message(): string {
+    return `ssh ${this.destination}: ${this.what}`;
+  }
+}
+
+/**
+ * Runs `command` on `destination` (`user@host`), as one line for the host's login shell, so the
+ * caller quotes each word ({@link shellQuote}). The answer is the command's own exit code and
+ * output; ssh's own failure, a timeout or a spawn error is `SshError`.
+ */
+export interface SshRunner {
+  readonly run: (
+    destination: string,
+    command: string,
+    options?: { readonly timeoutMs?: number },
+  ) => Effect.Effect<RunResult, SshError>;
+}
+
+/** `value` as one word for `sh`: in single quotes, each `'` closed, escaped and reopened. */
+export const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+
+/** The argv `ssh` gets for `command` on `destination`. */
+export const sshArgs = (destination: string, command: string): ReadonlyArray<string> => [
+  ...SSH_OPTIONS,
+  "--",
+  destination,
+  command,
+];
+
+/** The real runner, over the runner's process service. */
+export const sshRunner = (process: FactoryProcess["Service"]): SshRunner => ({
+  run: (destination, command, options = {}) => {
+    const timeoutMs = options.timeoutMs ?? SSH_TIMEOUT_MS;
+    return process
+      .run({ command: "ssh", args: sshArgs(destination, command), separateStderr: true, timeoutMs })
+      .pipe(
+        Effect.mapError((cause) => new SshError({ destination, what: cause.message })),
+        Effect.flatMap((result) =>
+          result.timedOut
+            ? Effect.fail(new SshError({ destination, what: `no answer within ${timeoutMs / 1000} s` }))
+            : result.exitCode === SSH_FAILED
+              ? Effect.fail(new SshError({ destination, what: result.stderrTail.trim() || "ssh exited 255" }))
+              : Effect.succeed(result),
+        ),
+      );
+  },
+});
 
 /** What one `ssh` call came to: how it ended and what it printed. */
 export interface SshAnswer {
@@ -19,7 +84,7 @@ export interface SshAnswer {
 }
 
 /** Runs the `ssh` binary with these arguments. Never fails: a spawn error is a null exit code and its text. */
-export type SshRunner = (
+export type SshSpawn = (
   args: ReadonlyArray<string>,
   timeoutMs: number,
 ) => Effect.Effect<SshAnswer>;
@@ -31,27 +96,11 @@ export interface SyncCommandResult {
   readonly stderr: string;
 }
 
-/** How long one ssh call may take, connect included. */
-export const SSH_TIMEOUT_MS = 10_000;
-
-/** The arguments of one ssh call: no prompts, a 10 s connect, the destination, then the command. */
-export const sshArgs = (destination: string, command: string): ReadonlyArray<string> => [
-  "-o",
-  "BatchMode=yes",
-  "-o",
-  "ConnectTimeout=10",
-  destination,
-  command,
-];
-
 /** Why a call gave no answer: the command was refused, ssh did not answer in time, or it failed. */
-export interface SshError {
+export interface SshReadError {
   readonly kind: "refused" | "timeout" | "failed";
   readonly message: string;
 }
-
-/** `text` as one word of a POSIX shell command line. */
-export const shellQuote = (text: string): string => `'${text.replaceAll("'", "'\\''")}'`;
 
 /** The host's load and core count: the text the spec gives, macOS first and Linux as the fallback. */
 export const LOAD_COMMAND = "sysctl -n vm.loadavg hw.ncpu 2>/dev/null || (cat /proc/loadavg; nproc)";
@@ -144,24 +193,24 @@ const firstLine = (text: string): string =>
  * allowlist is refused before `run` is called.
  */
 export const runSsh = (
-  run: SshRunner,
+  run: SshSpawn,
   destination: string,
   command: string,
-): Effect.Effect<string, SshError> =>
+): Effect.Effect<string, SshReadError> =>
   Effect.gen(function* () {
     if (!isAllowed(command)) {
-      return yield* Effect.fail<SshError>({ kind: "refused", message: "the command is not one the runner may send to a host" });
+      return yield* Effect.fail<SshReadError>({ kind: "refused", message: "the command is not one the runner may send to a host" });
     }
     const done = yield* run(sshArgs(destination, command), SSH_TIMEOUT_MS);
     if (done.timedOut) {
-      return yield* Effect.fail<SshError>({
+      return yield* Effect.fail<SshReadError>({
         kind: "timeout",
         message: `no answer within ${SSH_TIMEOUT_MS / 1000} s`,
       });
     }
     if (done.exitCode !== 0) {
       const why = firstLine(done.stderr);
-      return yield* Effect.fail<SshError>({
+      return yield* Effect.fail<SshReadError>({
         kind: "failed",
         message:
           done.exitCode === null
@@ -173,8 +222,8 @@ export const runSsh = (
   });
 
 /** The real runner: the `ssh` binary through the factory's process runner, with the agent socket kept in its environment. */
-export const liveSshRunner =
-  (process: FactoryProcess["Service"]): SshRunner =>
+export const liveSshSpawn =
+  (process: FactoryProcess["Service"]): SshSpawn =>
   (args, timeoutMs) =>
     process
       .run({
@@ -204,11 +253,11 @@ export const liveSshRunner =
         ),
       );
 
-/** A synchronous command runner (the CLI's and install's) as an `SshRunner`; the command is always `ssh`. */
+/** A synchronous command runner (the CLI's and install's) as an `SshSpawn`; the command is always `ssh`. */
 export const fromCommandRunner =
   (
     run: (command: string, args: ReadonlyArray<string>, timeoutMs: number) => SyncCommandResult,
-  ): SshRunner =>
+  ): SshSpawn =>
   (args, timeoutMs) =>
     Effect.sync(() => {
       const done = run("ssh", args, timeoutMs);

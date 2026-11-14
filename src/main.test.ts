@@ -57,7 +57,7 @@ import { readFixture } from "./paradev/fake-superset.ts";
 import { AgentProcess } from "./paradev/sessions.ts";
 import { writeThread } from "./paradev/state.ts";
 import * as Paths from "./paths.ts";
-import type { SshRunner } from "./paradev/ssh.ts";
+import type { SshSpawn } from "./paradev/ssh.ts";
 import { PARADEV_HOLD_PASSES, PARADEV_OFFLINE_ITEM_ID, type PassWorld, type Repo } from "./pass.ts";
 import {
   FactoryProcess,
@@ -318,6 +318,9 @@ const paradevAnswer = (paradev: FakeParadev, argv: ReadonlyArray<string>): RunRe
       return paradev.hostsList === undefined
         ? reply(1, "", "Error: PARADEV_OFFLINE: host service is not running\n")
         : reply(0, JSON.stringify(paradev.hostsList));
+    // The orphan sweep's listing: no cloud workspace.
+    case "workspaces list --host cloud":
+      return reply(0, "[]");
     default:
       if (argv[0] === "pages" && paradev.pages !== undefined) return paradev.pages(argv);
       if (argv[0] === "projects" && argv.includes("--host")) return reply(0, "[]");
@@ -1394,6 +1397,27 @@ describe("on the Paradev CLI", () => {
           loop.status.state === "running" ? loop.status.settings.repos : null,
           ["a/b", "c/d"],
         );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("each pass sweeps the cloud for orphans beside the pass while a repo names an environment, and never otherwise", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const sweeps = (calls: ReadonlyArray<ReadonlyArray<string>>) =>
+          calls.filter((argv) => argv.join(" ") === "workspaces list --host cloud").length;
+        const cloudBlock = "cloud:\n  proxy: https://proxy.example\n";
+        const named = `gh_config_dir: /gh\nmax_concurrent_runs: 1\nmin_free_gib: 0\n${cloudBlock}repos:\n  - repo: a/b\n    path: /b\n    cloud: edad9805-e48d-40f3-a06c-e19a4105f974\n${PARADEV_BLOCK}`;
+        const cloud = yield* started(named);
+        yield* idleAfter(cloud.loop, cloud.factoryDir, 1);
+        yield* waitUntil("the first sweep", () => sweeps(cloud.paradev.calls) === 1);
+        yield* onePassMore(cloud.loop, cloud.factoryDir);
+        yield* waitUntil("the second sweep", () => sweeps(cloud.paradev.calls) === 2);
+        // A cloud block with no repo naming an environment has nothing of its own to sweep.
+        const none = yield* started(configFor([["a/b", "/b"]], "/gh", cloudBlock));
+        yield* idleAfter(none.loop, none.factoryDir, 1);
+        yield* onePassMore(none.loop, none.factoryDir);
+        assert.strictEqual(sweeps(none.paradev.calls), 0);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -3959,7 +3983,7 @@ describe("liveWorld: the sessions of runs, for threads on a broken worktree", ()
 
 describe("liveWorld: the hosts", () => {
   const HOSTS = "hosts:\n  - id: h1\n    name: mini\n    ssh: me@mini\n    max_runs: 2\n";
-  const refused: SshRunner = () =>
+  const refused: SshSpawn = () =>
     Effect.succeed({ exitCode: 255, timedOut: false, stdout: "", stderr: "Connection refused\n" });
 
   it.effect("the first pass checks each host, and a host that fails is not ready with one attention item", () =>

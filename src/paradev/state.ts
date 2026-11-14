@@ -68,6 +68,12 @@ const RECORD_FIELDS = {
    * written before it existed.
    */
   gateLogAttempts: Schema.optional(Schema.Array(Schema.Number)),
+  /**
+   * Set when a cloud launch failed before its agent started and archiving its workspace failed too:
+   * the core holds no thread for it, so the orphan sweep archives it. Absent in records written
+   * before it existed.
+   */
+  pendingArchive: Schema.optional(Schema.Boolean),
 };
 
 /** A record as P1 wrote it: every thread local. */
@@ -178,6 +184,16 @@ export const writeThread = Effect.fn("ParadevState.writeThread")(function* (
   const path = yield* Path.Path;
   const file = path.join(threadsDir(path, dataDir), `${record.workspaceId}.json`);
   yield* writeFileAtomically(file, `${JSON.stringify(record)}\n`);
+});
+
+/** Whether `workspaceId` has a thread record file, whole or torn. */
+export const threadFileExists = Effect.fn("ParadevState.threadFileExists")(function* (
+  dataDir: string,
+  workspaceId: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return yield* fs.exists(path.join(threadsDir(path, dataDir), `${workspaceId}.json`));
 });
 
 /** Every whole thread record; torn files are skipped. */
