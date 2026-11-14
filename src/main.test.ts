@@ -70,6 +70,7 @@ import { CUT_SHORT_COMMENT } from "./runner/messages.ts";
 import { utcSecond, type StartContext } from "./runner/start.ts";
 import { stopRequestPath } from "./runner/stop.ts";
 import {
+  NoTargetHasRoom,
   SessionsError,
   ThreadNotFoundError,
   type FactorySessions,
@@ -324,6 +325,8 @@ const paradevAnswer = (paradev: FakeParadev, argv: ReadonlyArray<string>): RunRe
     default:
       if (argv[0] === "pages" && paradev.pages !== undefined) return paradev.pages(argv);
       if (argv[0] === "projects" && argv.includes("--host")) return reply(0, "[]");
+      // The placer's count of running agents: no workspace is running.
+      if (argv[0] === "snapshot") return reply(0, '{"workspaces":[]}');
       throw new Error(`the scripted superset got an unexpected call: ${argv.join(" ")}`);
   }
 };
@@ -1596,6 +1599,57 @@ describe("the default-branch reads of a runner clone", () => {
 });
 
 describe("liveWorld", () => {
+  it.effect("checkProxy asks <proxy>/v1/models through the injected call and answers open, then down", () =>
+    Effect.gen(function* () {
+      const asked: Array<string> = [];
+      const statuses = [200, 503];
+      const world = liveWorld(
+        { ...baseMachine, cloud: { machineSize: "small", maxRuns: 1, proxy: "https://proxy.example.ts.net/" } },
+        tempDir(),
+        {} as never,
+        NodeServices.layer,
+        {} as never,
+        () => NOW,
+        "mac-mini",
+        noAttention,
+        {
+          gate: { run: () => Effect.die("no gate") },
+          wake: Effect.void,
+          scope: yield* Scope.make(),
+          proxyGet: (url) => Effect.sync(() => (asked.push(url), statuses.shift()!)),
+        },
+      );
+      assert.deepStrictEqual(yield* world.checkProxy(), { kind: "open" });
+      assert.deepStrictEqual(yield* world.checkProxy(), { kind: "down", reason: "answered HTTP 503" });
+      assert.deepStrictEqual(asked, ["https://proxy.example.ts.net/v1/models", "https://proxy.example.ts.net/v1/models"]);
+    }),
+  );
+
+  it.effect("a new world built from the same shared state goes on counting the cloud proxy's misses", () =>
+    Effect.gen(function* () {
+      const shared = newShared();
+      const scope = yield* Scope.make();
+      const build = () =>
+        liveWorld(
+          machine,
+          tempDir(),
+          {} as never,
+          NodeServices.layer,
+          {} as never,
+          () => NOW,
+          "mac-mini",
+          noAttention,
+          { gate: { run: () => Effect.die("no gate") }, wake: Effect.void, scope },
+          undefined,
+          undefined,
+          shared,
+        );
+      const first = build();
+      first.proxyMisses.passes = 2;
+      assert.strictEqual(build().proxyMisses.passes, 2);
+    }),
+  );
+
   const REPO = "rawphp/softfac";
   const NOW = Date.UTC(2026, 9, 8, 2, 0, 0);
   const MINUTE = 60 * 1000;
@@ -2863,6 +2917,45 @@ archive: (threadId) => Effect.sync(() => void archived.push(threadId)),
     }),
   );
 
+  it.effect("a re-gate whose relaunch finds no room logs the wait and writes no error to the run", () =>
+    Effect.gen(function* () {
+      const dataDir = tempDir();
+      const run = prOpenRun(dataDir);
+      const gh: FactoryProcess["Service"] = { run: () => answered(PR_VIEW("MERGED", HEAD)) };
+      const logs: Array<string> = [];
+      const logLayer = Logger.layer(
+        [Logger.make(({ message }) => void logs.push(messageText(message)))],
+        { mergeWithExisting: false },
+      );
+      const world = liveWorld(
+        background,
+        dataDir,
+        gh,
+        NodeServices.layer,
+        // The gate step fails as a launch that found no room does.
+        sessionsOf({
+          archive: () => Effect.fail(new SessionsError({ operation: "launch", cause: new NoTargetHasRoom() })),
+        }),
+        () => 1_000,
+        "mac-mini",
+        noAttention,
+        {
+          gate: { run: () => Effect.die("no gate runs for a merged pull request") },
+          wake: Effect.void,
+          scope: yield* Scope.make(),
+        },
+      );
+      yield* world.gate(backgroundRepo, run).pipe(Effect.provide(logLayer));
+      yield* waitUntil("the gate to end", () => !world.gateRunning(run));
+      assert.deepStrictEqual(
+        readRun(dataDir, run).entries.filter((entry) => entry.event === "error"),
+        [],
+      );
+      assert.ok(logs.some((line) => line === "rawphp/softfac#10 pr-open: waits: no target has room"), logs.join("\n"));
+      assert.ok(!logs.some((line) => line.startsWith("error:")), logs.join("\n"));
+    }),
+  );
+
   describe("under high load", () => {
     const loaded = { ...background, maxConcurrentGates: 2, maxLoadPerCore: 1 };
     const overloaded = () => ({ oneMinute: 55.2, cores: 12 });
@@ -4084,6 +4177,54 @@ describe("liveWorld: the hosts", () => {
         yield* waitUntil("the check after the reload to pass", () => worlds[1]!.hostsNotReady.size === 0);
         assert.strictEqual(hostsListed(paradev), 2);
         assert.isTrue(worlds[1]!.hostCheckedAt.has("h1"));
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a reload keeps the one placer, its launches in flight and the last project listing, on the new machine config", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const placers: Array<Parameters<NonNullable<RuntimeOptions["onPlacer"]>>[0]> = [];
+        const worlds: Array<PassWorld> = [];
+        // a/b lists no host, and this Mac's one slot is below the core's two: placement checks it.
+        const before = configFor([["a/b", "/b"]], "/gh", `${HOSTS}local:\n  max_runs: 1\n`).replace(
+          "max_concurrent_runs: 1",
+          "max_concurrent_runs: 2",
+        );
+        const after = before.replace("path: /b\n", "path: /b\n    hosts:\n      - id: h1\n        path: /srv/b\n");
+        const { loop, factoryDir, write, logLayer, paradev } = yield* started(
+          before,
+          noGhProcess,
+          { ssh: healthy, onPlacer: (placer) => placers.push(placer), onWorld: (world) => worlds.push(world) },
+          newParadev(),
+        );
+        yield* idleAfter(loop, factoryDir, 1);
+        const request = (n: number) => ({
+          commandId: `launch-${n}`,
+          projectId: A_B_PROJECT.id,
+          title: "t",
+          baseRef: "main",
+          message: "m",
+          model: { instanceId: "claude", model: "opus" },
+        });
+        const placer = placers[0]!;
+        // The first launch takes this Mac's one slot and stays in flight.
+        assert.deepStrictEqual(yield* placer.place(request(1)), { kind: "local" });
+        // The reload adds a host to a/b; the next listing fails, so only the kept listing knows a/b's project.
+        paradev.listDown = "PARADEV_OFFLINE";
+        yield* write(after);
+        yield* loop.reload.pipe(Effect.provide(logLayer));
+        assert.strictEqual(placers.length, 1);
+        assert.strictEqual(worlds.length, 2);
+        yield* idleAfter(loop, factoryDir, 2);
+        const refused = yield* placer.place(request(2)).pipe(Effect.flip);
+        assert.strictEqual(refused._tag, "FactoryNoTargetHasRoom");
+        // The host of the new config is a candidate for a/b, and the launch in flight still holds this Mac's slot.
+        const drops = eventsOf(factoryDir, "placement").map((entry) => entry.data);
+        assert.deepStrictEqual(drops, [
+          { repo: "a/b", target: "local", reason: "slots full: 1 of 1 running" },
+          { repo: "a/b", target: "mini", reason: "its load was not read this pass" },
+        ]);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );

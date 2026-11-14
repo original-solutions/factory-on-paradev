@@ -14,7 +14,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { useTempDirs } from "../ledger/testSupport.ts";
 import { FactoryPaths } from "../paths.ts";
 import { FactoryProcess, layer as processLayer, type RunResult } from "../process.ts";
-import { MessageRejectedError, SessionsError, ThreadNotFoundError, type LaunchRequest } from "../sessions.ts";
+import { isNoTargetHasRoom, MessageRejectedError, NoTargetHasRoom, SessionsError, ThreadNotFoundError, type LaunchRequest } from "../sessions.ts";
 import { sha256 } from "../text.ts";
 import { layer as cliLayer } from "./cli.ts";
 import { fakeSuperset, readFixture, type Step } from "./fake-superset.ts";
@@ -22,11 +22,12 @@ import {
   AgentProcess,
   agentProcessLayer,
   make,
+  type LaunchTarget,
   type ParadevSessions,
   type ParadevSessionsConfig,
 } from "./sessions.ts";
 import { SshError, type SshRunner } from "./ssh.ts";
-import { readLaunch, readThread, type ThreadRecord, writeLaunch, writeThread } from "./state.ts";
+import { readLaunch, readPlacement, readThread, type ThreadRecord, writeLaunch, writePlacement, writeThread } from "./state.ts";
 
 const tempDir = useTempDirs();
 
@@ -2903,9 +2904,9 @@ describe("launch in the cloud", () => {
     }),
   );
 
-  /** Every file a launch wrote under the data dir, relative to it; the rig's runner id was there before it. */
+  /** Every file a launch wrote under the data dir, relative to it, but the placement files; the rig's runner id was there before it. */
   const written = (data: string): ReadonlyArray<string> =>
-    NodeFS.existsSync(data) ? NodeFS.readdirSync(data, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => NodePath.relative(data, NodePath.join(e.parentPath, e.name))).filter((file) => file !== NodePath.join("paradev", "runner-id")) : [];
+    NodeFS.existsSync(data) ? NodeFS.readdirSync(data, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => NodePath.relative(data, NodePath.join(e.parentPath, e.name))).filter((file) => file !== NodePath.join("paradev", "runner-id") && !file.startsWith(NodePath.join("paradev", "placements"))) : [];
 
   it.live("a created workspace id that is not plain fails the launch, with no record, no launch file and no further call", () =>
     Effect.gen(function* () {
@@ -3955,6 +3956,341 @@ describe("a save keeps the current terminal's liveness and trust reads", () => {
       assert.deepStrictEqual(t.unused(), []);
       assert.strictEqual(t.calls.filter(argvIs("terminals", "read")).length, 1);
       assert.isNull((yield* readThread(t.data, HT_WS).pipe(Effect.provide(NodeServices.layer)))!.pendingSend);
+    }),
+  );
+});
+
+describe("placement, once per command id (#55)", () => {
+  it.live("a launch sent twice with the same command id places once and starts nothing the second time", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      let placed = 0;
+      const t = rig(
+        [...launchScript(r), { argv: argvIs("agents", "explain"), fixture: "agents-explain-local-starting" }],
+        {
+          config: {
+            remoteBase: r.remoteBase,
+            place: () => Effect.sync(() => (placed += 1, { kind: "local" as const })),
+          },
+        },
+      );
+      const first = yield* t.run((s) => s.launch(request()));
+      const callsAfterFirst = t.calls.length;
+      const second = yield* t.run((s) => s.launch(request()));
+      assert.strictEqual(placed, 1);
+      assert.deepStrictEqual(second, first);
+      assert.strictEqual(t.calls.length, callsAfterFirst);
+    }),
+  );
+});
+
+describe("placement is durable under the command id (#55)", () => {
+  it.live("a launch cut off after placement is sent again to the recorded target, which placement is asked to check", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      let placed = 0;
+      const asked: Array<LaunchTarget | undefined> = [];
+      // The first send is placed on the host, and its `workspaces create` fails: nothing is recorded but the placement.
+      const first = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: ["projects", "list", "--host", HOST], answer: [{ id: HOST_PROJECT, name: "factory-paradev-spike", path: `${HOST_CLONE}/`, repo: "https://github.com/original-solutions/factory-paradev-spike" }] },
+          { argv: argvIs("workspaces", "create"), fail: "create refused" },
+        ],
+        {
+          config: {
+            remoteBase: r.remoteBase,
+            hosts: HOSTS,
+            place: () => Effect.sync(() => (placed += 1, { kind: "host", machineId: HOST, path: HOST_CLONE } as const)),
+          },
+        },
+      );
+      yield* first.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.strictEqual(placed, 1);
+      assert.deepStrictEqual(yield* readPlacement(first.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)), {
+        kind: "host",
+        machineId: HOST,
+        path: HOST_CLONE,
+      });
+
+      // A second send, with the same data dir, asks `place` about the recorded target and creates on the host.
+      const second = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: ["projects", "list", "--host", HOST], answer: [{ id: HOST_PROJECT, name: "factory-paradev-spike", path: `${HOST_CLONE}/`, repo: "https://github.com/original-solutions/factory-paradev-spike" }] },
+          { argv: argvIs("workspaces", "create"), fail: "stop here" },
+        ],
+        {
+          config: {
+            remoteBase: r.remoteBase,
+            hosts: HOSTS,
+            // The kept target qualifies: placement answers it.
+            place: (_request, kept) => Effect.sync(() => (asked.push(kept), kept ?? { kind: "local" as const })),
+          },
+        },
+      );
+      NodeFS.cpSync(first.data, second.data, { recursive: true });
+      yield* second.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.deepStrictEqual(asked, [{ kind: "host", machineId: HOST, path: HOST_CLONE }]);
+      assert.deepStrictEqual(second.calls.find(argvIs("workspaces", "create"))?.slice(0, 3), ["workspaces", "create", "--host"]);
+    }),
+  );
+
+  it.live("launchEnded is told the command id once after every placement, fresh or kept, whether the launch succeeds or fails", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const ended: Array<string> = [];
+      const config = {
+        remoteBase: r.remoteBase,
+        place: () => Effect.succeed({ kind: "local" } as const),
+        launchEnded: (id: string) => Effect.sync(() => void ended.push(id)),
+      };
+      // A launch that fails: the create is refused.
+      const failing = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: argvIs("workspaces", "create"), fail: "create refused" },
+        ],
+        { config },
+      );
+      yield* failing.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.deepStrictEqual(ended, [LAUNCH_ID]);
+      // The resend finds the placement file: the placer checks that target, and counts it again.
+      NodeFS.rmSync(NodePath.join(failing.data, "paradev", "launches"), { recursive: true, force: true });
+      const resend = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: argvIs("workspaces", "create"), fail: "create refused" },
+        ],
+        { config: { ...config, place: (_request, kept) => Effect.succeed(kept ?? { kind: "host" as const, machineId: "none", path: "/none" }) } },
+      );
+      NodeFS.cpSync(failing.data, resend.data, { recursive: true });
+      yield* resend.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.deepStrictEqual(ended, [LAUNCH_ID, LAUNCH_ID]);
+      // A launch that succeeds.
+      const ok = rig(
+        [...launchScript(r), { argv: argvIs("agents", "explain"), fixture: "agents-explain-local-starting" }],
+        { config },
+      );
+      yield* ok.run((s) => s.launch(request({ commandId: "softfac:o__r__2__1:launch" })));
+      assert.deepStrictEqual(ended, [LAUNCH_ID, LAUNCH_ID, "softfac:o__r__2__1:launch"]);
+    }),
+  );
+
+  it.live("a placement that finds no room fails the launch as a wait: no create, no launch file, no placement file", () =>
+    Effect.gen(function* () {
+      const t = rig([], { config: { place: () => Effect.fail(new NoTargetHasRoom()) } });
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.instanceOf(error, SessionsError);
+      assert.strictEqual((error as SessionsError).operation, "launch");
+      assert.isTrue(isNoTargetHasRoom(error));
+      assert.deepStrictEqual(t.calls, []);
+      assert.isNull(yield* readLaunch(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)));
+      assert.isNull(yield* readPlacement(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)));
+    }),
+  );
+
+  it.live("a placement file that does not read back fails the launch without placing: nothing is created, and launchEnded is not told", () =>
+    Effect.gen(function* () {
+      let placed = 0;
+      const ended: Array<string> = [];
+      const t = rig([], {
+        config: {
+          place: () => Effect.sync(() => (placed += 1, { kind: "local" as const })),
+          launchEnded: (id: string) => Effect.sync(() => void ended.push(id)),
+        },
+      });
+      // The file is there, with no target in it: placing again could move the launch.
+      const file = NodePath.join(t.data, "paradev", "placements", `${sha256(LAUNCH_ID)}.json`);
+      NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
+      NodeFS.writeFileSync(file, "not a target\n");
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.instanceOf(error, SessionsError);
+      assert.strictEqual((error as SessionsError).operation, "launch");
+      assert.isFalse(isNoTargetHasRoom(error));
+      assert.include(String((error as SessionsError).cause), "does not read back as a target");
+      assert.strictEqual(placed, 0);
+      assert.deepStrictEqual(t.calls, []);
+      assert.deepStrictEqual(ended, []);
+      assert.isNull(yield* readLaunch(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)));
+    }),
+  );
+});
+
+describe("a kept placement is checked again (#55)", () => {
+  const hostTarget = { kind: "host", machineId: HOST, path: HOST_CLONE } as const;
+  const cloudTarget = { kind: "cloud", environmentId: ENV, machineSize: "small" } as const;
+  const hostScript = (r: ReturnType<typeof repos>): ReadonlyArray<Step> => [
+    { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+    { argv: ["projects", "list", "--host", HOST], answer: [{ id: HOST_PROJECT, name: "factory-paradev-spike", path: `${HOST_CLONE}/`, repo: "https://github.com/original-solutions/factory-paradev-spike" }] },
+    { argv: argvIs("workspaces", "create"), fail: "create refused" },
+  ];
+
+  it.live("a kept host placement whose host is full is refused: no launch, and the placement file stays", () =>
+    Effect.gen(function* () {
+      const asked: Array<LaunchTarget | undefined> = [];
+      const ended: Array<string> = [];
+      const t = rig([], {
+        config: {
+          hosts: HOSTS,
+          place: (_request, kept) => Effect.sync(() => void asked.push(kept)).pipe(Effect.andThen(Effect.fail(new NoTargetHasRoom()))),
+          launchEnded: (id: string) => Effect.sync(() => void ended.push(id)),
+        },
+      });
+      yield* writePlacement(t.data, LAUNCH_ID, hostTarget).pipe(Effect.provide(NodeServices.layer));
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.isTrue(isNoTargetHasRoom(error));
+      assert.deepStrictEqual(asked, [hostTarget]);
+      assert.deepStrictEqual(t.calls, []);
+      assert.isNull(yield* readLaunch(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)));
+      assert.deepStrictEqual(yield* readPlacement(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)), hostTarget);
+      // Nothing was placed, so nothing is in flight to end.
+      assert.deepStrictEqual(ended, []);
+    }),
+  );
+
+  it.live("a kept host placement that qualifies launches there and is released when the launch ends", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      const ended: Array<string> = [];
+      const t = rig(hostScript(r), {
+        config: {
+          remoteBase: r.remoteBase,
+          hosts: HOSTS,
+          place: (_request, kept) => Effect.succeed(kept ?? { kind: "local" as const }),
+          launchEnded: (id: string) => Effect.sync(() => void ended.push(id)),
+        },
+      });
+      yield* writePlacement(t.data, LAUNCH_ID, hostTarget).pipe(Effect.provide(NodeServices.layer));
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.deepStrictEqual(t.calls.find(argvIs("workspaces", "create"))?.slice(0, 3), ["workspaces", "create", "--host"]);
+      assert.deepStrictEqual(ended, [LAUNCH_ID]);
+    }),
+  );
+
+  it.live("a kept cloud placement is ignored: placement is asked afresh and its answer is kept", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      const asked: Array<LaunchTarget | undefined> = [];
+      const t = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: argvIs("workspaces", "create"), fail: "create refused" },
+        ],
+        {
+          config: {
+            remoteBase: r.remoteBase,
+            place: (_request, kept) => Effect.sync(() => (asked.push(kept), { kind: "local" as const })),
+          },
+        },
+      );
+      yield* writePlacement(t.data, LAUNCH_ID, cloudTarget).pipe(Effect.provide(NodeServices.layer));
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.deepStrictEqual(asked, [undefined]);
+      assert.deepStrictEqual(yield* readPlacement(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)), { kind: "local" });
+    }),
+  );
+});
+
+describe("runningByTarget and runningThreads, per target (#55)", () => {
+  const withAll = { hosts: HOSTS, cloud: true } as const;
+  /** The L5b local snapshot: its first terminal reads `working`, its second `idle`. */
+  const localStep: Step = { argv: ["snapshot"], fixture: "snapshot-local-after-resume" };
+  const hostStep: Step = { argv: ["snapshot", "--host", HOST], fixture: "snapshot-host-after-restart" };
+  const cloudStep: Step = { argv: ["snapshot", "--host", "cloud"], fixture: "snapshot-cloud" };
+  const seedAll = (data: string) =>
+    seed(
+      data,
+      record({ threadId: `local:${L5_WS}`, workspaceId: L5_WS, terminals: [L5_DEAD] }),
+      hostRecord(),
+      cloudRecord(),
+    );
+
+  it.effect("counts this Mac, each host and cloud from one snapshot each, and sums them", () =>
+    Effect.gen(function* () {
+      const t = rig([localStep, hostStep, cloudStep, localStep, hostStep, cloudStep], { config: withAll });
+      yield* seedAll(t.data);
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 1 },
+        { target: { kind: "host", machineId: HOST }, running: 1 },
+        { target: { kind: "cloud" }, running: 1 },
+      ]);
+      assert.strictEqual(yield* t.run((s) => s.runningThreads), 3);
+      // Each target read once per call, with no --workspace.
+      assert.deepStrictEqual(t.calls.slice(0, 3).map((argv) => argv.join(" ")).sort(), [
+        "snapshot",
+        "snapshot --host c9c39956e0c1756e30d6bb9f4f907ff1",
+        "snapshot --host cloud",
+      ]);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.effect("counts a thread against the host it ran on, not against another host that reads the same snapshot", () =>
+    Effect.gen(function* () {
+      const other = "0123456789abcdef0123456789abcdef";
+      const hosts = [...HOSTS, { id: other, name: "other-mac", ssh: "tomk@other-mac" }] as const;
+      const otherStep: Step = { argv: ["snapshot", "--host", other], fixture: "snapshot-host-after-restart" };
+      const t = rig([localStep, hostStep, otherStep], { config: { hosts } });
+      // The record is on the first host only; both hosts' snapshots show its workspace.
+      yield* seed(t.data, hostRecord());
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 0 },
+        { target: { kind: "host", machineId: HOST }, running: 1 },
+        { target: { kind: "host", machineId: other }, running: 0 },
+      ]);
+    }),
+  );
+
+  it.effect("a host that cannot be read is null and left out of the sum", () =>
+    Effect.gen(function* () {
+      const offline: Step = { argv: ["snapshot", "--host", HOST], fixture: "snapshot-host-offline" };
+      const t = rig([localStep, offline, cloudStep, localStep, offline, cloudStep], { config: withAll });
+      yield* seedAll(t.data);
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 1 },
+        { target: { kind: "host", machineId: HOST }, running: null },
+        { target: { kind: "cloud" }, running: 1 },
+      ]);
+      assert.strictEqual(yield* t.run((s) => s.runningThreads), 2);
+    }),
+  );
+
+  it.effect("fails runningThreads when this Mac's snapshot cannot be read", () =>
+    Effect.gen(function* () {
+      const t = rig([{ argv: ["snapshot"], fail: "boom" }, hostStep], { config: { hosts: HOSTS } });
+      yield* seedAll(t.data);
+      const error = yield* t.run((s) => s.runningThreads).pipe(Effect.flip);
+      assert.strictEqual(error.operation, "running-threads");
+    }),
+  );
+
+  it.effect("reads no cloud snapshot, and no host's, when none is configured", () =>
+    Effect.gen(function* () {
+      const t = rig([localStep, localStep]);
+      yield* seedAll(t.data);
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [{ target: { kind: "local" }, running: 1 }]);
+      assert.strictEqual(yield* t.run((s) => s.runningThreads), 1);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.length, 2);
+    }),
+  );
+
+  it.effect("records that cannot be listed give every target a null count, read no snapshot, and fail runningThreads", () =>
+    Effect.gen(function* () {
+      const t = rig([], { config: withAll });
+      // The records' folder is a file: the listing fails, and no count can be trusted.
+      NodeFS.writeFileSync(NodePath.join(t.data, "paradev", "threads"), "not a folder\n");
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: null },
+        { target: { kind: "host", machineId: HOST }, running: null },
+        { target: { kind: "cloud" }, running: null },
+      ]);
+      const error = yield* t.run((s) => s.runningThreads).pipe(Effect.flip);
+      assert.strictEqual(error.operation, "running-threads");
+      assert.deepStrictEqual(t.calls, []);
     }),
   );
 });

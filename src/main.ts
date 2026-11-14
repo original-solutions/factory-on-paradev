@@ -118,16 +118,19 @@ import {
 } from "./runner/start.ts";
 import { takeStopRequest } from "./runner/stop.ts";
 import * as Paths from "./paths.ts";
-import type { FactorySessions, Model } from "./sessions.ts";
+import { isNoTargetHasRoom, NO_TARGET_HAS_ROOM, type FactorySessions, type Model } from "./sessions.ts";
 import { type CliError, layer as cliLayer, SupersetCli } from "./paradev/cli.ts";
 import { afterPass as writeBeltAfterPass, newBeltMemo } from "./paradev/belt.ts";
+import { makePlacer } from "./paradev/placer.ts";
 import { addProjectCommand } from "./paradev/projects.ts";
+import { checkProxy, liveProxyGet, type ProxyAnswer, type ProxyGet } from "./paradev/proxy.ts";
 import { check as checkCli, describeFailure } from "./paradev/schema.ts";
 import {
   AgentProcess,
   agentProcessLayer,
   make as makeParadevSessions,
   type ParadevSessionsConfig,
+  type TargetCount,
 } from "./paradev/sessions.ts";
 import {
   bindProcess,
@@ -315,6 +318,8 @@ export interface LiveGate {
   readonly readLoad?: () => Load;
   /** How a host is read over ssh. Default the `ssh` binary; a test passes the answers it needs. */
   readonly ssh?: SshSpawn;
+  /** How the cloud proxy is asked with no key. Default `fetch`; a test passes the answers it needs. */
+  readonly proxyGet?: ProxyGet;
   /** Asks the Paradev CLI (with --json) for the host checks: the parsed answer, or the error text. */
   readonly superset?: CliCall;
 }
@@ -433,6 +438,8 @@ export interface LiveShared {
   readonly hostMisses: Map<string, number>;
   /** Each host's load reading this pass: see `PassWorld.hostLoads`. */
   readonly hostLoads: Map<string, Load | null>;
+  /** Passes in a row the cloud proxy has not answered 401: see `PassWorld.proxyMisses`. */
+  readonly proxyMisses: { passes: number };
 }
 
 /** A fresh `LiveShared`, made once per process. */
@@ -448,6 +455,7 @@ export const newShared = (): LiveShared => ({
   paradevHold: { passes: 0 },
   hostMisses: new Map(),
   hostLoads: new Map(),
+  proxyMisses: { passes: 0 },
 });
 
 /** What the pass's branch prune answers: P1 prunes no branch. */
@@ -456,7 +464,7 @@ const NOTHING_PRUNED = { pruned: [], left: [], failed: [], waiting: 0 } as const
 /**
  * The pass over this machine: GitHub through `gh`, the ledger under `dataDir`, the wall clock.
  * It does not know which repos are watched, where the worktrees are or whether Paradev answers:
- * `startFactory` adds `watchedRepos`, `freeSpace` and `paradevDown`.
+ * `startFactory` adds `watchedRepos`, `freeSpace`, `paradevDown` and `beginPlacement`.
  */
 export const liveWorld = (
   machine: MachineConfig,
@@ -484,10 +492,12 @@ export const liveWorld = (
     paradevHold,
     hostMisses,
     hostLoads,
+    proxyMisses,
   }: LiveShared = newShared(),
-): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown"> => {
+): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown" | "beginPlacement"> => {
   const load = live.readLoad ?? readLoad;
   const ssh = live.ssh ?? liveSshSpawn(process);
+  const proxyGet = live.proxyGet ?? liveProxyGet;
   // Every host is not ready until its check has passed: a new world is a new config load.
   const hostsNotReady = new Map(
     machine.hosts.map((host) => [host.id, "not checked yet since the config load"] as const),
@@ -622,8 +632,11 @@ export const liveWorld = (
             words === null ? Effect.void : Effect.logInfo(`${label} ${state}: ${words}`)
           ).pipe(Effect.as(step));
         },
+        // No room for a relaunch is a wait, not an error: the next call sends it again.
         onFailure: (error) =>
-          Effect.logError(`error: ${label} gate: ${plain(error.message)}`).pipe(
+          isNoTargetHasRoom(error)
+            ? Effect.logInfo(`${label} pr-open: waits: ${NO_TARGET_HAS_ROOM}`).pipe(Effect.as(null))
+            : Effect.logError(`error: ${label} gate: ${plain(error.message)}`).pipe(
             Effect.andThen(
               recordError(run, "gate", errorKind(error), error.message).pipe(
                 Effect.catch((failed) =>
@@ -801,6 +814,11 @@ export const liveWorld = (
     ssh,
     hostMisses,
     hostLoads,
+    proxyMisses,
+    checkProxy: () =>
+      machine.cloud === undefined
+        ? Effect.succeed<ProxyAnswer>({ kind: "down", reason: "no cloud block in the machine config" })
+        : checkProxy(proxyGet, machine.cloud.proxy),
     hostsNotReady,
     hostCheckedAt: new Map(),
     checkHost: (host) =>
@@ -865,12 +883,16 @@ export interface RuntimeOptions {
   readonly gateRemoteBase?: string;
   /** Called with each world a start or reload builds, once the world is built: for a test that needs the pass world a reload built. */
   readonly onWorld?: (world: PassWorld) => void;
+  /** Called once with the one placer the factory places every launch through: for a test that places a launch itself. */
+  readonly onPlacer?: (placer: ReturnType<typeof makePlacer>) => void;
   /** How a directory's free space is read. Default `statfs`; a test passes the sizes it needs. */
   readonly readFreeSpace?: (path: string) => FreeSpace;
   /** How the machine's load is read. Default `os.loadavg`; a test passes the load it needs. */
   readonly readLoad?: () => Load;
   /** How a host is read over ssh. Default the `ssh` binary; a test passes the answers it needs. */
   readonly ssh?: SshSpawn;
+  /** How the cloud proxy is asked with no key. Default `fetch`; a test passes the answers it needs. */
+  readonly proxyGet?: ProxyGet;
   /** What the Paradev adapter is built with beyond the `paradev` block: a test's remote base and waits. */
   readonly sessions?: Partial<Omit<ParadevSessionsConfig, "agent" | "model" | "effort">>;
 }
@@ -999,6 +1021,38 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     started: false,
   };
   const shared = newShared();
+  // The watched repo's name of each local Paradev project, from the last project listing that
+  // answered. It stays across a reload, which resolves the name against its own config at lookup.
+  let repoNameOfProject = new Map<string, string>();
+  // What the one placer reads from the current start; a reload sets it again, and the placer, with
+  // its launches in flight, stays. A gate fiber that outlives a reload places through it too.
+  let placing: {
+    readonly machine: MachineConfig;
+    readonly hostsNotReady: () => ReadonlyMap<string, string>;
+    readonly running: Effect.Effect<ReadonlyArray<TargetCount>>;
+    readonly record: (event: MachineEvent) => Effect.Effect<void>;
+  } | null = null;
+  const placingNow = () => {
+    if (placing === null) throw new Error("a launch was placed before the factory started");
+    return placing;
+  };
+  const placer = makePlacer({
+    get machine() {
+      return placingNow().machine;
+    },
+    repoOfProject: (projectId) => {
+      const name = repoNameOfProject.get(projectId);
+      if (name === undefined) return null;
+      // A repo the current config no longer watches is unknown, not placed as its old self.
+      return placingNow().machine.repos.find((entry) => asciiLower(entry.repo) === asciiLower(name)) ?? null;
+    },
+    hostLoads: shared.hostLoads,
+    hostsNotReady: () => placingNow().hostsNotReady(),
+    readLoad: options.readLoad ?? readLoad,
+    running: Effect.suspend(() => placingNow().running),
+    record: (event) => Effect.suspend(() => placingNow().record(event)),
+  });
+  options.onPlacer?.(placer);
   // The last belt written, and the run reads it was made from: kept across reloads.
   const beltMemo = newBeltMemo();
   const beltRuns: RunReadCache = new Map();
@@ -1099,6 +1153,9 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       ...(machine.paradev.effort === undefined ? {} : { effort: machine.paradev.effort }),
       ghConfigDir: machine.ghConfigDir,
       hosts: machine.hosts,
+      cloud: machine.cloud !== undefined,
+      place: placer.place,
+      launchEnded: placer.launchEnded,
     }).pipe(Effect.provide(paradev));
     // Only a repo that names a cloud environment can have a cloud run, and so an orphan.
     const sweep = machine.repos.some((entry) => entry.cloud !== undefined)
@@ -1178,6 +1235,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         scope,
         ...(options.readLoad !== undefined && { readLoad: options.readLoad }),
         ...(options.ssh !== undefined && { ssh: options.ssh }),
+        ...(options.proxyGet !== undefined && { proxyGet: options.proxyGet }),
         superset: (argv) => cli.run(argv, { timeoutMs: 30_000 }).pipe(Effect.mapError((e) => e.text.split("\n")[0] ?? e.text)),
       },
       options.gateRemoteBase,
@@ -1198,6 +1256,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       // One `projects list` answers every repo.
       const listing = yield* Effect.result(sessions.findProjects(machine.repos.map((entry) => entry.path)));
       const projects = Result.isSuccess(listing) ? listing.success : null;
+      const byProject = new Map<string, string>();
       for (const [index, entry] of machine.repos.entries()) {
         if (projects !== null) {
           const project = projects[index] ?? null;
@@ -1236,6 +1295,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
             });
             continue;
           }
+          if (project !== null) byProject.set(project.id, entry.repo);
         }
         if (machine.defaultProject === undefined) {
           repos.push({ ...entry, title: entry.repo });
@@ -1245,6 +1305,8 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         if (defaulted === "unresolved") unresolved.push(entry.path);
         else repos.push({ ...entry, title: entry.repo, defaulted });
       }
+      // A lookup that failed keeps the last listing: placement then still knows each project's repo.
+      if (projects !== null) repoNameOfProject = byProject;
       const listed = new Set(machine.repos.map((entry) => asciiLower(entry.repo)));
       const departed = [
         ...new Set(
@@ -1265,6 +1327,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     const world: PassWorld = {
       ...base,
       watchedRepos: listWatched,
+      beginPlacement: placer.beginPass,
       paradevDown,
       // The sessions write under Paradev's worktrees folder, the gate under the factory dir.
       freeSpace: () =>
@@ -1287,6 +1350,17 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         ),
     };
     options.onWorld?.(world);
+    // Placement reads the world's host readings and the adapter's counts, built by now. This is
+    // where the start takes over, so a start that failed before it leaves the last one placing.
+    placing = {
+      machine,
+      hostsNotReady: () => base.hostsNotReady,
+      running: Effect.suspend(() => sessions.runningByTarget),
+      record: (event) =>
+        base.record(event).pipe(
+          Effect.catch((error) => Effect.logWarning(`the machine log could not take a placement: ${error.message}`)),
+        ),
+    };
     state.current = { machine, world, afterPass, sweep };
     state.status = {
       state: "running",

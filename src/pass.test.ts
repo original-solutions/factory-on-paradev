@@ -12,10 +12,12 @@ import type { Attention, AttentionItem } from "./attention.ts";
 import type { HandPause } from "./claims.ts";
 import {
   timeLimitOnlyProjectConfig,
+  type CloudConfig,
   type HostConfig,
   type MachineConfig,
   type ProjectConfig,
   type WatchedProject,
+  type WatchedRepo,
 } from "./config.ts";
 import { COOLDOWN_QUIET_MS, type Cooldown } from "./cooldown.ts";
 import { readFreeSpace } from "./disk.ts";
@@ -79,10 +81,12 @@ import {
 import type { StopRequestOutcome } from "./runner/stop.ts";
 import {
   MessageRejectedError,
+  NoTargetHasRoom,
   SessionsError,
   type Model,
 } from "./sessions.ts";
 import type { CheckLine } from "./paradev/hostsCheck.ts";
+import type { ProxyAnswer } from "./paradev/proxy.ts";
 import type { SshAnswer, SshSpawn } from "./paradev/ssh.ts";
 import { GitHubFailed, type Blocker, type Mergeable } from "./tracker/github.ts";
 
@@ -140,6 +144,9 @@ const trackerFailure = (): PassError => ({
   kind: "tracker",
   message: "`gh issue list` exited with status 1: boom",
 });
+
+const noRoom = (pinned?: string): StartError =>
+  new SessionsError({ operation: "launch", cause: new NoTargetHasRoom({ pinned }) });
 
 const githubFailure = (): StartError =>
   new GitHubFailed({ args: ["issue", "list"], status: 1, stderr: "boom" });
@@ -212,6 +219,31 @@ class Fake implements PassWorld {
       return answer === "fail"
         ? { exitCode: 255, timedOut: false, stdout: "", stderr: "Connection refused\n" }
         : answer;
+    });
+  /** What each `beginPlacement` call was told: why this Mac holds claims, and why cloud takes none, each or null. */
+  placementBegins: Array<{ localHeld: string | null; proxy: string | null }> = [];
+  /** The machine config each `beginPlacement` call said its proxy check ran under. */
+  placementMachines: Array<MachineConfig> = [];
+  /** Placement's calls and the launches (`start`, `resume`), in the order they happened. */
+  order: Array<string> = [];
+  beginPlacement = (began: { localHeld: string | null; proxy: string | null; machine: MachineConfig }): void => {
+    this.order.push("beginPlacement");
+    this.placementBegins.push({ localHeld: began.localHeld, proxy: began.proxy });
+    this.placementMachines.push(began.machine);
+  };
+  /** The `repos` of the machine config for the passes `pass` runs. */
+  machineRepos: Array<WatchedRepo> = [];
+  /** The machine config's `cloud` block; none by default. */
+  cloud: CloudConfig | undefined = undefined;
+  /** What the proxy answers, one per check; the last repeats. */
+  proxyAnswers: Array<ProxyAnswer> = [{ kind: "guarded" }];
+  proxyChecks = 0;
+  proxyMisses = { passes: 0 };
+  checkProxy = () =>
+    Effect.sync(() => {
+      this.proxyChecks += 1;
+      this.calls.push("checkProxy");
+      return this.proxyAnswers.length > 1 ? this.proxyAnswers.shift()! : this.proxyAnswers[0]!;
     });
   hostMisses = new Map<string, number>();
   hostLoads = new Map<string, Load | null>();
@@ -491,6 +523,7 @@ class Fake implements PassWorld {
   private answerStart(call: "start" | "resume", repo: Repo, issue: number) {
     const key = `${repo.watched.repo}#${issue}`;
     this.calls.push(`${call} ${key}`);
+    this.order.push(`${call} ${key}`);
     const answer = this.starts[key]?.shift() ?? { kind: "skipped", reason: "scripted" };
     if (this.startLeavesRun.includes(issue)) {
       this.runs.push({
@@ -845,6 +878,8 @@ const pass = (
         maxLoadPerCore: fake.maxLoadPerCore,
         modelFallbacks: fake.modelFallbacks,
         hosts: fake.hosts,
+        repos: fake.machineRepos,
+        ...(fake.cloud === undefined ? {} : { cloud: fake.cloud }),
       },
       (line) => lines.push(line),
     );
@@ -970,6 +1005,30 @@ describe("claiming new issues", () => {
       assert.equal(
         runLine(lines, "rawphp/softfac#2 "),
         "rawphp/softfac#2 ready: claimed, session started in run rawphp__softfac__2__1",
+      );
+    }),
+  );
+
+  it.effect("a claim refused for no room says it waits, counts no error and claims nothing more from that repo", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.ready[REPO] = [1, 2];
+      fake.ready[OTHER] = [4];
+      fake.pushStart(`${REPO}#1`, noRoom());
+      fake.pushStart(`${OTHER}#4`, started(4, OTHER));
+      const { report, lines } = yield* pass(fake, [REPO, OTHER], 5);
+      assert.deepEqual(starts(fake), [`start ${REPO}#1`, `start ${OTHER}#4`]);
+      assert.equal(report.errors, 0);
+      assert.deepEqual(fake.runErrors, []);
+      assert.deepEqual(errorEvents(fake), []);
+      assert.ok(
+        lines.some((l) => l.startsWith("rawphp/softfac#1 ready:") && l.includes("waits: no target has room")),
+        lines.join("\n"),
+      );
+      assert.ok(!lines.some((l) => l.startsWith("error:")), lines.join("\n"));
+      assert.deepEqual(
+        fake.events.filter((e) => e.event === "claim_skipped"),
+        [{ event: "claim_skipped", data: { repo: REPO, reason: "no-room" } }],
       );
     }),
   );
@@ -1762,6 +1821,52 @@ describe("runs that are confirmed and still in triage", () => {
       assert.equal(fake.runErrors.length, 1);
       assert.deepEqual(fake.runErrors[0]!.run, rid(12));
       assert.equal(fake.runErrors[0]!.step, "start");
+    }),
+  );
+
+  it.effect("a triage run refused again for no room says it waits and records no error", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.pushStart(`${REPO}#12`, noRoom());
+      const { report, lines } = yield* pass(fake, [REPO], 3);
+      assert.equal(report.errors, 0);
+      assert.deepEqual(fake.runErrors, []);
+      const line = runLine(lines, "rawphp/softfac#12 triage:");
+      assert.ok(line.includes("waits: no target has room"), line);
+    }),
+  );
+
+  it.effect("a triage run refused for no room holds the repo's ready issues back this pass, and other repos go on", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.ready[REPO] = [1];
+      fake.ready[OTHER] = [4];
+      fake.pushStart(`${REPO}#12`, noRoom());
+      fake.pushStart(`${OTHER}#4`, started(4, OTHER));
+      const { report } = yield* pass(fake, [REPO, OTHER], 5);
+      assert.deepEqual(starts(fake), [`resume ${REPO}#12`, `start ${OTHER}#4`]);
+      assert.equal(report.errors, 0);
+      assert.deepEqual(
+        fake.events.filter((e) => e.event === "claim_skipped"),
+        [{ event: "claim_skipped", data: { repo: REPO, reason: "no-room" } }],
+      );
+    }),
+  );
+
+  it.effect("a run refused on its one pinned target waits, and the repo's ready issues are still claimed", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.ready[REPO] = [1];
+      fake.pushStart(`${REPO}#12`, noRoom("mini: not ready: claude is not trusted"));
+      fake.pushStart(`${REPO}#1`, started(1));
+      const { report, lines } = yield* pass(fake, [REPO], 5);
+      assert.deepEqual(starts(fake), [`resume ${REPO}#12`, `start ${REPO}#1`]);
+      assert.equal(report.errors, 0);
+      assert.ok(runLine(lines, "rawphp/softfac#12 triage:").includes("waits: no target has room"), lines.join("\n"));
+      assert.deepEqual(fake.events.filter((e) => e.event === "claim_skipped"), []);
     }),
   );
 
@@ -3481,6 +3586,30 @@ describe("high load", () => {
       fake.loadAvg = { oneMinute: 55.2, cores: 12 };
       yield* pass(fake, [REPO], 5);
       assert.deepEqual(gates(fake), [`gate ${REPO}#40`]);
+    }),
+  );
+
+  it.effect("a pass starts placement once, before any launch, and tells it why this Mac holds claims", () =>
+    Effect.gen(function* () {
+      const calm = new Fake();
+      calm.ready[REPO] = [1];
+      calm.pushStart(`${REPO}#1`, started(1));
+      yield* pass(calm, [REPO], 5);
+      assert.deepEqual(calm.placementBegins, [{ localHeld: null, proxy: null }]);
+      assert.deepEqual(calm.order, ["beginPlacement", `start ${REPO}#1`]);
+      // It names the config its proxy check ran under: the pass's own, not whatever is loaded by then.
+      assert.strictEqual(calm.placementMachines.length, 1);
+      assert.strictEqual(calm.placementMachines[0]!.repos, calm.machineRepos);
+
+      const busy = new Fake();
+      busy.loadAvg = { oneMinute: 55.2, cores: 12 };
+      yield* pass(busy, [REPO], 5);
+      assert.deepEqual(busy.placementBegins, [{ localHeld: "high load", proxy: null }]);
+
+      const full = new Fake();
+      full.free = 1 * GIB;
+      yield* pass(full, [REPO], 5);
+      assert.deepEqual(full.placementBegins, [{ localHeld: "low disk", proxy: null }]);
     }),
   );
 
@@ -6834,3 +6963,155 @@ describe("the host checks", () => {
   );
 });
 
+
+describe("the cloud proxy check", () => {
+  const PROXY = "https://proxy.example.ts.net:8443";
+  const OPEN_REASON = "the proxy's key check is off (it answered 200 with no key)";
+  const guarded: ProxyAnswer = { kind: "guarded" };
+  const open: ProxyAnswer = { kind: "open" };
+  const down: ProxyAnswer = { kind: "down", reason: "answered HTTP 503" };
+
+  const cloudy = (answers: Array<ProxyAnswer>) => {
+    const fake = new Fake();
+    fake.cloud = { machineSize: "small", maxRuns: 1, proxy: PROXY };
+    fake.machineRepos = [{ repo: REPO, path: "/work/softfac", cloud: "env-1" }];
+    fake.proxyAnswers = answers;
+    return fake;
+  };
+  const ids = (fake: Fake) => fake.items.map((item) => item.id).sort();
+
+  /** Runs one pass per answer; `after` sees the fake after each. */
+  const passes = (fake: Fake, n: number, after: (fake: Fake, report: Report, index: number) => void) =>
+    Effect.gen(function* () {
+      for (let index = 0; index < n; index += 1) {
+        const { report } = yield* pass(fake, [REPO], 5);
+        after(fake, report, index);
+      }
+    });
+
+  it.effect("a proxy that answers 401 raises nothing and leaves cloud open to placement", () =>
+    Effect.gen(function* () {
+      const fake = cloudy([guarded]);
+      const { report } = yield* pass(fake, [REPO], 5);
+      assert.equal(fake.proxyChecks, 1);
+      assert.deepEqual(fake.placementBegins, [{ localHeld: null, proxy: null }]);
+      assert.deepEqual(fake.items, []);
+      assert.equal(report.attention, 0);
+    }),
+  );
+
+  it.effect("a proxy that answers 200 raises cloud-proxy-open, says so and holds cloud back", () =>
+    Effect.gen(function* () {
+      const fake = cloudy([open]);
+      const { report, lines } = yield* pass(fake, [REPO], 5);
+      assert.deepEqual(ids(fake), ["cloud-proxy-open"]);
+      const item = fake.items[0]!;
+      assert.equal(item.kind, "attention");
+      assert.ok(item.message.includes(PROXY) && item.message.includes("key check is off"), item.message);
+      assert.equal(report.attention, 1);
+      assert.ok(lines.some((l) => l.startsWith("cloud proxy:") && l.includes("200")), lines.join("\n"));
+      assert.deepEqual(fake.placementBegins, [{ localHeld: null, proxy: OPEN_REASON }]);
+    }),
+  );
+
+  it.effect("[200, 401]: the open item clears when the key check is back", () =>
+    Effect.gen(function* () {
+      const fake = cloudy([open, guarded]);
+      yield* passes(fake, 2, (f, _r, i) => assert.deepEqual(ids(f), i === 0 ? ["cloud-proxy-open"] : []));
+    }),
+  );
+
+  it.effect("[503, 503, 503, 200]: down is raised on the third pass only, then replaced by open", () =>
+    Effect.gen(function* () {
+      const fake = cloudy([down, down, down, open]);
+      const seen: Array<ReadonlyArray<string>> = [];
+      const attention: Array<number> = [];
+      yield* passes(fake, 4, (f, report) => {
+        seen.push(ids(f));
+        attention.push(report.attention);
+      });
+      assert.deepEqual(seen, [[], [], ["cloud-proxy-down"], ["cloud-proxy-open"]]);
+      assert.deepEqual(attention, [0, 0, 1, 1]);
+      const item = [...fake.items].find((i) => i.id === "cloud-proxy-open");
+      assert.ok(item !== undefined);
+    }),
+  );
+
+  it.effect("the down item names the proxy and the Funnel command, and carries no error text", () =>
+    Effect.gen(function* () {
+      const fake = cloudy([down]);
+      yield* passes(fake, 3, () => undefined);
+      const item = fake.items.find((i) => i.id === "cloud-proxy-down")!;
+      assert.ok(item.message.includes(PROXY), item.message);
+      assert.ok(item.message.includes("tailscale funnel status"), item.message);
+      assert.ok(item.message.includes("tailscale funnel --bg --https=8443"), item.message);
+      assert.ok(!item.message.includes("503"), item.message);
+      assert.deepEqual(fake.placementBegins.at(-1), { localHeld: null, proxy: "the proxy check failed: answered HTTP 503" });
+    }),
+  );
+
+  it.effect("[200, 503]: the open item clears when the proxy goes down", () =>
+    Effect.gen(function* () {
+      const fake = cloudy([open, down]);
+      yield* passes(fake, 2, (f, _r, i) => assert.deepEqual(ids(f), i === 0 ? ["cloud-proxy-open"] : []));
+    }),
+  );
+
+  it.effect("[503, 503, 200, 503, 503]: a good answer in between starts the count over", () =>
+    Effect.gen(function* () {
+      const fake = cloudy([down, down, open, down, down]);
+      yield* passes(fake, 5, (f, _r, i) => {
+        assert.ok(!f.items.some((item) => item.id === "cloud-proxy-down"), `pass ${i}`);
+      });
+    }),
+  );
+
+  it.effect("[down, down, guarded, down, down]: no cloud-proxy-down is ever raised", () =>
+    Effect.gen(function* () {
+      const fake = cloudy([down, down, guarded, down, down]);
+      yield* passes(fake, 5, (f, _r, i) => {
+        assert.ok(!f.items.some((item) => item.id === "cloud-proxy-down"), `pass ${i}`);
+      });
+    }),
+  );
+
+  it.effect("a down item and a pass where no repo names cloud: the item clears and the misses start over", () =>
+    Effect.gen(function* () {
+      const fake = cloudy([down]);
+      yield* passes(fake, 3, () => undefined);
+      assert.deepEqual(ids(fake), ["cloud-proxy-down"]);
+      assert.equal(fake.proxyMisses.passes, 3);
+      fake.machineRepos = [{ repo: REPO, path: "/work/softfac" }];
+      yield* pass(fake, [REPO], 5);
+      assert.deepEqual(ids(fake), []);
+      assert.equal(fake.proxyMisses.passes, 0);
+      // And with `cloud` unset.
+      fake.machineRepos = [{ repo: REPO, path: "/work/softfac", cloud: "env-1" }];
+      yield* passes(fake, 3, () => undefined);
+      assert.deepEqual(ids(fake), ["cloud-proxy-down"]);
+      fake.cloud = undefined;
+      yield* pass(fake, [REPO], 5);
+      assert.deepEqual(ids(fake), []);
+      assert.equal(fake.proxyMisses.passes, 0);
+    }),
+  );
+
+  it.effect("the proxy is asked once per pass, and not at all when no repo names cloud", () =>
+    Effect.gen(function* () {
+      const fake = cloudy([guarded]);
+      yield* passes(fake, 2, () => undefined);
+      assert.equal(fake.proxyChecks, 2);
+
+      const none = cloudy([guarded]);
+      none.machineRepos = [{ repo: REPO, path: "/work/softfac" }];
+      yield* pass(none, [REPO], 5);
+      assert.equal(none.proxyChecks, 0);
+      assert.deepEqual(none.placementBegins, [{ localHeld: null, proxy: null }]);
+
+      const noCloud = cloudy([guarded]);
+      noCloud.cloud = undefined;
+      yield* pass(noCloud, [REPO], 5);
+      assert.equal(noCloud.proxyChecks, 0);
+    }),
+  );
+});

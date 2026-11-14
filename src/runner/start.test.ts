@@ -26,6 +26,7 @@ import {
   type LaunchRequest,
   type Launched,
   type Model,
+  NoTargetHasRoom,
   type Thread,
 } from "../sessions.ts";
 import {
@@ -1215,6 +1216,30 @@ describe("start: the launch", () => {
         ...startedEvents().slice(0, 4),
         ...stuckTail(detailText, "launch-failed"),
       ]);
+    }),
+  );
+
+  it.effect("a launch with no room waits in triage, and the next pass sends the same launch again", () =>
+    Effect.gen(function* () {
+      const dataDir = tempDir();
+      const first = fakeTracker({});
+      const noRoom = new SessionsError({ operation: "launch", cause: new NoTargetHasRoom() });
+      const t3 = fakeSessions(dataDir, { launches: [noRoom, { threadId: "thread-1", worktreePath: WORKTREE, branch: "t3code/abc" }] });
+      const error = yield* Effect.flip(startIn(dataDir, first.tracker, t3.sessions));
+      assert.strictEqual(error, noRoom);
+      // Not stuck: no comment, no stuck label, no stuck state in the ledger.
+      assert.deepStrictEqual(first.calls.slice(4), []);
+      assert.notInclude(stepsOf(dataDir), "stuck");
+      assert.notInclude(stepsOf(dataDir), "finished");
+
+      const next = fakeTracker({ issues: [detail("triage", [USER])] });
+      const outcome = yield* resume(ctxFor(dataDir, next.tracker, t3.sessions), 7);
+      assert.deepStrictEqual(outcome, { kind: "started", run: run7, threadId: "thread-1" });
+      assert.deepStrictEqual(t3.calls.filter((call) => call.startsWith("launch ")), [
+        `launch ${LAUNCH_ID}`,
+        `launch ${LAUNCH_ID}`,
+      ]);
+      assert.strictEqual(t3.launchRequests[0]!.commandId, t3.launchRequests[1]!.commandId);
     }),
   );
 

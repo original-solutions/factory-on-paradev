@@ -14,6 +14,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import {
@@ -39,6 +40,7 @@ import {
   isPlainId,
   type LaunchRequest,
   MessageRejectedError,
+  type NoTargetHasRoom,
   type RunStatus,
   SessionsError,
   ThreadNotFoundError,
@@ -54,6 +56,7 @@ import { shellQuote, type SshError, type SshRunner, sshRunner } from "./ssh.ts";
 import {
   listThreads,
   readLaunch,
+  readPlacement,
   readThread,
   runnerId,
   type Target,
@@ -63,6 +66,7 @@ import {
   threadFileExists,
   threadIdOf,
   writeLaunch,
+  writePlacement,
   writeThread,
 } from "./state.ts";
 import { lastAssistantMessage } from "./transcript.ts";
@@ -280,10 +284,22 @@ export interface ParadevSessionsConfig {
   /** The machine config's `hosts`: every host a thread may run on. Default none. */
   readonly hosts?: ReadonlyArray<ParadevHost>;
   /**
-   * Where a new launch runs, asked once per launch command id: a retry finds its launch file
-   * first and never asks again. Default this Mac.
+   * Where a launch runs: a retry that finds its launch file never asks. Placement's answer; fails
+   * with `NoTargetHasRoom` when nothing has room. `kept` is the this-Mac or host target an earlier
+   * send of this command id was placed on, which the answer must check again. Default this Mac.
    */
-  readonly place?: (request: LaunchRequest) => Effect.Effect<LaunchTarget, ParadevAdapterError>;
+  readonly place?: (
+    request: LaunchRequest,
+    kept?: Exclude<LaunchTarget, { readonly kind: "cloud" }>,
+  ) => Effect.Effect<LaunchTarget, ParadevAdapterError | NoTargetHasRoom>;
+  /**
+   * Told the launch's command id when a launch that was placed ends, however it ends: the
+   * agent is in the snapshot by then, or the launch failed. Until then the placement counts as
+   * a running agent. Default nothing.
+   */
+  readonly launchEnded?: (commandId: string) => Effect.Effect<void>;
+  /** Whether the machine config has a cloud block, so `snapshot --host cloud` is read for the counts. Default false. */
+  readonly cloud?: boolean;
   /** How the adapter reaches a host. Default `ssh` through the runner's process service. */
   readonly ssh?: SshRunner;
   /** How often a cloud launch reads its provisioning workspace, and for how long. Default 5 s and 300 s. */
@@ -307,11 +323,23 @@ const UNTYPED: ReadonlyArray<CliError["kind"]> = [
   "TOO_LARGE",
 ];
 
+/** The factory's agents starting or working on one target, as `runningByTarget` counts them. */
+export interface TargetCount {
+  readonly target: ThreadTarget;
+  readonly running: number | null;
+}
+
 export type ParadevSessions = FactorySessions["Service"] & {
   /** `findProject` for each of `workspaceRoots`, in order, from one `projects list`. */
   readonly findProjects: (
     workspaceRoots: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<FactoryProject | null>, SessionsError>;
+  /**
+   * The agents running on each target, from one snapshot of it (this Mac, each configured host in
+   * order, then cloud when configured): what placement checks against each target's `max_runs`.
+   * `running` is null for a target whose snapshot could not be read. Never fails.
+   */
+  readonly runningByTarget: Effect.Effect<ReadonlyArray<TargetCount>>;
   /** Archives the orphaned cloud workspaces; the runner calls it once per pass while a repo names a cloud environment. */
   readonly sweepOrphans: Effect.Effect<void, SessionsError>;
 };
@@ -373,6 +401,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const ssh = config.ssh ?? sshRunner(runner);
   const hosts = config.hosts ?? [];
   const place = config.place ?? (() => Effect.succeed<LaunchTarget>({ kind: "local" }));
+  const launchEnded = config.launchEnded ?? (() => Effect.void);
   const cloudReadyPollMs = config.cloudReadyPollMs ?? CLOUD_READY_POLL_MS;
   const cloudReadyMaxMs = config.cloudReadyMaxMs ?? CLOUD_READY_MAX_MS;
   /**
@@ -942,6 +971,26 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       return project ?? (yield* fail(`no Paradev project at ${path} on host ${machineId}`));
     });
 
+  /**
+   * Places `request` and runs `launchOn` on the answer, which is kept under the command id. A send
+   * cut off after that goes back to its kept target, and placement checks that target again; a
+   * kept cloud target is not reused: no launch file was written, so the workspace it made is an
+   * orphan the sweep archives. The placement is in flight until `launchOn` ends, however it ends,
+   * and `launchEnded` is told then.
+   */
+  const placement = <A, E, R>(
+    request: LaunchRequest,
+    launchOn: (placed: LaunchTarget) => Effect.Effect<A, E, R>,
+  ) =>
+    Effect.gen(function* () {
+      const kept = yield* local(readPlacement(dataDir, request.commandId));
+      const placed = yield* kept === null || kept.kind === "cloud" ? place(request) : place(request, kept);
+      return yield* local(writePlacement(dataDir, request.commandId, placed)).pipe(
+        Effect.andThen(launchOn(placed)),
+        Effect.ensuring(launchEnded(request.commandId)),
+      );
+    });
+
   const launch = Effect.fn("ParadevSessions.launch")(function* (request: LaunchRequest) {
     // 1. A launch already recorded under this command id: it is never placed again.
     const known = yield* local(readLaunch(dataDir, request.commandId));
@@ -959,9 +1008,12 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const base = yield* fetchBase(yield* projectOf(project), request.baseRef);
       return launched(yield* startAgent(earlier, request, base, true));
     }
-    const placed = yield* place(request);
+    // Placed once per command id, and before anything is fetched or created: a send cut off after
+    // this point is sent again to the same target.
     return launched(
-      yield* (placed.kind === "cloud" ? launchCloud(request, placed) : launchWorktree(request, placed)),
+      yield* placement(request, (placed) =>
+        placed.kind === "cloud" ? launchCloud(request, placed) : launchWorktree(request, placed),
+      ),
     );
   }, (effect) => effect.pipe(Effect.mapError(failWith("launch"))));
 
@@ -1316,20 +1368,67 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     );
   });
 
-  const runningThreads = Effect.gen(function* () {
-    const answer = yield* snapshot({ kind: "local" });
+  /**
+   * The factory's agents that are starting or working on `target`: the unarchived records of that
+   * target whose newest terminal the snapshot shows in either state. One snapshot, no `--workspace`.
+   */
+  const runningAt = (target: ThreadTarget, records: ReadonlyArray<ThreadRecord>) =>
+    snapshot(target).pipe(
+      Effect.map((answer) => {
+        let running = 0;
+        for (const record of records) {
+          const terminal = record.terminals.at(-1);
+          const there =
+            target.kind === "host"
+              ? record.target.kind === "host" && record.target.machineId === target.machineId
+              : record.target.kind === target.kind;
+          if (!there || record.archivedAt !== null || terminal === undefined) continue;
+          const state = answer.workspaces
+            .find((ws) => ws.id === record.workspaceId)
+            ?.terminals.find((t) => t.id === terminal)?.agent?.state;
+          if (state === "starting" || state === "working") running += 1;
+        }
+        return running;
+      }),
+    );
+
+  /** The targets whose agents are counted: this Mac, each configured host, and cloud when configured. */
+  const countedTargets: ReadonlyArray<ThreadTarget> = [
+    { kind: "local" },
+    ...hosts.map((host): ThreadTarget => ({ kind: "host", machineId: host.id })),
+    ...(config.cloud === true ? [{ kind: "cloud" } as const] : []),
+  ];
+
+  /** Every counted target read once, all at the same time; a read that failed is its error. */
+  const readTargets = Effect.gen(function* () {
     const records = yield* local(listThreads(dataDir));
-    let running = 0;
-    for (const record of records) {
-      const terminal = record.terminals.at(-1);
-      if (record.archivedAt !== null || terminal === undefined) continue;
-      const state = answer.workspaces
-        .find((ws) => ws.id === record.workspaceId)
-        ?.terminals.find((t) => t.id === terminal)?.agent?.state;
-      if (state === "starting" || state === "working") running += 1;
-    }
-    return running;
-  }).pipe(Effect.mapError(failWith("running-threads")));
+    return yield* Effect.forEach(
+      countedTargets,
+      (target) => Effect.result(runningAt(target, records)).pipe(Effect.map((result) => ({ target, result }))),
+      { concurrency: "unbounded" },
+    );
+  });
+
+  const runningByTarget = readTargets.pipe(
+    Effect.map((read) =>
+      read.map(({ target, result }) => ({ target, running: Result.isSuccess(result) ? result.success : null })),
+    ),
+    // The records could not be read: no count can be trusted, so none is given.
+    Effect.catch(() => Effect.succeed(countedTargets.map((target) => ({ target, running: null })))),
+  );
+
+  const runningThreads = readTargets.pipe(
+    Effect.flatMap((read) => {
+      let running = 0;
+      for (const { target, result } of read) {
+        if (Result.isSuccess(result)) running += result.success;
+        // This Mac is the one count the pass cannot do without; a host or cloud that cannot be read waits.
+        else if (target.kind === "local") return Effect.fail(result.failure);
+      }
+      return Effect.succeed(running);
+    }),
+    Effect.mapError(failWith("running-threads")),
+  );
 
   /**
    * Where the worktree at `path` is: the target of the thread whose worktree it is, else this Mac.
@@ -1816,6 +1915,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     archive,
     removeWorktree,
     runningThreads,
+    runningByTarget,
     worktreeCheckout,
     lastActivity,
     showGateLog,

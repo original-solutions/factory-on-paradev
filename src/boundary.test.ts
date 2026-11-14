@@ -16,12 +16,14 @@ const MAIN = "src/main.ts";
 
 /**
  * The host readings and `hosts check`: ssh to a host, its load, and the checklist. They spawn only
- * `ssh`, or take a command runner, so the pass, the CLI and install may import them.
+ * `ssh`, or take a command runner, so the pass, the CLI and install may import them. The cloud
+ * proxy check is one HTTP call and spawns nothing, so the pass may import it too.
  */
 const HOST_READINGS = new Set([
   "src/paradev/ssh.ts",
   "src/paradev/hostLoad.ts",
   "src/paradev/hostsCheck.ts",
+  "src/paradev/proxy.ts",
 ]);
 
 const resolveRelative = (file: string, specifier: string) =>
