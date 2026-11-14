@@ -62,16 +62,17 @@ export const makePlacer = (deps: PlacerDeps) => {
     return counts;
   });
 
+  /** This Mac as a candidate; `held` is why P1's checks hold claims, which a repo with nowhere else to go ignores. */
+  const localOf = (running: ReadonlyMap<string, number | null>, held: string | null): Candidate => ({
+    kind: "local",
+    slots: { running: running.get("local") ?? null, max: deps.machine.local.maxRuns },
+    load: deps.readLoad(),
+    held,
+  });
+
   const candidatesOf = (repo: WatchedRepo, running: ReadonlyMap<string, number | null>): Array<Candidate> => {
     const countOf = (key: string): number | null => running.get(key) ?? null;
-    const candidates: Array<Candidate> = [
-      {
-        kind: "local",
-        slots: { running: countOf("local"), max: deps.machine.local.maxRuns },
-        load: deps.readLoad(),
-        held: localHeld,
-      },
-    ];
+    const candidates: Array<Candidate> = [localOf(running, localHeld)];
     const notReady = deps.hostsNotReady();
     for (const listed of repo.hosts ?? []) {
       const host = deps.machine.hosts.find((entry) => entry.id === listed.id);
@@ -106,6 +107,31 @@ export const makePlacer = (deps: PlacerDeps) => {
     if (before !== null && before !== undefined) running.set(key, before + 1);
   };
 
+  /** Chooses among `candidates`, records what was dropped, and takes the chosen target's slot for the rest of the pass. */
+  const settle = (
+    repoName: string,
+    candidates: ReadonlyArray<Candidate>,
+    running: Map<string, number | null>,
+    request: LaunchRequest,
+  ): Effect.Effect<LaunchTarget, NoTargetHasRoom> =>
+    Effect.gen(function* () {
+      const placement = choosePlacement(candidates);
+      for (const dropped of placement.dropped) {
+        const key = `${repoName}\u0000${dropped.id}`;
+        if (recorded.has(key)) continue;
+        recorded.add(key);
+        yield* deps.record({
+          event: "placement",
+          data: { repo: repoName, target: dropped.target, reason: dropped.reason },
+        });
+      }
+      if (placement.kind === "refused") return yield* Effect.fail(new NoTargetHasRoom());
+      // The slot is taken for the rest of the pass: the next launch counts it.
+      bump(running, keyOf(placement.target));
+      inFlight.set(request.commandId, keyOf(placement.target));
+      return placement.target;
+    });
+
   return {
     /** The launch of `commandId` ended: its agent is in the snapshots now, so it stops counting on its own. */
     launchEnded: (commandId: string): Effect.Effect<void> =>
@@ -124,31 +150,21 @@ export const makePlacer = (deps: PlacerDeps) => {
     place: (request: LaunchRequest): Effect.Effect<LaunchTarget, NoTargetHasRoom> =>
       Effect.gen(function* () {
         const repo = deps.repoOfProject(request.projectId);
-        // A repo with no hosts and no cloud runs as in P1: on this Mac, with nothing read.
+        // A repo with no hosts and no cloud runs as in P1: on this Mac, with no load or claims check.
         const hosted = (repo?.hosts?.length ?? 0) > 0;
         const clouded = repo?.cloud !== undefined && deps.machine.cloud !== undefined;
         if (repo === null || (!hosted && !clouded)) {
-          // It still takes a slot on this Mac, when this pass has counted them.
-          if (counts !== null) bump(counts, "local");
-          inFlight.set(request.commandId, "local");
-          return { kind: "local" } as const;
+          // The core's cap on runs covers this Mac's slots when local.max_runs reaches it.
+          if (deps.machine.local.maxRuns >= deps.machine.maxConcurrentRuns) {
+            if (counts !== null) bump(counts, "local");
+            inFlight.set(request.commandId, "local");
+            return { kind: "local" } as const;
+          }
+          const running = yield* countsOf;
+          return yield* settle(repo?.repo ?? request.projectId, [localOf(running, null)], running, request);
         }
         const running = yield* countsOf;
-        const placement = choosePlacement(candidatesOf(repo, running));
-        for (const dropped of placement.dropped) {
-          const key = `${repo.repo}\u0000${dropped.id}`;
-          if (recorded.has(key)) continue;
-          recorded.add(key);
-          yield* deps.record({
-            event: "placement",
-            data: { repo: repo.repo, target: dropped.target, reason: dropped.reason },
-          });
-        }
-        if (placement.kind === "refused") return yield* Effect.fail(new NoTargetHasRoom());
-        // The slot is taken for the rest of the pass: the next launch counts it.
-        bump(running, keyOf(placement.target));
-        inFlight.set(request.commandId, keyOf(placement.target));
-        return placement.target;
+        return yield* settle(repo.repo, candidatesOf(repo, running), running, request);
       }).pipe(exclusive.withPermits(1)),
   };
 };
