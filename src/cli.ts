@@ -11,9 +11,10 @@ import * as NodePath from "node:path";
 import * as Result from "effect/Result";
 
 import { readAttentionFile } from "./attention.ts";
-import { parseMachineConfig } from "./config.ts";
+import { formatConfigError, parseMachineConfig } from "./config.ts";
 import { pauseClaimsNow, resumeClaimsNow, stopRun } from "./control.ts";
 import { install, uninstall, type CommandResult, type InstallEnv } from "./install.ts";
+import { printHostChecks } from "./paradev/hostsCheck.ts";
 import { packageVersion } from "./paths.ts";
 import { isRunner, lockHolder } from "./runnerLock.ts";
 import { retro, RETRO_USAGE } from "./retro.ts";
@@ -24,7 +25,7 @@ import {
   type StatusReport,
 } from "./status.ts";
 
-export const USAGE = `usage: factory-runner run | install | uninstall | status [--json] | runs stop <run id> | claims pause|resume | ${RETRO_USAGE}`;
+export const USAGE = `usage: factory-runner run | install | uninstall | status [--json] | runs stop <run id> | claims pause|resume | hosts check [<name>] | ${RETRO_USAGE}`;
 
 /** What the commands read and write, so a test passes a fixture data dir and captures the output. */
 export interface CliIo {
@@ -40,6 +41,16 @@ export interface CliIo {
   readonly installEnv: () => InstallEnv;
   /** Runs `gh` with these arguments; `retro` reads merged PRs' reviews with it. */
   readonly gh: (args: ReadonlyArray<string>) => CommandResult;
+  /**
+   * Runs a command to the end or `timeoutMs`, with only the `inheritEnv` names of the environment
+   * when given; `hosts check` reads hosts with `ssh` and the Superset CLI through it.
+   */
+  readonly run: (
+    command: string,
+    args: ReadonlyArray<string>,
+    timeoutMs: number,
+    inheritEnv?: ReadonlyArray<string>,
+  ) => CommandResult;
 }
 
 /** Running when a live runner holds the lock and the config loads; else idle, with the reason. */
@@ -107,6 +118,34 @@ const status = (args: ReadonlyArray<string>, io: CliIo): number => {
   return 0;
 };
 
+/**
+ * `hosts check [<name>]`: the checks of each configured host, or the one named, printed one line
+ * each: `ok` or the fix. Exits 1 when any line fails, or the config or the name is wrong.
+ */
+const hostsCheck = async (name: string | undefined, io: CliIo): Promise<number> => {
+  const text = readTextOrNull(io.machineConfigPath);
+  if (text === null) {
+    io.err(`no machine config at ${io.machineConfigPath}`);
+    return 1;
+  }
+  const parsed = parseMachineConfig(text, io.machineConfigPath);
+  if (Result.isFailure(parsed)) {
+    for (const problem of parsed.failure) io.err(formatConfigError(problem));
+    return 1;
+  }
+  const { config } = parsed.success;
+  if (config.hosts.length === 0) {
+    io.out("no hosts in the machine config");
+    return 0;
+  }
+  const chosen = name === undefined ? config.hosts : config.hosts.filter((host) => host.name === name);
+  if (chosen.length === 0) {
+    io.err(`no host ${name} in the machine config`);
+    return 1;
+  }
+  return (await printHostChecks(io.run, config, chosen, io.out)) ? 0 : 1;
+};
+
 const command = async (
   argv: ReadonlyArray<string>,
   io: CliIo,
@@ -117,6 +156,7 @@ const command = async (
     return uninstall(io.installEnv());
   if (first === "status") return status(argv.slice(1), io);
   if (first === "retro") return retro(argv.slice(1), io, USAGE);
+  if (first === "hosts" && second === "check" && rest.length === 0) return hostsCheck(third, io);
   if (
     first === "runs" &&
     second === "stop" &&

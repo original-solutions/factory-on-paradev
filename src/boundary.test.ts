@@ -14,6 +14,16 @@ const PARADEV = "src/paradev/";
 /** The one file outside `src/paradev/` that builds on the adapter: the layer graph. */
 const MAIN = "src/main.ts";
 
+/**
+ * The host readings and `hosts check`: ssh to a host, its load, and the checklist. They spawn only
+ * `ssh`, or take a command runner, so the pass, the CLI and install may import them.
+ */
+const HOST_READINGS = new Set([
+  "src/paradev/ssh.ts",
+  "src/paradev/hostLoad.ts",
+  "src/paradev/hostsCheck.ts",
+]);
+
 const resolveRelative = (file: string, specifier: string) =>
   NodePath.posix.normalize(NodePath.posix.join(NodePath.posix.dirname(file), specifier));
 
@@ -42,8 +52,8 @@ const namesSuperset = (text: string) => /["'`][^"'`\n]*superset/i.test(text);
 
 /**
  * Only `src/paradev/**` may spawn `superset`: no other product file that starts a process names
- * it. Nothing outside `src/paradev/` imports from it except `src/main.ts`; tests may, for
- * `fake-superset`.
+ * it. Nothing outside `src/paradev/` imports from it except `src/main.ts` (and, for the host
+ * readings, the pass, the CLI and install); tests may, for `fake-superset`.
  */
 export const findBoundaryViolations = (files: ReadonlyArray<SourceFile>): Array<string> => {
   const violations: Array<string> = [];
@@ -54,7 +64,8 @@ export const findBoundaryViolations = (files: ReadonlyArray<SourceFile>): Array<
     }
     if (file.path === MAIN) continue;
     for (const specifier of extractImports(file.text)) {
-      if (specifier.startsWith(".") && resolveRelative(file.path, specifier).startsWith(PARADEV)) {
+      const target = specifier.startsWith(".") ? resolveRelative(file.path, specifier) : "";
+      if (target.startsWith(PARADEV) && !HOST_READINGS.has(target)) {
         violations.push(`${file.path} imports ${specifier} from src/paradev/`);
       }
     }

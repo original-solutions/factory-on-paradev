@@ -9,7 +9,13 @@ import * as NodePath from "node:path";
 
 import * as Result from "effect/Result";
 
-import { DEFAULT_PARADEV_CLI, formatConfigError, parseMachineConfig } from "./config.ts";
+import {
+  DEFAULT_PARADEV_CLI,
+  formatConfigError,
+  parseMachineConfig,
+  type MachineConfig,
+} from "./config.ts";
+import { printHostChecks } from "./paradev/hostsCheck.ts";
 import { lstatOrNull, readTextOrNull, writeFileWhole } from "./syncFiles.ts";
 import { installPathsOf, LABEL, LOGROTATE_LABEL, packageVersion } from "./paths.ts";
 
@@ -52,7 +58,16 @@ export interface InstallEnv {
   readonly pathEnv: string;
   /** The folder holding this package's `package.json`. */
   readonly packageRoot: string;
-  readonly run: (command: string, args: ReadonlyArray<string>) => CommandResult;
+  /**
+   * Runs a command to the end or `timeoutMs` (default 30 s), with only the `inheritEnv` names of
+   * the environment when given; the host checks give ssh 10 s and its own names.
+   */
+  readonly run: (
+    command: string,
+    args: ReadonlyArray<string>,
+    timeoutMs?: number,
+    inheritEnv?: ReadonlyArray<string>,
+  ) => CommandResult;
   readonly sleep: (ms: number) => Promise<void>;
   readonly now: () => number;
   readonly out: (line: string) => void;
@@ -147,17 +162,17 @@ const firstLine = (text: string): string => text.trim().split("\n")[0] ?? "";
  */
 const supersetCli = (
   env: InstallEnv,
-): { readonly cli: string } | { readonly problems: ReadonlyArray<string> } => {
+): { readonly cli: string; readonly config: MachineConfig | null } | { readonly problems: ReadonlyArray<string> } => {
   let text: string | null;
   try {
     text = readTextOrNull(env.machineConfigPath);
   } catch (error) {
     return { problems: [`cannot read ${env.machineConfigPath}: ${String(error)}`] };
   }
-  if (text === null) return { cli: DEFAULT_PARADEV_CLI };
+  if (text === null) return { cli: DEFAULT_PARADEV_CLI, config: null };
   const parsed = parseMachineConfig(text, env.machineConfigPath);
   return Result.isSuccess(parsed)
-    ? { cli: parsed.success.config.paradev.cli }
+    ? { cli: parsed.success.config.paradev.cli, config: parsed.success.config }
     : { problems: parsed.failure.map(formatConfigError) };
 };
 
@@ -249,6 +264,7 @@ const WAIT_TEXT = `${WAIT_MS / 1000} s`;
  * runner running behind an exit code of 1. The copy replaces `versions/<version>` and `current`
  * moves to it only once the old runner is gone, so a running runner's code is never removed under
  * it; the log's length is taken at that point too, so only the new runner's `runner started` counts.
+ * Between the login check and the copy it prints `hosts check` for each configured host.
  */
 export const install = async (env: InstallEnv): Promise<number> => {
   const config = supersetCli(env);
@@ -266,6 +282,12 @@ export const install = async (env: InstallEnv): Promise<number> => {
       `factory-runner: superset is not logged in (${firstLine(whoami.stderr) || "no output"}); run \`superset auth login\` (the CLI at ${cli}) in a terminal, then install again`,
     );
     return 1;
+  }
+
+  // A host that fails does not stop the install: the runner starts either way and gives that
+  // host no run until a check passes.
+  if (config.config !== null) {
+    await printHostChecks(env.run, config.config, config.config.hosts, env.out);
   }
 
   const version = packageVersion(env.packageRoot);

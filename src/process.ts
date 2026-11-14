@@ -173,7 +173,11 @@ const buildChildPath = (launchPath: string | undefined, serverPath: string): str
   return entries.join(":");
 };
 
-const buildEnv = (
+/**
+ * A child's environment: only the `inherit` names from this process's (the default list when
+ * undefined), with the launch PATH folded in, then `extra` on top.
+ */
+export const buildEnv = (
   extra: Readonly<Record<string, string>> | undefined,
   inherit: ReadonlyArray<string> | undefined,
 ): Record<string, string> => {

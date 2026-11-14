@@ -47,6 +47,8 @@ interface Fixture {
   readonly env: InstallEnv;
   readonly home: string;
   readonly calls: Array<ReadonlyArray<string>>;
+  /** The timeout each `ssh` call was given, in order. */
+  readonly sshTimeouts: Array<number | undefined>;
   readonly errs: Array<string>;
   readonly outs: Array<string>;
   readonly log: string;
@@ -78,6 +80,7 @@ const makeFixture = (
   const log = NodePath.join(home, "Library", "Logs", "factory-runner", "runner.log");
   const dataDir = NodePath.join(home, ".config", "factory-runner");
   const calls: Array<ReadonlyArray<string>> = [];
+  const sshTimeouts: Array<number | undefined> = [];
   const loaded = new Set<string>();
   const lingering = new Map<string, number>();
   const start = 1_000_000;
@@ -93,8 +96,9 @@ const makeFixture = (
     execPath: "/opt/node/bin/node",
     pathEnv: "/opt/homebrew/bin:/usr/bin:/bin",
     packageRoot,
-    run: (command, args) => {
+    run: (command, args, timeoutMs) => {
       calls.push([command, ...args]);
+      if (command === "ssh") sshTimeouts.push(timeoutMs);
       const ok = { status: 0, stdout: "", stderr: "" };
       if (command !== "/bin/launchctl") {
         // The superset CLI.
@@ -149,6 +153,7 @@ const makeFixture = (
     env,
     home,
     calls,
+    sshTimeouts,
     errs,
     outs,
     log,
@@ -557,5 +562,48 @@ describe("install", () => {
     const f = makeFixture();
     expect(await uninstall(f.env)).toBe(0);
     expect(f.outs.filter((line) => line.includes("removed"))).toEqual([]);
+  });
+});
+
+describe("install and the hosts", () => {
+  const WITH_HOST = `gh_config_dir: /gh
+max_concurrent_runs: 2
+repos: []
+hosts:
+  - id: h1
+    name: mini
+    ssh: me@mini
+    max_runs: 2
+paradev:
+  cli: /opt/superset
+  agent: claude
+  belt:
+    enabled: false
+`;
+
+  it("checks each configured host after the login check, prints the lines, and still installs", async () => {
+    const f = makeFixture();
+    write(NodePath.join(f.dataDir, "config.yml"), WITH_HOST);
+    expect(await install(f.env)).toBe(0);
+    expect(f.outs).toContain("mini (me@mini)");
+    expect(f.outs.some((line) => line.startsWith("  online: "))).toBe(true);
+    expect(f.outs.some((line) => line.startsWith("  ssh: "))).toBe(true);
+    expect(f.outs).toContain(
+      "host mini is not ready; the runner gives it no run until its check passes",
+    );
+    const login = f.calls.findIndex((call) => call[1] === "auth");
+    const firstSsh = f.calls.findIndex((call) => call[0] === "ssh");
+    const firstLaunchctl = f.calls.findIndex((call) => call[0] === "/bin/launchctl");
+    expect(f.sshTimeouts.length).toBeGreaterThan(0);
+    expect(f.sshTimeouts.every((ms) => ms === 10_000)).toBe(true);
+    expect(login).toBeGreaterThanOrEqual(0);
+    expect(firstSsh).toBeGreaterThan(login);
+    expect(firstSsh).toBeLessThan(firstLaunchctl);
+  });
+
+  it("makes no ssh call when the config has no hosts", async () => {
+    const f = makeFixture();
+    expect(await install(f.env)).toBe(0);
+    expect(f.calls.some((call) => call[0] === "ssh")).toBe(false);
   });
 });

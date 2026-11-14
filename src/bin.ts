@@ -2,9 +2,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off - the command line writes to the terminal and exits with a code.
 /**
  * `factory-runner`: the command line. `run` is the factory loop in the foreground. The other
- * commands (`install`, `uninstall`, `status`, `runs stop`, `claims`, `retro`) are in `cli.ts`.
+ * commands (`install`, `uninstall`, `status`, `runs stop`, `claims`, `hosts check`, `retro`) are in `cli.ts`.
  */
-import * as NodeChildProcess from "node:child_process";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
@@ -14,9 +13,10 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { runCli, USAGE } from "./cli.ts";
-import type { CommandResult, InstallEnv } from "./install.ts";
+import type { InstallEnv } from "./install.ts";
 import { FactoryLayer } from "./main.ts";
 import * as Paths from "./paths.ts";
+import { runCommand } from "./runCommand.ts";
 import { takeRunnerLock } from "./runnerLock.ts";
 
 /** The data dir of this process: `FACTORY_RUNNER_HOME`, else `~/.config/factory-runner`. */
@@ -24,27 +24,6 @@ const realDataDir = (): string => Paths.dataDirOf(process.env, NodeOS.homedir(),
 
 /** The folder holding `package.json`. */
 const packageRoot = NodePath.resolve(import.meta.dirname, "..");
-
-/** Runs a command to the end, or until `timeoutMs`. */
-const runCommand = (
-  command: string,
-  args: ReadonlyArray<string>,
-  timeoutMs: number,
-): CommandResult => {
-  const done = NodeChildProcess.spawnSync(command, [...args], {
-    encoding: "utf8",
-    timeout: timeoutMs,
-  });
-  return {
-    status: done.status,
-    stdout: done.stdout ?? "",
-    // A timeout or a missing CLI sets `error` and leaves stderr empty; say so.
-    stderr:
-      done.error !== undefined
-        ? `${done.error.message}\n${done.stderr ?? ""}`
-        : (done.stderr ?? ""),
-  };
-};
 
 /** What install touches on this machine: the real HOME, commands (30 s each), clock and terminal. */
 const realInstallEnv = (): InstallEnv => {
@@ -59,7 +38,7 @@ const realInstallEnv = (): InstallEnv => {
     execPath: process.execPath,
     pathEnv: process.env["PATH"] ?? "/usr/bin:/bin",
     packageRoot,
-    run: (command, args) => runCommand(command, args, 30_000),
+    run: (command, args, timeoutMs = 30_000, inheritEnv) => runCommand(command, args, timeoutMs, inheritEnv),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: Date.now,
     out: (line) => process.stdout.write(`${line}\n`),
@@ -105,6 +84,7 @@ if (command === "run") {
     err: (line) => console.error(line),
     installEnv: realInstallEnv,
     gh: (args) => runCommand("gh", args, 60_000),
+    run: runCommand,
   }).then((code) => {
     process.exitCode = code;
   });

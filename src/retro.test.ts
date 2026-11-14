@@ -265,6 +265,9 @@ const setup = (gh?: (args: ReadonlyArray<string>) => CommandResult) => {
       throw new Error("install is not under test here");
     },
     gh: gh ?? fakeGh(calls),
+    run: () => {
+      throw new Error("no command is under test here");
+    },
   };
   return { dataDir, outs, errs, calls, io };
 };

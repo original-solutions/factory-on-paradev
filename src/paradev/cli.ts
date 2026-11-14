@@ -2,7 +2,9 @@
  * The only code that runs Paradev's `superset` CLI. It adds `--json` to every call, passes the CLI
  * a five-name environment, parses stdout as JSON on exit 0, and on a failure maps the CLI's
  * `Error: ` line to a {@link CliErrorKind}. Callers pass `--local` themselves: `snapshot`, `schema`,
- * `auth whoami` and the `pages` commands take none.
+ * `auth whoami` and the `pages` commands take none. {@link classify} has one other caller: `hosts
+ * check` (`hostsCheck.ts`), which runs the CLI through a synchronous runner and reads its stderr
+ * the same way.
  */
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";

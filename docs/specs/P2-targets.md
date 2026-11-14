@@ -162,7 +162,7 @@ P1's table, with two rows now seen on a host and one new state:
 
 ## `factory-runner hosts check [<name>]`
 
-Reads every configured host, or one, over SSH and through the CLI. Prints one line per check, `ok` or the fix, exits 1 when any fails. Runs at `install` and at every config reload; a host that fails is not a candidate until the next reload that passes, and the failure is one attention item `host-not-ready` with the first failing line.
+Reads every configured host, or one, over SSH and through the CLI. Prints one line per check, `ok` or the fix, exits 1 when any fails. Runs at `install` and beside the pass, as the orphan sweep does, so a slow host holds up no claim: every host right after each config load, then a not-ready host every 5 minutes and a ready one every hour. A host that fails is not a candidate until a check passes, and the failure is one attention item `host-not-ready` with the first failing line.
 
 | Check | How | Fix printed |
 |---|---|---|

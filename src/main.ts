@@ -48,6 +48,8 @@ import {
 } from "./defaultProject.ts";
 import { readLowestFreeSpace, type FreeSpace } from "./disk.ts";
 import { overload, readLoad, type Load } from "./load.ts";
+import { checkHost, type CliCall } from "./paradev/hostsCheck.ts";
+import { liveSshSpawn, type SshSpawn } from "./paradev/ssh.ts";
 import * as Gate from "./gate.ts";
 import { guardLogStreams } from "./logStreams.ts";
 import { FactoryGate, clearGateLocks, gateLockFile } from "./gate.ts";
@@ -65,6 +67,7 @@ import {
   abandonedItem,
   errorKind,
   gateQueued,
+  checkHosts,
   lastGoodCopy,
   plain,
   runPass,
@@ -310,6 +313,10 @@ export interface LiveGate {
   readonly scope: Scope.Scope;
   /** How the machine's load is read. Default `os.loadavg`; a test passes the load it needs. */
   readonly readLoad?: () => Load;
+  /** How a host is read over ssh. Default the `ssh` binary; a test passes the answers it needs. */
+  readonly ssh?: SshSpawn;
+  /** Asks the Paradev CLI (with --json) for the host checks: the parsed answer, or the error text. */
+  readonly superset?: CliCall;
 }
 
 /** The run's line when its gate, started in the background, has ended. */
@@ -422,6 +429,10 @@ export interface LiveShared {
   readonly cooldowns: Map<string, Cooldown>;
   readonly prunedAt: Map<string, number>;
   readonly paradevHold: { passes: number };
+  /** Failed load reads in a row per host id: see `PassWorld.hostMisses`. */
+  readonly hostMisses: Map<string, number>;
+  /** Each host's load reading this pass: see `PassWorld.hostLoads`. */
+  readonly hostLoads: Map<string, Load | null>;
 }
 
 /** A fresh `LiveShared`, made once per process. */
@@ -435,6 +446,8 @@ export const newShared = (): LiveShared => ({
   cooldowns: new Map(),
   prunedAt: new Map(),
   paradevHold: { passes: 0 },
+  hostMisses: new Map(),
+  hostLoads: new Map(),
 });
 
 /** What the pass's branch prune answers: P1 prunes no branch. */
@@ -469,9 +482,16 @@ export const liveWorld = (
     cooldowns,
     prunedAt,
     paradevHold,
+    hostMisses,
+    hostLoads,
   }: LiveShared = newShared(),
 ): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown"> => {
   const load = live.readLoad ?? readLoad;
+  const ssh = live.ssh ?? liveSshSpawn(process);
+  // Every host is not ready until its check has passed: a new world is a new config load.
+  const hostsNotReady = new Map(
+    machine.hosts.map((host) => [host.id, "not checked yet since the config load"] as const),
+  );
   const withProcess = <A, E>(effect: Effect.Effect<A, E, FactoryProcess>) =>
     Effect.provideService(effect, FactoryProcess, process);
   const githubFor = (watched: WatchedRepo) =>
@@ -778,6 +798,17 @@ export const liveWorld = (
     recordError,
     handPause: () => loadHandPause(dataDir),
     paradevHold,
+    ssh,
+    hostMisses,
+    hostLoads,
+    hostsNotReady,
+    hostCheckedAt: new Map(),
+    checkHost: (host) =>
+      checkHost(
+        { ssh, superset: live.superset ?? (() => Effect.fail("no Paradev CLI to ask")) },
+        machine,
+        host,
+      ),
     // Paradev removes a workspace's worktree when it archives it, so no thread is left on one.
     threadsOnBrokenWorktrees: () => Effect.succeed([]),
     sessionRuns: () =>
@@ -838,6 +869,8 @@ export interface RuntimeOptions {
   readonly readFreeSpace?: (path: string) => FreeSpace;
   /** How the machine's load is read. Default `os.loadavg`; a test passes the load it needs. */
   readonly readLoad?: () => Load;
+  /** How a host is read over ssh. Default the `ssh` binary; a test passes the answers it needs. */
+  readonly ssh?: SshSpawn;
   /** What the Paradev adapter is built with beyond the `paradev` block: a test's remote base and waits. */
   readonly sessions?: Partial<Omit<ParadevSessionsConfig, "agent" | "model" | "effort">>;
 }
@@ -971,6 +1004,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
   const beltRuns: RunReadCache = new Map();
   let beltWriting = false;
   let sweeping = false;
+  let checkingHosts = false;
 
   const onePass = Effect.gen(function* () {
     const current = state.current;
@@ -990,6 +1024,20 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         Effect.ensuring(
           Effect.sync(() => {
             sweeping = false;
+          }),
+        ),
+        Effect.interruptible,
+        Effect.forkIn(scope),
+      );
+    }
+    // The host checks go beside the pass the same way: a host that is slow to answer holds up no
+    // claim, and a check runs to its real first failing line however long its calls take.
+    if (!checkingHosts) {
+      checkingHosts = true;
+      yield* checkHosts(current.world, current.machine).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            checkingHosts = false;
           }),
         ),
         Effect.interruptible,
@@ -1129,6 +1177,8 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         wake: Effect.suspend(() => state.loop?.wake ?? Effect.void),
         scope,
         ...(options.readLoad !== undefined && { readLoad: options.readLoad }),
+        ...(options.ssh !== undefined && { ssh: options.ssh }),
+        superset: (argv) => cli.run(argv, { timeoutMs: 30_000 }).pipe(Effect.mapError((e) => e.text.split("\n")[0] ?? e.text)),
       },
       options.gateRemoteBase,
       undefined,
