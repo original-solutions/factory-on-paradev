@@ -531,8 +531,6 @@ interface Notes {
   readonly raises: Array<NewItem>;
   /** How `advance` found the session's run ended, when it ended badly: the pass decides about it after every run. */
   endedBadly: BadEnd | null;
-  /** A launch found no target with room: the repo's other ready issues wait too. */
-  noRoom: boolean;
 }
 
 /** What the issue's line says of a launch that found no target with room. */
@@ -675,6 +673,11 @@ class Pass {
   highLoad = false;
   /** Paradev does not answer, or its CLI lacks what the runner uses: nothing is claimed. */
   paradevOffline = false;
+  /**
+   * The repos (folded with `asciiLower`) a launch found no target with room for this pass, from
+   * whatever step sent it: their ready issues are not claimed this pass.
+   */
+  readonly noRoomRepos = new Set<string>();
   /** The machine's `model_fallbacks`. */
   fallbacks: Readonly<Record<string, string>> = {};
   readonly startedMs: number;
@@ -768,7 +771,6 @@ class Pass {
       errors: [],
       raises: [],
       endedBadly: null,
-      noRoom: false,
     };
   }
 
@@ -777,7 +779,7 @@ class Pass {
     // A launch that found no room is a wait: the issue's line says so, and nothing is an error.
     if (isNoTargetHasRoom(error)) {
       notes.parts.push(NO_ROOM_WAIT);
-      notes.noRoom = true;
+      this.noRoomRepos.add(asciiLower(notes.repo));
       return;
     }
     notes.errors.push({
@@ -2691,6 +2693,20 @@ const claim = Effect.fn("Pass.claim")(function* (
       }
     }
   }
+  // A repo a launch found no room for this pass, from any step, claims nothing more: its ready
+  // issues would be refused the same way. One `claim_skipped` per repo.
+  const heldNoRoom = new Set<string>();
+  const holdNoRoom = () =>
+    Effect.forEach(
+      queues.filter((q) => q.issues.length > 0 && pass.noRoomRepos.has(asciiLower(q.repo.watched.repo)) && !heldNoRoom.has(asciiLower(q.repo.watched.repo))),
+      (q) => {
+        heldNoRoom.add(asciiLower(q.repo.watched.repo));
+        q.issues.length = 0;
+        return pass.record({ event: "claim_skipped", data: { repo: q.repo.watched.repo, reason: "no-room" } });
+      },
+      { discard: true },
+    );
+  yield* holdNoRoom();
   let active = count(known, queues);
   let late = false;
   // A blocked issue takes no slot, so its repo stays the one with the fewest and its next
@@ -2803,11 +2819,7 @@ const claim = Effect.fn("Pass.claim")(function* (
     });
     yield* pass.flush(notes, run);
     if (known.lost) return;
-    // No target has room for this repo: its other ready issues would be refused the same way.
-    if (notes.noRoom) {
-      queue.issues.length = 0;
-      yield* pass.record({ event: "claim_skipped", data: { repo: name, reason: "no-room" } });
-    }
+    yield* holdNoRoom();
     // Count again: a claim that ended in `stuck`, or in an error that left the issue in
     // `triage`, changes how many runs are active, and which repo has the fewest.
     active = count(known, queues);
