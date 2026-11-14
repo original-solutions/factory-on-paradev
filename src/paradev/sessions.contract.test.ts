@@ -13,7 +13,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { useTempDirs } from "../ledger/testSupport.ts";
 import { FactoryPaths } from "../paths.ts";
 import { FactoryProcess, layer as processLayer, type RunResult } from "../process.ts";
-import { MessageRejectedError, SessionsError, ThreadNotFoundError, type LaunchRequest } from "../sessions.ts";
+import { isNoTargetHasRoom, MessageRejectedError, NoTargetHasRoom, SessionsError, ThreadNotFoundError, type LaunchRequest } from "../sessions.ts";
 import { sha256 } from "../text.ts";
 import { layer as cliLayer } from "./cli.ts";
 import { fakeSuperset, readFixture, type Step } from "./fake-superset.ts";
@@ -25,7 +25,7 @@ import {
   type ParadevSessionsConfig,
 } from "./sessions.ts";
 import { SshError, type SshRunner } from "./ssh.ts";
-import { readLaunch, readThread, type ThreadRecord, writeLaunch, writeThread } from "./state.ts";
+import { readLaunch, readPlacement, readThread, type ThreadRecord, writeLaunch, writePlacement, writeThread } from "./state.ts";
 
 const tempDir = useTempDirs();
 
@@ -3902,6 +3902,63 @@ describe("placement, once per command id (#55)", () => {
       assert.strictEqual(placed, 1);
       assert.deepStrictEqual(second, first);
       assert.strictEqual(t.calls.length, callsAfterFirst);
+    }),
+  );
+});
+
+describe("placement is durable under the command id (#55)", () => {
+  it.live("a launch cut off after placement is sent again to the recorded target, and places nothing again", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      let placed = 0;
+      // The first send is placed on the host, and its `workspaces create` fails: nothing is recorded but the placement.
+      const first = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: ["projects", "list", "--host", HOST], answer: [{ id: HOST_PROJECT, name: "factory-paradev-spike", path: `${HOST_CLONE}/`, repo: "https://github.com/original-solutions/factory-paradev-spike" }] },
+          { argv: argvIs("workspaces", "create"), fail: "Could not connect to API" },
+        ],
+        {
+          config: {
+            remoteBase: r.remoteBase,
+            hosts: HOSTS,
+            place: () => Effect.sync(() => (placed += 1, { kind: "host", machineId: HOST, path: HOST_CLONE } as const)),
+          },
+        },
+      );
+      yield* first.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.strictEqual(placed, 1);
+      assert.deepStrictEqual(yield* readPlacement(first.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)), {
+        kind: "host",
+        machineId: HOST,
+        path: HOST_CLONE,
+      });
+
+      // A second send, with the same data dir, never asks `place` and creates on the host.
+      const second = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: ["projects", "list", "--host", HOST], answer: [{ id: HOST_PROJECT, name: "factory-paradev-spike", path: `${HOST_CLONE}/`, repo: "https://github.com/original-solutions/factory-paradev-spike" }] },
+          { argv: argvIs("workspaces", "create"), fail: "stop here" },
+        ],
+        { config: { remoteBase: r.remoteBase, hosts: HOSTS, place: () => Effect.die("placed again") } },
+      );
+      NodeFS.cpSync(first.data, second.data, { recursive: true });
+      yield* second.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.deepStrictEqual(second.calls.find(argvIs("workspaces", "create"))?.slice(0, 3), ["workspaces", "create", "--host"]);
+    }),
+  );
+
+  it.live("a placement that finds no room fails the launch as a wait: no create, no launch file, no placement file", () =>
+    Effect.gen(function* () {
+      const t = rig([], { config: { place: () => Effect.fail(new NoTargetHasRoom()) } });
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.instanceOf(error, SessionsError);
+      assert.strictEqual((error as SessionsError).operation, "launch");
+      assert.isTrue(isNoTargetHasRoom(error));
+      assert.deepStrictEqual(t.calls, []);
+      assert.isNull(yield* readLaunch(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)));
+      assert.isNull(yield* readPlacement(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)));
     }),
   );
 });

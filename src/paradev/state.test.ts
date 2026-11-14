@@ -11,12 +11,14 @@ import { useTempDirs } from "../ledger/testSupport.ts";
 import {
   listThreads,
   readLaunch,
+  readPlacement,
   readThread,
   targetOf,
   type ThreadRecord,
   threadIdOf,
   workspaceIdOf,
   writeLaunch,
+  writePlacement,
   writeThread,
 } from "./state.ts";
 
@@ -167,6 +169,45 @@ describe("launch files", () => {
       assert.deepStrictEqual(JSON.parse(NodeFS.readFileSync(file, "utf8")), { threadId: `local:${WS}` });
       NodeFS.writeFileSync(file, "{\"thread");
       assert.isNull(yield* readLaunch(data, id));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("placement files", () => {
+  const id = "softfac:o__r__1__1:launch";
+  const hash = NodeCrypto.createHash("sha256").update(id).digest("hex");
+
+  it.effect("keep where a launch command id was placed, beside its launch file, for each kind of target", () =>
+    Effect.gen(function* () {
+      const data = tempDir("state");
+      assert.isNull(yield* readPlacement(data, id));
+      for (const target of [
+        { kind: "local" },
+        { kind: "host", machineId: "h1", path: "/srv/app" },
+        { kind: "cloud", environmentId: "env-1", machineSize: "small" },
+      ] as const) {
+        yield* writePlacement(data, id, target);
+        assert.deepStrictEqual(yield* readPlacement(data, id), target);
+      }
+      assert.isNull(yield* readPlacement(data, "softfac:o__r__1__2:launch"));
+      const file = NodePath.join(data, "paradev", "placements", `${hash}.json`);
+      assert.deepStrictEqual(JSON.parse(NodeFS.readFileSync(file, "utf8")), {
+        kind: "cloud",
+        environmentId: "env-1",
+        machineSize: "small",
+      });
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a file that does not read back as a target is a failure, not no placement", () =>
+    Effect.gen(function* () {
+      const data = tempDir("state");
+      yield* writePlacement(data, id, { kind: "local" });
+      const file = NodePath.join(data, "paradev", "placements", `${hash}.json`);
+      for (const text of ['{"kind":"loc', '{"kind":"elsewhere"}', ""]) {
+        NodeFS.writeFileSync(file, text);
+        yield* readPlacement(data, id).pipe(Effect.flip);
+      }
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
