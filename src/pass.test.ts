@@ -141,6 +141,9 @@ const trackerFailure = (): PassError => ({
   message: "`gh issue list` exited with status 1: boom",
 });
 
+const noRoom = (): StartError =>
+  new SessionsError({ operation: "launch", cause: new NoTargetHasRoom() });
+
 const githubFailure = (): StartError =>
   new GitHubFailed({ args: ["issue", "list"], status: 1, stderr: "boom" });
 
@@ -979,6 +982,30 @@ describe("claiming new issues", () => {
     }),
   );
 
+  it.effect("a claim refused for no room says it waits, counts no error and claims nothing more from that repo", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.ready[REPO] = [1, 2];
+      fake.ready[OTHER] = [4];
+      fake.pushStart(`${REPO}#1`, noRoom());
+      fake.pushStart(`${OTHER}#4`, started(4, OTHER));
+      const { report, lines } = yield* pass(fake, [REPO, OTHER], 5);
+      assert.deepEqual(starts(fake), [`start ${REPO}#1`, `start ${OTHER}#4`]);
+      assert.equal(report.errors, 0);
+      assert.deepEqual(fake.runErrors, []);
+      assert.deepEqual(errorEvents(fake), []);
+      assert.ok(
+        lines.some((l) => l.startsWith("rawphp/softfac#1 ready:") && l.includes("waits: no target has room")),
+        lines.join("\n"),
+      );
+      assert.ok(!lines.some((l) => l.startsWith("error:")), lines.join("\n"));
+      assert.deepEqual(
+        fake.events.filter((e) => e.event === "claim_skipped"),
+        [{ event: "claim_skipped", data: { repo: REPO, reason: "no-room" } }],
+      );
+    }),
+  );
+
   it.effect("a failed start is an error line and the next issue is tried", () =>
     Effect.gen(function* () {
       const fake = new Fake();
@@ -1767,6 +1794,19 @@ describe("runs that are confirmed and still in triage", () => {
       assert.equal(fake.runErrors.length, 1);
       assert.deepEqual(fake.runErrors[0]!.run, rid(12));
       assert.equal(fake.runErrors[0]!.step, "start");
+    }),
+  );
+
+  it.effect("a triage run refused again for no room says it waits and records no error", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.pushStart(`${REPO}#12`, noRoom());
+      const { report, lines } = yield* pass(fake, [REPO], 3);
+      assert.equal(report.errors, 0);
+      assert.deepEqual(fake.runErrors, []);
+      const line = runLine(lines, "rawphp/softfac#12 triage:");
+      assert.ok(line.includes("waits: no target has room"), line);
     }),
   );
 
