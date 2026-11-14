@@ -1136,6 +1136,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       hosts: machine.hosts,
       cloud: machine.cloud !== undefined,
       place: placer.place,
+      launchEnded: placer.launchEnded,
     }).pipe(Effect.provide(paradev));
     // Only a repo that names a cloud environment can have a cloud run, and so an orphan.
     const sweep = machine.repos.some((entry) => entry.cloud !== undefined)

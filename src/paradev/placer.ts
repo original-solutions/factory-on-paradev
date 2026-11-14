@@ -41,6 +41,11 @@ export const makePlacer = (deps: PlacerDeps) => {
   /** Why cloud takes no run this pass, from the pass's proxy check; null when it passed or was not run. */
   let proxyReason: string | null = null;
   let recorded = new Set<string>();
+  /**
+   * The placements whose launch has not ended, by command id, with the key of their target; kept
+   * across passes. Such a launch has no agent in a snapshot yet, so each counts as one running.
+   */
+  const inFlight = new Map<string, string>();
   /** One placement at a time: a re-gate relaunch and a pass launch never read or bump the counts at once. */
   const exclusive = Semaphore.makeUnsafe(1);
 
@@ -48,6 +53,8 @@ export const makePlacer = (deps: PlacerDeps) => {
     if (counts === null) {
       const read = yield* deps.running;
       counts = new Map(read.map((count) => [keyOf(count.target), count.running]));
+      // A launch in flight is in no snapshot yet: it counts on top of what the snapshot read.
+      for (const key of inFlight.values()) bump(counts, key);
     }
     return counts;
   });
@@ -96,6 +103,9 @@ export const makePlacer = (deps: PlacerDeps) => {
   };
 
   return {
+    /** The launch of `commandId` ended: its agent is in the snapshots now, so it stops counting on its own. */
+    launchEnded: (commandId: string): Effect.Effect<void> =>
+      Effect.sync(() => void inFlight.delete(commandId)),
     /**
      * Starts a pass: forgets the last pass's counts and recorded drops. `localHeld` is why P1's
      * checks hold claims this pass ("low disk", "high load"), else null; `proxy` is why cloud
@@ -116,6 +126,7 @@ export const makePlacer = (deps: PlacerDeps) => {
         if (repo === null || (!hosted && !clouded)) {
           // It still takes a slot on this Mac, when this pass has counted them.
           if (counts !== null) bump(counts, "local");
+          inFlight.set(request.commandId, "local");
           return { kind: "local" } as const;
         }
         const running = yield* countsOf;
@@ -132,6 +143,7 @@ export const makePlacer = (deps: PlacerDeps) => {
         if (placement.kind === "refused") return yield* Effect.fail(new NoTargetHasRoom());
         // The slot is taken for the rest of the pass: the next launch counts it.
         bump(running, keyOf(placement.target));
+        inFlight.set(request.commandId, keyOf(placement.target));
         return placement.target;
       }).pipe(exclusive.withPermits(1)),
   };

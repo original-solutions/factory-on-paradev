@@ -286,6 +286,12 @@ export interface ParadevSessionsConfig {
    * room. Default this Mac.
    */
   readonly place?: (request: LaunchRequest) => Effect.Effect<LaunchTarget, ParadevAdapterError | NoTargetHasRoom>;
+  /**
+   * Told the launch's command id when a launch that was placed now ends, however it ends: the
+   * agent is in the snapshot by then, or the launch failed. Until then the placement counts as
+   * a running agent. Default nothing.
+   */
+  readonly launchEnded?: (commandId: string) => Effect.Effect<void>;
   /** Whether the machine config has a cloud block, so `snapshot --host cloud` is read for the counts. Default false. */
   readonly cloud?: boolean;
   /** How the adapter reaches a host. Default `ssh` through the runner's process service. */
@@ -386,6 +392,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const ssh = config.ssh ?? sshRunner(runner);
   const hosts = config.hosts ?? [];
   const place = config.place ?? (() => Effect.succeed<LaunchTarget>({ kind: "local" }));
+  const launchEnded = config.launchEnded ?? (() => Effect.void);
   const cloudReadyPollMs = config.cloudReadyPollMs ?? CLOUD_READY_POLL_MS;
   const cloudReadyMaxMs = config.cloudReadyMaxMs ?? CLOUD_READY_MAX_MS;
   /**
@@ -945,14 +952,23 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       return project ?? (yield* fail(`no Paradev project at ${path} on host ${machineId}`));
     });
 
-  /** The target `request`'s command id was placed on; placed now, and kept, when it never was. */
-  const placement = (request: LaunchRequest) =>
+  /**
+   * Runs `launchOn` on the target `request`'s command id was placed on: the kept one, or one
+   * placed now and kept. A fresh placement is in flight until `launchOn` ends, however it ends,
+   * and `launchEnded` is told then; a kept one was told about by the launch that placed it.
+   */
+  const placement = <A, E, R>(
+    request: LaunchRequest,
+    launchOn: (placed: LaunchTarget) => Effect.Effect<A, E, R>,
+  ) =>
     Effect.gen(function* () {
       const kept = yield* local(readPlacement(dataDir, request.commandId));
-      if (kept !== null) return kept;
+      if (kept !== null) return yield* launchOn(kept);
       const placed = yield* place(request);
-      yield* local(writePlacement(dataDir, request.commandId, placed));
-      return placed;
+      return yield* local(writePlacement(dataDir, request.commandId, placed)).pipe(
+        Effect.andThen(launchOn(placed)),
+        Effect.ensuring(launchEnded(request.commandId)),
+      );
     });
 
   const launch = Effect.fn("ParadevSessions.launch")(function* (request: LaunchRequest) {
@@ -974,9 +990,10 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     }
     // Placed once per command id, and before anything is fetched or created: a send cut off after
     // this point is sent again to the same target.
-    const placed = yield* placement(request);
     return launched(
-      yield* (placed.kind === "cloud" ? launchCloud(request, placed) : launchWorktree(request, placed)),
+      yield* placement(request, (placed) =>
+        placed.kind === "cloud" ? launchCloud(request, placed) : launchWorktree(request, placed),
+      ),
     );
   }, (effect) => effect.pipe(Effect.mapError(failWith("launch"))));
 
