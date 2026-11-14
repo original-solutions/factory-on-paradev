@@ -18,6 +18,7 @@ const machine = (over: Partial<MachineConfig> = {}): MachineConfig => ({
   maxConcurrentGates: 2,
   feedbackSeconds: 600,
   notify: true,
+  selfUpdate: true,
   minFreeGib: 10,
   maxLoadPerCore: 1,
   modelFallbacks: {},

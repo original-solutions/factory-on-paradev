@@ -240,6 +240,7 @@ const baseMachine: MachineConfig = {
   maxConcurrentGates: 1,
   feedbackSeconds: 600,
   notify: true,
+  selfUpdate: true,
   minFreeGib: 0,
   maxLoadPerCore: 0,
   modelFallbacks: {},
