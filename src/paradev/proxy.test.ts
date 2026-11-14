@@ -46,7 +46,7 @@ describe("checkProxy", () => {
       const never: ProxyGet = () => Effect.never;
       assert.deepStrictEqual(yield* checkProxy(never, "https://proxy.example", 20), {
         kind: "down",
-        reason: "did not answer within 10 s",
+        reason: "did not answer within 0.02 s",
       });
     }),
   );

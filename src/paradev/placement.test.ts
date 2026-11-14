@@ -1,7 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import type { Load } from "../load.ts";
-import { type Candidate, choosePlacement, NO_ROOM } from "./placement.ts";
+import { NO_TARGET_HAS_ROOM } from "../sessions.ts";
+import { type Candidate, choosePlacement } from "./placement.ts";
 
 const load = (perCore: number, cores = 10): Load => ({ oneMinute: perCore * cores, cores });
 
@@ -62,7 +63,7 @@ describe("choosePlacement", () => {
     assert.deepStrictEqual(placed, {
       kind: "placed",
       target: { kind: "host", machineId: "a", path: "/srv/a" },
-      dropped: [{ target: "local", reason: "slots full: 2 of 2 running" }],
+      dropped: [{ id: "local", target: "local", reason: "slots full: 2 of 2 running" }],
     });
   });
 
@@ -71,7 +72,7 @@ describe("choosePlacement", () => {
     assert.deepStrictEqual(placed, {
       kind: "placed",
       target: { kind: "local" },
-      dropped: [{ target: "name-a", reason: "its running agents could not be counted" }],
+      dropped: [{ id: "host:a", target: "name-a", reason: "its running agents could not be counted" }],
     });
   });
 
@@ -80,7 +81,7 @@ describe("choosePlacement", () => {
     assert.deepStrictEqual(placed, {
       kind: "placed",
       target: { kind: "local" },
-      dropped: [{ target: "name-a", reason: "load 1.50 per core is over max_load_per_core 1" }],
+      dropped: [{ id: "host:a", target: "name-a", reason: "load 1.50 per core is over max_load_per_core 1" }],
     });
   });
 
@@ -94,7 +95,7 @@ describe("choosePlacement", () => {
     assert.deepStrictEqual(placed, {
       kind: "placed",
       target: { kind: "local" },
-      dropped: [{ target: "name-a", reason: "not ready: claude is not trusted" }],
+      dropped: [{ id: "host:a", target: "name-a", reason: "not ready: claude is not trusted" }],
     });
   });
 
@@ -103,7 +104,7 @@ describe("choosePlacement", () => {
     assert.deepStrictEqual(placed, {
       kind: "placed",
       target: { kind: "local" },
-      dropped: [{ target: "name-a", reason: "its load was not read this pass" }],
+      dropped: [{ id: "host:a", target: "name-a", reason: "its load was not read this pass" }],
     });
   });
 
@@ -112,7 +113,7 @@ describe("choosePlacement", () => {
     assert.deepStrictEqual(placed, {
       kind: "placed",
       target: { kind: "host", machineId: "a", path: "/srv/a" },
-      dropped: [{ target: "local", reason: "this Mac holds claims: high load" }],
+      dropped: [{ id: "local", target: "local", reason: "this Mac holds claims: high load" }],
     });
   });
 
@@ -122,8 +123,8 @@ describe("choosePlacement", () => {
       kind: "placed",
       target: { kind: "cloud", environmentId: "env-1", machineSize: "small" },
       dropped: [
-        { target: "local", reason: "slots full: 2 of 2 running" },
-        { target: "name-a", reason: "its load was not read this pass" },
+        { id: "local", target: "local", reason: "slots full: 2 of 2 running" },
+        { id: "host:a", target: "name-a", reason: "its load was not read this pass" },
       ],
     });
   });
@@ -137,10 +138,10 @@ describe("choosePlacement", () => {
     const placed = choosePlacement([local({ held: "low disk" }), cloud({ proxy: "the proxy check failed: down" })]);
     assert.deepStrictEqual(placed, {
       kind: "refused",
-      reason: NO_ROOM,
+      reason: NO_TARGET_HAS_ROOM,
       dropped: [
-        { target: "local", reason: "this Mac holds claims: low disk" },
-        { target: "cloud", reason: "the proxy check failed: down" },
+        { id: "local", target: "local", reason: "this Mac holds claims: low disk" },
+        { id: "cloud", target: "cloud", reason: "the proxy check failed: down" },
       ],
     });
   });
@@ -151,19 +152,27 @@ describe("choosePlacement", () => {
       host("a", { notReady: "x" }),
       cloud({ slots: { running: 1, max: 1 } }),
     ]);
-    assert.strictEqual(NO_ROOM, "no target has room");
+    assert.strictEqual(NO_TARGET_HAS_ROOM, "no target has room");
     assert.deepStrictEqual(placed, {
       kind: "refused",
       reason: "no target has room",
       dropped: [
-        { target: "local", reason: "slots full: 3 of 3 running" },
-        { target: "name-a", reason: "not ready: x" },
-        { target: "cloud", reason: "slots full: 1 of 1 running" },
+        { id: "local", target: "local", reason: "slots full: 3 of 3 running" },
+        { id: "host:a", target: "name-a", reason: "not ready: x" },
+        { id: "cloud", target: "cloud", reason: "slots full: 1 of 1 running" },
       ],
     });
   });
 
+  it("names a dropped candidate by identity, so two hosts of one name are two drops", () => {
+    const placed = choosePlacement([host("a", { name: "same", load: null }), host("b", { name: "same", load: null })]);
+    assert.deepStrictEqual(
+      placed.dropped.map((d) => d.id),
+      ["host:a", "host:b"],
+    );
+  });
+
   it("refuses when there are no candidates", () => {
-    assert.deepStrictEqual(choosePlacement([]), { kind: "refused", reason: NO_ROOM, dropped: [] });
+    assert.deepStrictEqual(choosePlacement([]), { kind: "refused", reason: NO_TARGET_HAS_ROOM, dropped: [] });
   });
 });

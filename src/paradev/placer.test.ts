@@ -38,7 +38,15 @@ const WIDE: WatchedRepo = {
 };
 const HOSTED: WatchedRepo = { repo: "acme/hosted", path: "/Users/tom/hosted", hosts: [{ id: "h1", path: "/srv/hosted" }] };
 const CLOUDY: WatchedRepo = { repo: "acme/cloudy", path: "/Users/tom/cloudy", cloud: "env-1" };
-const BY_PROJECT: Record<string, WatchedRepo> = { mac: MAC, wide: WIDE, hosted: HOSTED, cloudy: CLOUDY };
+const BOTH: WatchedRepo = {
+  repo: "acme/both",
+  path: "/Users/tom/both",
+  hosts: [
+    { id: "h1", path: "/srv/both" },
+    { id: "h2", path: "/srv/both" },
+  ],
+};
+const BY_PROJECT: Record<string, WatchedRepo> = { both: BOTH, mac: MAC, wide: WIDE, hosted: HOSTED, cloudy: CLOUDY };
 
 const request = (projectId: string, n = 1): LaunchRequest => ({
   commandId: `launch-${projectId}-${n}`,
@@ -206,6 +214,26 @@ describe("placer", () => {
       t.placer.beginPass({ localHeld: null, proxy: null });
       yield* t.placer.place(request("hosted", 3)).pipe(Effect.flip);
       assert.deepStrictEqual(drops(t.events), [...dropped, ...dropped]);
+    }),
+  );
+
+  it.effect("two hosts of one name are recorded as two drops", () =>
+    Effect.gen(function* () {
+      const other: HostConfig = { ...HOST, id: "h2", name: HOST.name };
+      const t = setup({
+        machine: machine({ hosts: [HOST, other] }),
+        counts: [
+          { target: { kind: "local" }, running: 0 },
+          { target: { kind: "host", machineId: "h1" }, running: 1 },
+          { target: { kind: "host", machineId: "h2" }, running: 1 },
+        ],
+      });
+      t.placer.beginPass({ localHeld: null, proxy: null });
+      yield* t.placer.place(request("both"));
+      assert.deepStrictEqual(
+        drops(t.events).map((drop) => drop.reason),
+        ["slots full: 1 of 1 running", "slots full: 1 of 1 running"],
+      );
     }),
   );
 
