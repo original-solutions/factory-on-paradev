@@ -52,7 +52,17 @@ import { launchBranch, worktreesRootOf } from "./branches.ts";
 import { call, callWithRetry, decodeAnswer } from "./call.ts";
 import { type CliError, SupersetCli } from "./cli.ts";
 import { listProjects, listProjectsAt, type ParadevProject, projectAt } from "./projects.ts";
-import { shellQuote, type SshError, type SshRunner, sshRunner } from "./ssh.ts";
+import {
+  agentLookup,
+  hostGit,
+  LOOKUP_MARK,
+  newestSessionList,
+  pathExists,
+  shellQuote,
+  type SshError,
+  type SshRunner,
+  sshRunner,
+} from "./ssh.ts";
 import {
   listThreads,
   readLaunch,
@@ -95,7 +105,6 @@ const CLOUD_SESSIONS_DIR = "/home/ubuntu/.claude/projects/-workspace";
 const CLOUD_WORKTREE = "/workspace";
 /** The end marks of the helper terminals' commands. */
 const ALIVE_MARK = "FACTORY-ALIVE-DONE";
-const LOOKUP_MARK = "FACTORY-LOOKUP-DONE";
 const SESSION_MARK = "FACTORY-SESSION-DONE";
 /** A Paradev project's `repo`: a GitHub repository URL. */
 const GITHUB_REPO = /^https:\/\/github\.com\/([A-Za-z0-9-]+\/[A-Za-z0-9._-]+?)(?:\.git)?\/?$/;
@@ -745,9 +754,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     Effect.gen(function* () {
       const destination = (yield* hostOf(machineId)).ssh;
       const run = (args: ReadonlyArray<string>, given: GitOptions = {}) =>
-        ssh.run(destination, ["git", ...(given.pre ?? []), "-C", dir, ...args].map(shellQuote).join(" "), {
-          timeoutMs: given.timeoutMs ?? 30_000,
-        });
+        ssh.run(destination, hostGit(dir, args, given.pre), { timeoutMs: given.timeoutMs ?? 30_000 });
       return {
         git: run,
         gitOk: (args: ReadonlyArray<string>, given?: GitOptions) => run(args, given).pipe(Effect.flatMap(gitOkOf(args))),
@@ -1161,14 +1168,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const hostAgentAlive = (machineId: string, record: ThreadRecord, worktreePath: string) =>
     Effect.gen(function* () {
       const destination = (yield* hostOf(machineId)).ssh;
-      const script = [
-        "command -v lsof >/dev/null || exit 3",
-        `pids=$(pgrep -x ${shellQuote(commandOf(record))}); [ $? -le 1 ] || exit 3`,
-        `printf 'W%s\\n' "$(cd ${shellQuote(worktreePath)} 2>/dev/null && pwd -P)"`,
-        'for p in $pids; do lsof -a -d cwd -p "$p" -Fn 2>/dev/null; done',
-        `echo ${LOOKUP_MARK}`,
-      ].join("; ");
-      return yield* ssh.run(destination, `sh -c ${shellQuote(script)}`).pipe(
+      return yield* ssh.run(destination, agentLookup(commandOf(record), worktreePath)).pipe(
         Effect.map((result) => {
           const lines = result.tail.split("\n").map((line) => line.trim());
           const last = lines.filter((line) => line !== "").at(-1) ?? "";
@@ -1453,7 +1453,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         : { git: (args, options) => git(path, args, options), gitOk: (args, options) => gitOk(path, args, options) };
     if (target.kind === "host") {
       const destination = (yield* hostOf(target.machineId)).ssh;
-      if ((yield* ssh.run(destination, `test -e ${shellQuote(`${path}/.git`)}`)).exitCode !== 0) return null;
+      if ((yield* ssh.run(destination, pathExists(`${path}/.git`))).exitCode !== 0) return null;
     } else if (!(yield* fs.exists(`${path}/.git`))) return null;
     const head = yield* repo.gitOk(["rev-parse", "--verify", "HEAD^{commit}"]);
     if (!isCommitId(head)) {
@@ -1571,9 +1571,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const newestHostSession = (machineId: string, worktreePath: string) =>
     Effect.gen(function* () {
       const destination = (yield* hostOf(machineId)).ssh;
-      // Only letters, digits and `-`: one word as it is, with `$HOME` left for the host's `sh`.
-      const folder = `$HOME/.claude/projects/${claudeProjectFolder(worktreePath)}`;
-      const listed = yield* ssh.run(destination, `sh -c ${shellQuote(`ls -t ${folder}/*.jsonl 2>/dev/null | head -1`)}`);
+      const listed = yield* ssh.run(destination, newestSessionList(claudeProjectFolder(worktreePath)));
       const newest = listed.tail.trim().split("/").at(-1) ?? "";
       const id = newest.endsWith(".jsonl") ? newest.slice(0, -".jsonl".length) : "";
       return listed.exitCode === 0 && SESSION_ID.test(id) ? id : null;
