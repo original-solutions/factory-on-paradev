@@ -1108,10 +1108,22 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       }),
       paradev,
     );
-    // Placement is made after the world, whose host readings it reads; `launch` only asks it later.
-    let placer: ReturnType<typeof makePlacer> | null = null;
     // The watched repo of each local Paradev project, from the last project listing that answered.
     let repoOfProject = new Map<string, WatchedRepo>();
+    // Placement reads the world's host readings and the adapter's counts; both are built after it,
+    // and neither is read before a launch, so its dependencies are looked up when it asks.
+    const placer = makePlacer({
+      machine,
+      repoOfProject: (projectId) => repoOfProject.get(projectId) ?? null,
+      hostLoads: shared.hostLoads,
+      hostsNotReady: () => base.hostsNotReady,
+      readLoad: options.readLoad ?? readLoad,
+      running: Effect.suspend(() => sessions.runningByTarget),
+      record: (event) =>
+        base.record(event).pipe(
+          Effect.catch((error) => Effect.logWarning(`the machine log could not take a placement: ${error.message}`)),
+        ),
+    });
     const sessions = yield* makeParadevSessions({
       ...options.sessions,
       agent: machine.paradev.agent,
@@ -1120,7 +1132,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       ghConfigDir: machine.ghConfigDir,
       hosts: machine.hosts,
       cloud: machine.cloud !== undefined,
-      place: (request) => Effect.suspend(() => (placer === null ? Effect.succeed({ kind: "local" } as const) : placer.place(request))),
+      place: placer.place,
     }).pipe(Effect.provide(paradev));
     // Only a repo that names a cloud environment can have a cloud run, and so an orphan.
     const sweep = machine.repos.some((entry) => entry.cloud !== undefined)
@@ -1207,18 +1219,6 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       undefined,
       shared,
     );
-    placer = makePlacer({
-      machine,
-      repoOfProject: (projectId) => repoOfProject.get(projectId) ?? null,
-      hostLoads: shared.hostLoads,
-      hostsNotReady: () => base.hostsNotReady,
-      readLoad: options.readLoad ?? readLoad,
-      running: Effect.suspend(() => sessions.runningByTarget),
-      record: (event) =>
-        base.record(event).pipe(
-          Effect.catch((error) => Effect.logWarning(`the machine log could not take a placement: ${error.message}`)),
-        ),
-    });
     // The repos `repos:` lists, each with its clone a Paradev project on this Mac. A repo whose
     // clone is none, or is the project of another GitHub repo (a `path` copied from another
     // entry), is skipped with one item that says so: a session there would work on the other
