@@ -1,13 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
-import type { AttentionItem } from "../attention.ts";
-import type { Attention } from "../attention.ts";
 import type { HostConfig, MachineConfig } from "../config.ts";
 import {
   checkHost,
-  checkHostsAtReload,
   firstFailure,
+  formatHostCheck,
   HOST_NOT_READY_PREFIX,
   hostCheckIoFromCommands,
   hostNotReadyItem,
@@ -18,8 +16,10 @@ import {
   CLAUDE_VERSION,
   GH_AUTH_STATUS,
   GIT_EMAIL,
+  isAllowed,
   PROXY_ENV_READ,
   remoteUrl,
+  shellQuote,
   trustRead,
   TRUE_COMMAND,
   type SshAnswer,
@@ -122,6 +122,7 @@ describe("checkHost", () => {
     await run(w);
     assert.deepStrictEqual(w.supersetCalls, ["hosts list", "projects list --host h1"]);
     assert.strictEqual(new Set(w.commands).size, w.commands.length);
+    assert.isTrue(w.commands.every(isAllowed), JSON.stringify(w.commands));
   });
 
   it("online: a host that is absent or offline gets the hosts add fix", async () => {
@@ -133,6 +134,13 @@ describe("checkHost", () => {
       const line = byCheck(await run(w), "online");
       assert.deepStrictEqual([line.ok, line.text], [false, fix]);
     }
+  });
+
+  it("online: a hosts list that fails says so, with the error text, not the add-it fix", async () => {
+    const w = world();
+    w.superset.set("hosts list", new Error("PARADEV_OFFLINE: not running"));
+    const line = byCheck(await run(w), "online");
+    assert.deepStrictEqual([line.ok, line.text], [false, "superset hosts list failed: PARADEV_OFFLINE: not running"]);
   });
 
   it("ssh: names the key to install and says why it failed; later ssh lines are not checked", async () => {
@@ -158,7 +166,7 @@ describe("checkHost", () => {
     const lines = await run(w);
     assert.strictEqual(
       byCheck(lines, "cli").text,
-      "add it with superset hosts add me@mini --name mini, or start its host service (sh.superset.host)",
+      "superset projects list --host h1 failed: PARADEV_OFFLINE",
     );
     assert.deepStrictEqual(
       [byCheck(lines, "project acme/app").ok, byCheck(lines, "project acme/app").text],
@@ -199,13 +207,24 @@ describe("checkHost", () => {
     const w = world();
     w.ssh.set(trustRead(PATH), ok("no\n"));
     const lines = await run(w);
+    const oneLiner =
+      "python3 -c 'import json,os,sys;f=os.path.expanduser(\"~/.claude.json\");d=json.load(open(f));" +
+      'd.setdefault(\"projects\",{}).setdefault(sys.argv[1],{})[\"hasTrustDialogAccepted\"]=True;' +
+      `json.dump(d,open(f,\"w\"),indent=2)' ${shellQuote(PATH)}`;
     assert.strictEqual(
       byCheck(lines, "trusted acme/app").text,
-      `open Claude Code once in ${PATH} on the host and accept the trust dialog, or set projects["${PATH}"].hasTrustDialogAccepted to true in the host's ~/.claude.json`,
+      `open Claude Code once in ${PATH} on the host and accept the trust dialog, or run this on the host: ${oneLiner}`,
     );
     assert.include(w.commands, trustRead(PATH));
-    assert.include(trustRead(PATH), "python3 -c");
-    assert.include(trustRead(PATH), ".claude.json");
+    assert.isFalse(w.commands.includes(oneLiner), "the fix is printed, never sent");
+  });
+
+  it("trusted: a trust read that fails over ssh gets the same fix", async () => {
+    const w = world();
+    w.ssh.set(trustRead(PATH), failed("python3: command not found"));
+    const line = byCheck(await run(w), "trusted acme/app");
+    assert.isFalse(line.ok);
+    assert.include(line.text, "accept the trust dialog");
   });
 
   it("proxy env: names the missing keys, and never prints what the host answered", async () => {
@@ -244,6 +263,21 @@ describe("checkHost", () => {
     );
   });
 
+  it("gh and claude missing from a non-interactive ssh PATH (exit 127) say how to put them there", async () => {
+    const w = world();
+    w.ssh.set(GH_AUTH_STATUS, { exitCode: 127, timedOut: false, stdout: "", stderr: "zsh:1: command not found: gh\n" });
+    w.ssh.set(CLAUDE_VERSION, { exitCode: 127, timedOut: false, stdout: "", stderr: "zsh:1: command not found: claude\n" });
+    const lines = await run(w);
+    assert.strictEqual(
+      byCheck(lines, "gh").text,
+      "gh is not on the PATH of a non-interactive ssh shell; add its folder (e.g. /opt/homebrew/bin) to PATH in ~/.zshenv on the host",
+    );
+    assert.strictEqual(
+      byCheck(lines, "claude").text,
+      "claude is not on the PATH of a non-interactive ssh shell; add its folder (e.g. ~/.local/bin) to PATH in ~/.zshenv on the host",
+    );
+  });
+
   it("checks a repo only when it lists the host", async () => {
     const lines = await run(world(), machineOf([HOST], []));
     assert.deepStrictEqual(
@@ -262,70 +296,20 @@ describe("hostNotReadyItem", () => {
       issue: null,
       run: null,
       message:
-        "host mini is not ready: gh: gh auth login on the host; it takes no run until a config reload passes factory-runner hosts check mini",
+        "host mini is not ready: gh: gh auth login on the host; it takes no run until its check passes (checked again every 5 minutes; factory-runner hosts check mini prints every line)",
     });
   });
 });
 
-/** The attention service as the pass keeps it: one item per id. */
-const attentionFake = () => {
-  const items: Array<AttentionItem> = [];
-  const raised: Array<string> = [];
-  const attention: Pick<Attention["Service"], "raise" | "clear"> = {
-    raise: (item) =>
-      Effect.sync(() => {
-        raised.push(item.id);
-        if (!items.some((open) => open.id === item.id)) items.push({ ...item, firstSeenMs: 0 });
-      }),
-    clear: (matches) =>
-      Effect.sync(() => {
-        for (let i = items.length - 1; i >= 0; i--) if (matches(items[i]!)) items.splice(i, 1);
-      }),
-  };
-  return { items, raised, attention };
-};
-
-describe("checkHostsAtReload", () => {
-  it("raises one item for a failing host, fills notReady, and clears when the host passes", async () => {
-    const w = world();
-    w.ssh.set(GH_AUTH_STATUS, failed());
-    const fake = attentionFake();
-    const notReady = new Map<string, string>();
-    await Effect.runPromise(checkHostsAtReload(w.io, machineOf([HOST]), fake.attention, notReady));
-    assert.deepStrictEqual([...notReady], [["h1", "gh: gh auth login on the host"]]);
-    assert.deepStrictEqual(fake.items.map((i) => i.id), ["host-not-ready:h1"]);
-    assert.include(fake.items[0]!.message, "gh: gh auth login on the host");
-
-    w.ssh.set(GH_AUTH_STATUS, ok());
-    await Effect.runPromise(checkHostsAtReload(w.io, machineOf([HOST]), fake.attention, notReady));
-    assert.strictEqual(notReady.size, 0);
-    assert.deepStrictEqual(fake.items, []);
-  });
-
-  it("a changed first failing line replaces the open item", async () => {
-    const w = world();
-    w.ssh.set(GH_AUTH_STATUS, failed());
-    const fake = attentionFake();
-    const notReady = new Map<string, string>();
-    await Effect.runPromise(checkHostsAtReload(w.io, machineOf([HOST]), fake.attention, notReady));
-    w.ssh.set(GIT_EMAIL, ok(""));
-    await Effect.runPromise(checkHostsAtReload(w.io, machineOf([HOST]), fake.attention, notReady));
-    assert.strictEqual(fake.items.length, 1);
-    assert.include(fake.items[0]!.message, "git identity:");
-    assert.include(notReady.get("h1")!, "git identity:");
-  });
-
-  it("clears the item of a host that left the config, and checks no host when there is none", async () => {
-    const w = world();
-    w.ssh.set(GH_AUTH_STATUS, failed());
-    const fake = attentionFake();
-    const notReady = new Map<string, string>();
-    await Effect.runPromise(checkHostsAtReload(w.io, machineOf([HOST]), fake.attention, notReady));
-    w.commands.length = 0;
-    await Effect.runPromise(checkHostsAtReload(w.io, machineOf([]), fake.attention, notReady));
-    assert.deepStrictEqual(fake.items, []);
-    assert.strictEqual(notReady.size, 0);
-    assert.deepStrictEqual(w.commands, []);
+describe("formatHostCheck", () => {
+  it("is the host's name and ssh, then one indented line per check", () => {
+    assert.deepStrictEqual(
+      formatHostCheck(HOST, [
+        { check: "ssh", ok: true, text: "ok" },
+        { check: "gh", ok: false, text: "gh auth login on the host" },
+      ]),
+      ["mini (me@mini)", "  ssh: ok", "  gh: gh auth login on the host"],
+    );
   });
 });
 
@@ -344,7 +328,7 @@ describe("hostCheckIoFromCommands", () => {
 
   it("answers the error text of a failed call, or of output that is not JSON", async () => {
     const failing = hostCheckIoFromCommands(
-      () => ({ status: 1, stdout: "", stderr: "noise\nError: PARADEV_OFFLINE: not running\n" }),
+      () => ({ status: 1, stdout: "", stderr: "noise\nError: PARADEV_OFFLINE: not running\nHint: open it\n" }),
       "superset",
     );
     assert.strictEqual(
@@ -353,6 +337,8 @@ describe("hostCheckIoFromCommands", () => {
     );
     const silent = hostCheckIoFromCommands(() => ({ status: 3, stdout: "", stderr: "" }), "superset");
     assert.strictEqual(await Effect.runPromise(Effect.flip(silent.superset(["x"]))), "exit 3");
+    const spawn = hostCheckIoFromCommands(() => ({ status: null, stdout: "", stderr: "spawnSync superset ENOENT\n" }), "superset");
+    assert.strictEqual(await Effect.runPromise(Effect.flip(spawn.superset(["x"]))), "spawnSync superset ENOENT");
     const garbage = hostCheckIoFromCommands(() => ({ status: 0, stdout: "not json", stderr: "" }), "superset");
     assert.isString(await Effect.runPromise(Effect.flip(garbage.superset(["x"]))));
   });

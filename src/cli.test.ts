@@ -7,7 +7,7 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { readAttentionFile } from "./attention.ts";
-import { runCli, type CliIo } from "./cli.ts";
+import { runCli, USAGE, type CliIo } from "./cli.ts";
 import type { CommandResult } from "./install.ts";
 import {
   CLAUDE_VERSION,
@@ -393,6 +393,41 @@ ${PARADEV}`;
     const s = setup();
     expect(await runCli(["hosts", "check"], s.io)).toBe(1);
     expect(s.errs.length).toBe(1);
+  });
+
+  it("prints why a failing hosts list failed, not the add-it fix", async () => {
+    const h = hostsRun();
+    const run = (command: string, args: ReadonlyArray<string>, timeoutMs: number): CommandResult =>
+      command !== "ssh" && args[0] === "hosts"
+        ? { status: 1, stdout: "", stderr: "Error: PARADEV_OFFLINE: not running\n" }
+        : h.run(command, args);
+    const s = setup({ run });
+    seedConfig(s);
+    expect(await runCli(["hosts", "check", "mini"], s.io)).toBe(1);
+    expect(s.outs).toContain("  online: superset hosts list failed: PARADEV_OFFLINE: not running");
+  });
+
+  it("prints the trust fix when the trust read fails over ssh", async () => {
+    const h = hostsRun({ [trustRead("/Users/me/app")]: { status: 1, stdout: "", stderr: "python3: command not found" } });
+    const s = setup({ run: h.run });
+    seedConfig(s);
+    expect(await runCli(["hosts", "check", "mini"], s.io)).toBe(1);
+    expect(s.outs.some((line) => line.startsWith("  trusted acme/app: open Claude Code once in /Users/me/app"))).toBe(true);
+  });
+
+  it("exits 1 with the errors when the machine config does not load", async () => {
+    const s = setup({ run: hostsRun().run });
+    seedConfig(s, "hosts: [unclosed\n");
+    expect(await runCli(["hosts", "check"], s.io)).toBe(1);
+    expect(s.errs.length).toBeGreaterThan(0);
+    expect(s.outs).toEqual([]);
+  });
+
+  it("is a usage error, exit 2, with two names", async () => {
+    const s = setup({ run: hostsRun().run });
+    seedConfig(s);
+    expect(await runCli(["hosts", "check", "a", "b"], s.io)).toBe(2);
+    expect(s.errs).toEqual([USAGE]);
   });
 
   it("never prints the proxy token's value", async () => {

@@ -57,6 +57,7 @@ import { readFixture } from "./paradev/fake-superset.ts";
 import { AgentProcess } from "./paradev/sessions.ts";
 import { writeThread } from "./paradev/state.ts";
 import * as Paths from "./paths.ts";
+import type { SshRunner } from "./paradev/ssh.ts";
 import { PARADEV_HOLD_PASSES, PARADEV_OFFLINE_ITEM_ID, type PassWorld, type Repo } from "./pass.ts";
 import {
   FactoryProcess,
@@ -262,6 +263,8 @@ interface FakeParadev {
   down: string | null;
   /** The `Error:` line `projects list` fails with; absent when it answers. */
   listDown?: string;
+  /** What `hosts list` answers; absent, it fails with an `Error:` line. */
+  hostsList?: ReadonlyArray<unknown>;
   /** Rewrites the recorded `schema` answer. */
   schema: (answer: unknown) => unknown;
   /** Answers the `pages` commands; absent, they are unexpected. */
@@ -311,8 +314,13 @@ const paradevAnswer = (paradev: FakeParadev, argv: ReadonlyArray<string>): RunRe
       return paradev.listDown === undefined
         ? reply(0, JSON.stringify(paradev.projects))
         : reply(1, "", `Error: ${paradev.listDown}\n`);
+    case "hosts list":
+      return paradev.hostsList === undefined
+        ? reply(1, "", "Error: PARADEV_OFFLINE: host service is not running\n")
+        : reply(0, JSON.stringify(paradev.hostsList));
     default:
       if (argv[0] === "pages" && paradev.pages !== undefined) return paradev.pages(argv);
+      if (argv[0] === "projects" && argv.includes("--host")) return reply(0, "[]");
       throw new Error(`the scripted superset got an unexpected call: ${argv.join(" ")}`);
   }
 };
@@ -3946,5 +3954,45 @@ describe("liveWorld: the sessions of runs, for threads on a broken worktree", ()
       const error = yield* Effect.flip(world.sessionRuns());
       assert.strictEqual(error.kind, "ledger");
     }),
+  );
+});
+
+describe("liveWorld: the hosts", () => {
+  const HOSTS = "hosts:\n  - id: h1\n    name: mini\n    ssh: me@mini\n    max_runs: 2\n";
+  const refused: SshRunner = () =>
+    Effect.succeed({ exitCode: 255, timedOut: false, stdout: "", stderr: "Connection refused\n" });
+
+  it.effect("the first pass checks each host, and a host that fails is not ready with one attention item", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { loop, factoryDir, attention, paradev } = yield* started(
+          configFor([["a/b", "/b"]], "/gh", HOSTS),
+          noGhProcess,
+          { ssh: refused },
+          newParadev(),
+        );
+        yield* idleAfter(loop, factoryDir, 1);
+        const items = (yield* attention.list()).filter((item) => item.id === "host-not-ready:h1");
+        assert.strictEqual(items.length, 1);
+        assert.include(items[0]!.message, "host mini is not ready: online: superset hosts list failed");
+        assert.isTrue(paradev.calls.some((argv) => argv.join(" ") === "hosts list"));
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a world starts with every host not checked yet, so placement sees none as ready", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const seen: Array<ReadonlyArray<readonly [string, string]>> = [];
+        const { loop, factoryDir } = yield* started(
+          configFor([["a/b", "/b"]], "/gh", HOSTS),
+          noGhProcess,
+          { ssh: refused, onWorld: (world) => seen.push([...world.hostsNotReady]) },
+          newParadev(),
+        );
+        yield* idleAfter(loop, factoryDir, 1);
+        assert.deepStrictEqual(seen, [[["h1", "not checked yet since the config load"]]]);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
   );
 });

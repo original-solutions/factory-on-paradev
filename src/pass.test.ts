@@ -6,6 +6,8 @@
  */
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import { describe } from "vitest";
 
 import type { Attention, AttentionItem } from "./attention.ts";
@@ -34,6 +36,8 @@ import { newRunId, runIdToString, type RunId } from "./ledger/runId.ts";
 import { useTempDirs } from "./ledger/testSupport.ts";
 import { formatTs } from "./ledger/time.ts";
 import {
+  HOST_CHECK_TIMEOUT_MS,
+  HOST_RECHECK_EVERY_MS,
   HOST_UNREACHABLE_PASSES,
   HOST_UNREACHABLE_PREFIX,
   PARADEV_OFFLINE_ITEM_ID,
@@ -79,6 +83,7 @@ import {
   SessionsError,
   type Model,
 } from "./sessions.ts";
+import type { CheckLine } from "./paradev/hostsCheck.ts";
 import type { SshAnswer, SshRunner } from "./paradev/ssh.ts";
 import { GitHubFailed, type Blocker, type Mergeable } from "./tracker/github.ts";
 
@@ -212,6 +217,19 @@ class Fake implements PassWorld {
   hostMisses = new Map<string, number>();
   hostLoads = new Map<string, Load | null>();
   hostsNotReady = new Map<string, string>();
+  hostCheckedAt = new Map<string, number>();
+  /** What `hosts check` answers per host id; every line ok otherwise. */
+  checks: Record<string, ReadonlyArray<CheckLine>> = {};
+  /** The hosts whose check never answers. */
+  checkHangs = new Set<string>();
+  checkHost = (host: HostConfig) =>
+    Effect.suspend(() => {
+      this.calls.push(`check ${host.id}`);
+      if (this.checkHangs.has(host.id)) return Effect.never;
+      return Effect.succeed(
+        this.checks[host.id] ?? [{ check: "ssh", ok: true, text: "ok" } satisfies CheckLine],
+      );
+    });
   /** The free bytes `freeSpace` reports; `"error"` is a probe that fails. */
   free: number | "error" = 100 * GIB;
   /** The machine's `min_free_gib` for the passes `pass` runs. */
@@ -6665,6 +6683,116 @@ describe("the host loads", () => {
       assert.deepEqual(sshOf(fake), []);
       assert.equal(fake.hostLoads.size, 0);
       assert.equal(report.attention, 0);
+    }),
+  );
+});
+
+describe("the host checks", () => {
+  const host = (id: string): HostConfig => ({ id, name: `name-${id}`, ssh: `me@${id}`, maxRuns: 2, maxLoadPerCore: 1 });
+  const GH_FAILS: ReadonlyArray<CheckLine> = [
+    { check: "ssh", ok: true, text: "ok" },
+    { check: "gh", ok: false, text: "gh auth login on the host" },
+  ];
+  const notReady = (fake: Fake, id: string) =>
+    fake.items.filter((item) => item.id === `host-not-ready:${id}`);
+  const checked = (fake: Fake) => fake.calls.filter((call) => call.startsWith("check "));
+
+  it.effect("the first pass checks every host before any claim, and a failing one is not ready with one item", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.hosts = [host("a"), host("b")];
+      fake.checks["a"] = GH_FAILS;
+      fake.ready[REPO] = [1];
+      yield* pass(fake, [REPO], 5);
+      assert.deepEqual(checked(fake).sort(), ["check a", "check b"]);
+      assert.isTrue(
+        fake.calls.findIndex((call) => call.startsWith("start ")) >
+          Math.max(...fake.calls.flatMap((call, i) => (call.startsWith("check ") ? [i] : []))),
+      );
+      assert.deepEqual([...fake.hostsNotReady], [["a", "gh: gh auth login on the host"]]);
+      const items = notReady(fake, "a");
+      assert.equal(items.length, 1);
+      assert.equal(
+        items[0]!.message,
+        "host name-a is not ready: gh: gh auth login on the host; it takes no run until its check passes (checked again every 5 minutes; factory-runner hosts check name-a prints every line)",
+      );
+      assert.deepEqual(notReady(fake, "b"), []);
+    }),
+  );
+
+  it.effect("a ready host is not checked again, and a not-ready one only after five minutes, clearing when it passes", () =>
+    Effect.gen(function* () {
+      assert.equal(HOST_RECHECK_EVERY_MS, 5 * 60 * 1000);
+      const fake = new Fake();
+      fake.hosts = [host("a"), host("b")];
+      fake.checks["a"] = GH_FAILS;
+      yield* pass(fake, [REPO], 5);
+      fake.now += HOST_RECHECK_EVERY_MS - 1;
+      yield* pass(fake, [REPO], 5);
+      assert.deepEqual(checked(fake).sort(), ["check a", "check b"]);
+      fake.now += 1;
+      fake.checks["a"] = [{ check: "ssh", ok: true, text: "ok" }];
+      yield* pass(fake, [REPO], 5);
+      assert.deepEqual(checked(fake).sort(), ["check a", "check a", "check b"]);
+      assert.deepEqual(notReady(fake, "a"), []);
+      assert.equal(fake.hostsNotReady.has("a"), false);
+      fake.now += 10 * HOST_RECHECK_EVERY_MS;
+      yield* pass(fake, [REPO], 5);
+      assert.equal(checked(fake).length, 3);
+    }),
+  );
+
+  it.effect("a changed first failing line replaces the open item", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.hosts = [host("a")];
+      fake.checks["a"] = GH_FAILS;
+      yield* pass(fake, [REPO], 5);
+      fake.now += HOST_RECHECK_EVERY_MS;
+      fake.checks["a"] = [{ check: "claude", ok: false, text: "install Claude Code on the host" }];
+      yield* pass(fake, [REPO], 5);
+      const items = notReady(fake, "a");
+      assert.equal(items.length, 1);
+      assert.include(items[0]!.message, "claude: install Claude Code on the host");
+      assert.equal(fake.hostsNotReady.get("a"), "claude: install Claude Code on the host");
+    }),
+  );
+
+  it.effect("a check that never answers fails the host with `check: no answer within 60 s`", () =>
+    Effect.gen(function* () {
+      assert.equal(HOST_CHECK_TIMEOUT_MS, 60_000);
+      const fake = new Fake();
+      fake.hosts = [host("a"), host("b")];
+      fake.checkHangs.add("a");
+      const fiber = yield* Effect.forkChild(pass(fake, [REPO], 5), { startImmediately: true });
+      yield* TestClock.adjust("60 seconds");
+      yield* Fiber.join(fiber);
+      assert.equal(fake.hostsNotReady.get("a"), "check: no answer within 60 s");
+      assert.equal(fake.hostsNotReady.has("b"), false);
+      assert.equal(notReady(fake, "a").length, 1);
+    }),
+  );
+
+  it.effect("a host that leaves the config is forgotten, and its item cleared", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.hosts = [host("a"), host("b")];
+      fake.checks["a"] = GH_FAILS;
+      yield* pass(fake, [REPO], 5);
+      assert.equal(notReady(fake, "a").length, 1);
+      fake.hosts = [host("b")];
+      yield* pass(fake, [REPO], 5);
+      assert.deepEqual(notReady(fake, "a"), []);
+      assert.deepEqual([...fake.hostsNotReady.keys()], []);
+      assert.deepEqual([...fake.hostCheckedAt.keys()], ["b"]);
+    }),
+  );
+
+  it.effect("with no hosts nothing is checked", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      yield* pass(fake, [REPO], 5);
+      assert.deepEqual(checked(fake), []);
     }),
   );
 });
