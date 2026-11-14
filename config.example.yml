@@ -92,8 +92,7 @@ repos: []
 #     # The 1-minute load per core above which the host takes no run. 0 turns the check off.
 #     # Defaults to 1.
 #     max_load_per_core: 1
-#     # Optional: the GitHub login runs on this host act as, when its terminal's active gh login
-#     # is another one. Defaults to the runner's own login.
+#     # Optional: the GitHub login runs on this host act as. Defaults to the runner's own login.
 #     gh_login: tomkaczocha
 #
 # # Present when some repo names a cloud environment.

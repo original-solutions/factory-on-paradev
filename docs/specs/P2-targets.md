@@ -55,6 +55,7 @@ repos:
     hosts:                                                                   # optional: where else it may run
       - id: c9c39956e0c1756e30d6bb9f4f907ff1                                 # superset hosts list
         path: /Users/tomk/factory-runner/original-solutions/clockwork        # the clone on that host
+        gh_login: tomkaczocha                                                # optional: the GitHub login this repo's runs on that host act as, over the host's
     cloud: edad9805-e48d-40f3-a06c-e19a4105f974                              # optional: an environment id that has this repo
 
 hosts:                        # every host a repo names must be here
@@ -63,6 +64,7 @@ hosts:                        # every host a repo names must be here
     ssh: tomk@trilogy-mac     # an ssh destination that works with BatchMode=yes
     max_runs: 2
     max_load_per_core: 1      # 0 turns the load check off for this host
+    gh_login: tomkaczocha     # optional: the GitHub login runs on this host act as; default the runner's own
 
 cloud:                        # present only when some repo names an environment
   machine_size: small         # small | medium | large
@@ -91,7 +93,7 @@ A target is one of:
 | a host | `host:<machineId>:<workspaceId>` | `--host <machineId>` | from `projects list --host <machineId>` by the repo's `hosts[].path` | SSH for load and processes; the CLI for everything else |
 | cloud | `cloud:<workspaceId>` | `--host cloud` | the environment id; cloud has no project | the CLI only |
 
-`findProject(root)` keeps its P1 signature and meaning: it answers the local project for the repo's clone. Placement happens in `launch`, which is where the adapter learns the command id, so a retried launch places the same way (below). The core does not change for placement: `LaunchRequest` gains nothing, and `Launched.threadId` carries the target.
+`findProject(root)` keeps its P1 signature and meaning: it answers the local project for the repo's clone. Placement happens in `launch`, which is where the adapter learns the command id, so a retried launch places the same way (below). The core changes little for placement: `LaunchRequest` gains one optional field, `hostMessage(machineId)`, the first message for a launch placed on a host (it names the host's resolved `gh_login` and lets the session select that login's token); the adapter uses it in place of `message` when placement picks a host. `Launched.threadId` still carries the target.
 
 ### Thread record v2
 
