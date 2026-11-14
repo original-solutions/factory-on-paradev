@@ -272,6 +272,11 @@ interface FakeParadev {
   pages?: (argv: ReadonlyArray<string>) => RunResult;
   /** A call this is true for is recorded and never answers, as against a hung Paradev. */
   hangs?: (argv: ReadonlyArray<string>) => boolean;
+  /**
+   * Runs before `workspaces list --host cloud` answers, so a test can hold the call; the `Error:`
+   * line it answers the call fails with, or null for the usual empty list.
+   */
+  cloudList?: Effect.Effect<string | null>;
   readonly calls: Array<ReadonlyArray<string>>;
 }
 
@@ -344,6 +349,13 @@ const withParadev = (
       if (paradev.hangs?.(argv) === true) {
         paradev.calls.push(argv);
         return Effect.never;
+      }
+      if (paradev.cloudList !== undefined && argv.join(" ") === "workspaces list --host cloud") {
+        return paradev.cloudList.pipe(
+          Effect.map((down) =>
+            down === null ? paradevAnswer(paradev, argv) : (paradev.calls.push(argv), reply(1, "", `Error: ${down}\n`)),
+          ),
+        );
       }
       return Effect.sync(() => paradevAnswer(paradev, argv));
     },
@@ -1404,13 +1416,15 @@ describe("on the Paradev CLI", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  const sweeps = (calls: ReadonlyArray<ReadonlyArray<string>>) =>
+    calls.filter((argv) => argv.join(" ") === "workspaces list --host cloud").length;
+  const cloudBlock = "cloud:\n  proxy: https://proxy.example\n";
+  /** A machine config whose one repo names a cloud environment, so each pass sweeps. */
+  const named = `gh_config_dir: /gh\nmax_concurrent_runs: 1\nmin_free_gib: 0\n${cloudBlock}repos:\n  - repo: a/b\n    path: /b\n    cloud: edad9805-e48d-40f3-a06c-e19a4105f974\n${PARADEV_BLOCK}`;
+
   it.effect("each pass sweeps the cloud for orphans beside the pass while a repo names an environment, and never otherwise", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const sweeps = (calls: ReadonlyArray<ReadonlyArray<string>>) =>
-          calls.filter((argv) => argv.join(" ") === "workspaces list --host cloud").length;
-        const cloudBlock = "cloud:\n  proxy: https://proxy.example\n";
-        const named = `gh_config_dir: /gh\nmax_concurrent_runs: 1\nmin_free_gib: 0\n${cloudBlock}repos:\n  - repo: a/b\n    path: /b\n    cloud: edad9805-e48d-40f3-a06c-e19a4105f974\n${PARADEV_BLOCK}`;
         const cloud = yield* started(named);
         yield* idleAfter(cloud.loop, cloud.factoryDir, 1);
         yield* waitUntil("the first sweep", () => sweeps(cloud.paradev.calls) === 1);
@@ -1421,6 +1435,59 @@ describe("on the Paradev CLI", () => {
         yield* idleAfter(none.loop, none.factoryDir, 1);
         yield* onePassMore(none.loop, none.factoryDir);
         assert.strictEqual(sweeps(none.paradev.calls), 0);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a sweep still listing holds the next passes' sweeps: one listing is in flight at a time", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const release = yield* Deferred.make<void>();
+        let inFlight = 0;
+        let most = 0;
+        const paradev = newParadev();
+        paradev.cloudList = Effect.sync(() => {
+          inFlight += 1;
+          most = Math.max(most, inFlight);
+        }).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.ensuring(Effect.sync(() => (inFlight -= 1))),
+          Effect.as(null),
+        );
+        const { loop, factoryDir } = yield* started(named, noGhProcess, {}, paradev);
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* waitUntil("the first sweep to list", () => inFlight === 1);
+        yield* onePassMore(loop, factoryDir);
+        yield* onePassMore(loop, factoryDir);
+        assert.strictEqual(finishedPasses(factoryDir), 3);
+        assert.strictEqual(inFlight, 1);
+        assert.strictEqual(most, 1);
+        // Released, the listing ends; the next pass sweeps again.
+        yield* Deferred.succeed(release, undefined);
+        yield* waitUntil("the first sweep to end", () => inFlight === 0 && sweeps(paradev.calls) === 1);
+        yield* onePassMore(loop, factoryDir);
+        yield* waitUntil("the second sweep", () => sweeps(paradev.calls) === 2);
+        assert.strictEqual(most, 1);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a sweep whose listing fails is a warning, and the next pass sweeps again", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let lists = 0;
+        const paradev = newParadev();
+        paradev.cloudList = Effect.sync(() => (lists++ === 0 ? "No active organization" : null));
+        const { loop, factoryDir, logs } = yield* started(named, noGhProcess, {}, paradev);
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* waitUntil("the failed sweep's warning", () =>
+          logs.some((line) => line.startsWith("the cloud orphan sweep failed")),
+        );
+        yield* onePassMore(loop, factoryDir);
+        yield* waitUntil("the second sweep", () => lists === 2 && sweeps(paradev.calls) === 2);
+        const warnings = logs.filter((line) => line.startsWith("the cloud orphan sweep failed"));
+        assert.strictEqual(warnings.length, 1);
+        assert.include(warnings[0], "No active organization");
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
