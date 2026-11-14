@@ -325,6 +325,8 @@ const paradevAnswer = (paradev: FakeParadev, argv: ReadonlyArray<string>): RunRe
     default:
       if (argv[0] === "pages" && paradev.pages !== undefined) return paradev.pages(argv);
       if (argv[0] === "projects" && argv.includes("--host")) return reply(0, "[]");
+      // The placer's count of running agents: no workspace is running.
+      if (argv[0] === "snapshot") return reply(0, '{"workspaces":[]}');
       throw new Error(`the scripted superset got an unexpected call: ${argv.join(" ")}`);
   }
 };
@@ -4179,21 +4181,52 @@ describe("liveWorld: the hosts", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("a reload goes on placing through the one placer, so a launch in flight before it still counts", () =>
+  it.effect("a reload keeps the one placer, its launches in flight and the last project listing, on the new machine config", () =>
     Effect.scoped(
       Effect.gen(function* () {
+        const placers: Array<Parameters<NonNullable<RuntimeOptions["onPlacer"]>>[0]> = [];
         const worlds: Array<PassWorld> = [];
-        const { loop, factoryDir } = yield* started(
-          configFor([["a/b", "/b"]], "/gh", HOSTS),
+        // a/b lists no host, and this Mac's one slot is below the core's two: placement checks it.
+        const before = configFor([["a/b", "/b"]], "/gh", `${HOSTS}local:\n  max_runs: 1\n`).replace(
+          "max_concurrent_runs: 1",
+          "max_concurrent_runs: 2",
+        );
+        const after = before.replace("path: /b\n", "path: /b\n    hosts:\n      - id: h1\n        path: /srv/b\n");
+        const { loop, factoryDir, write, logLayer, paradev } = yield* started(
+          before,
           noGhProcess,
-          { ssh: healthy, onWorld: (world) => worlds.push(world) },
+          { ssh: healthy, onPlacer: (placer) => placers.push(placer), onWorld: (world) => worlds.push(world) },
           newParadev(),
         );
         yield* idleAfter(loop, factoryDir, 1);
-        yield* loop.reload;
+        const request = (n: number) => ({
+          commandId: `launch-${n}`,
+          projectId: A_B_PROJECT.id,
+          title: "t",
+          baseRef: "main",
+          message: "m",
+          model: { instanceId: "claude", model: "opus" },
+        });
+        const placer = placers[0]!;
+        placer.beginPass({ localHeld: null, proxy: null });
+        // The first launch takes this Mac's one slot and stays in flight.
+        assert.deepStrictEqual(yield* placer.place(request(1)), { kind: "local" });
+        // The reload adds a host to a/b; the next listing fails, so only the kept listing knows a/b's project.
+        paradev.listDown = "PARADEV_OFFLINE";
+        yield* write(after);
+        yield* loop.reload.pipe(Effect.provide(logLayer));
+        assert.strictEqual(placers.length, 1);
         assert.strictEqual(worlds.length, 2);
-        // A gate fiber from the first world and a pass of the second place through the same placer.
-        assert.strictEqual(worlds[1]!.beginPlacement, worlds[0]!.beginPlacement);
+        yield* idleAfter(loop, factoryDir, 2);
+        worlds[1]!.beginPlacement({ localHeld: null, proxy: null });
+        const refused = yield* placer.place(request(2)).pipe(Effect.flip);
+        assert.strictEqual(refused._tag, "FactoryNoTargetHasRoom");
+        // The host of the new config is a candidate for a/b, and the launch in flight still holds this Mac's slot.
+        const drops = eventsOf(factoryDir, "placement").map((entry) => entry.data);
+        assert.deepStrictEqual(drops, [
+          { repo: "a/b", target: "local", reason: "slots full: 1 of 1 running" },
+          { repo: "a/b", target: "mini", reason: "not ready: not checked yet since the config load" },
+        ]);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
