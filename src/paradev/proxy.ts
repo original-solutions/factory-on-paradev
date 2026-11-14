@@ -41,15 +41,16 @@ export const checkProxy = (
     Effect.catch((reason) => Effect.succeed<ProxyAnswer>({ kind: "down", reason })),
   );
 
-/** The real call: no auth header, ever, and a redirect is an answer, not something to follow. */
+/**
+ * The real call: no auth header, ever, and a redirect is an answer, not something to follow. The
+ * request is aborted when the effect is interrupted, so `checkProxy`'s timeout is the only one.
+ */
 export const liveProxyGet: ProxyGet = (url) =>
   Effect.tryPromise({
-    try: async () => {
-      const response = await fetch(url, {
-        method: "GET",
-        redirect: "manual",
-        signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
-      });
+    try: async (signal) => {
+      const response = await fetch(url, { method: "GET", redirect: "manual", signal });
+      // Only the status is read: let go of the connection rather than wait on a body.
+      await response.body?.cancel();
       return response.status;
     },
     catch: (error) => (error instanceof Error ? error.message : String(error)),
