@@ -4202,6 +4202,22 @@ describe("runningByTarget and runningThreads, per target (#55)", () => {
     }),
   );
 
+  it.effect("counts a thread against the host it ran on, not against another host that reads the same snapshot", () =>
+    Effect.gen(function* () {
+      const other = "0123456789abcdef0123456789abcdef";
+      const hosts = [...HOSTS, { id: other, name: "other-mac", ssh: "tomk@other-mac" }] as const;
+      const otherStep: Step = { argv: ["snapshot", "--host", other], fixture: "snapshot-host-after-restart" };
+      const t = rig([localStep, hostStep, otherStep], { config: { hosts } });
+      // The record is on the first host only; both hosts' snapshots show its workspace.
+      yield* seed(t.data, hostRecord());
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 0 },
+        { target: { kind: "host", machineId: HOST }, running: 1 },
+        { target: { kind: "host", machineId: other }, running: 0 },
+      ]);
+    }),
+  );
+
   it.effect("a host that cannot be read is null and left out of the sum", () =>
     Effect.gen(function* () {
       const offline: Step = { argv: ["snapshot", "--host", HOST], fixture: "snapshot-host-offline" };

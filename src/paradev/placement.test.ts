@@ -85,6 +85,15 @@ describe("choosePlacement", () => {
     });
   });
 
+  it("does not skip a host at exactly max_load_per_core", () => {
+    const placed = choosePlacement([host("a", { load: load(1), maxLoadPerCore: 1 })]);
+    assert.deepStrictEqual(placed, {
+      kind: "placed",
+      target: { kind: "host", machineId: "a", path: "/srv/a" },
+      dropped: [],
+    });
+  });
+
   it("does not limit a host whose max_load_per_core is 0", () => {
     const placed = choosePlacement([host("a", { load: load(30), maxLoadPerCore: 0 })]);
     assert.strictEqual(placed.kind, "placed");
