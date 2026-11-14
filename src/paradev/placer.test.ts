@@ -5,7 +5,7 @@ import type { HostConfig, MachineConfig, WatchedRepo } from "../config.ts";
 import type { MachineEvent } from "../ledger/events.ts";
 import type { Load } from "../load.ts";
 import { NoTargetHasRoom, type LaunchRequest } from "../sessions.ts";
-import { makePlacer } from "./placer.ts";
+import { makePlacer, PROXY_NOT_CHECKED } from "./placer.ts";
 import type { TargetCount } from "./sessions.ts";
 
 const HOST: HostConfig = { id: "h1", name: "mini", ssh: "me@mini", maxRuns: 1, maxLoadPerCore: 1 };
@@ -76,8 +76,11 @@ const setup = (
     { target: { kind: "host", machineId: "h1" }, running: 0 },
     { target: { kind: "cloud" }, running: 0 },
   ];
+  let current = options.machine ?? machine();
   const placer = makePlacer({
-    machine: options.machine ?? machine(),
+    get machine() {
+      return current;
+    },
     repoOfProject: (id) => BY_PROJECT[id] ?? null,
     hostLoads: new Map<string, Load | null>([["h1", options.hostLoad === undefined ? quiet : options.hostLoad]]),
     hostsNotReady: () => options.notReady ?? new Map(),
@@ -92,7 +95,11 @@ const setup = (
     }),
     record: (event) => Effect.sync(() => void events.push(event)),
   });
-  return { placer, reads, events };
+  /** A config reload: the placer reads `next` from now on. */
+  const reload = (next: MachineConfig): void => {
+    current = next;
+  };
+  return { placer, reads, events, reload };
 };
 
 /** The placement drops the machine log got, in order. */
@@ -344,6 +351,21 @@ describe("placer", () => {
         environmentId: "env-1",
         machineSize: "small",
       });
+    }),
+  );
+
+  it.effect("cloud takes no launch until a pass has checked the proxy: before the first pass, and again after a config load", () =>
+    Effect.gen(function* () {
+      const t = setup({ counts: [full({ kind: "local" }), full({ kind: "host", machineId: "h1" }), { target: { kind: "cloud" }, running: 0 }] });
+      const unchecked = { repo: "acme/wide", target: "cloud", reason: PROXY_NOT_CHECKED };
+      assert.instanceOf(yield* t.placer.place(request("wide", 1)).pipe(Effect.flip), NoTargetHasRoom);
+      assert.deepStrictEqual(drops(t.events).filter((e) => e.target === "cloud"), [unchecked]);
+      t.placer.beginPass({ localHeld: null, proxy: null });
+      assert.strictEqual((yield* t.placer.place(request("wide", 2))).kind, "cloud");
+      t.reload(machine());
+      t.events.length = 0;
+      assert.instanceOf(yield* t.placer.place(request("wide", 3)).pipe(Effect.flip), NoTargetHasRoom);
+      assert.deepStrictEqual(drops(t.events).filter((e) => e.target === "cloud"), [unchecked]);
     }),
   );
 
