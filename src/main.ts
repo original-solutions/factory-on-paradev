@@ -321,6 +321,11 @@ export interface LiveGate {
   readonly wake: Effect.Effect<void>;
   /** The factory's scope: a gate still running when it closes is interrupted, and its cleanup runs. */
   readonly scope: Scope.Scope;
+  /**
+   * Whether a self-update is staged. No gate starts then, so the ones in flight end and the
+   * restart into the update fires at a pass end. Default: none is.
+   */
+  readonly updateStaged?: () => boolean;
   /** How the machine's load is read. Default `os.loadavg`; a test passes the load it needs. */
   readonly readLoad?: () => Load;
   /** How a host is read over ssh. Default the `ssh` binary; a test passes the answers it needs. */
@@ -601,6 +606,8 @@ export const liveWorld = (
    */
   const startGate = Effect.fn("Factory.startGate")(function* (repo: Repo, run: RunId) {
     const id = runIdToString(run);
+    // A staged update waits for a pass end with no gate running: starting one would put that off.
+    if (live.updateStaged?.() === true) return { kind: "draining" } as const;
     if (gating.size >= machine.maxConcurrentGates && !(yield* conflicting(repo, run))) {
       return { kind: "queued", running: gating.size, max: machine.maxConcurrentGates } as const;
     }
@@ -1105,10 +1112,10 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       );
     }
     // The self-update goes beside the pass too, once per start: it reads the tags every ten
-    // minutes, on the config of the first pass.
+    // minutes, and `self_update` from the config current at each read, so a reload turns it off.
     if (!updating) {
       updating = true;
-      yield* selfUpdate.run(current.machine.selfUpdate).pipe(
+      yield* selfUpdate.run(() => state.current?.machine.selfUpdate ?? false).pipe(
         Effect.provideService(FactoryProcess, process),
         Effect.interruptible,
         Effect.forkIn(scope),
@@ -1265,6 +1272,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         gate,
         wake: Effect.suspend(() => state.loop?.wake ?? Effect.void),
         scope,
+        updateStaged: selfUpdate.staged,
         ...(options.readLoad !== undefined && { readLoad: options.readLoad }),
         ...(options.ssh !== undefined && { ssh: options.ssh }),
         ...(options.proxyGet !== undefined && { proxyGet: options.proxyGet }),

@@ -1,14 +1,17 @@
 // @effect-diagnostics nodeBuiltinImport:off - the updater reads package.json and places a staged tree under versions/, as install does.
 /**
  * The runner installs a newer release of itself. Ten minutes after start, and every ten minutes
- * after, it reads its repo's `v*` tags. A tag higher than the running version is cloned, given its
- * runtime dependencies and smoke-run under `versions/`, then placed with install's own `stage` and
- * `swapIn`, so `current` points at it. After the next pass that ends with no gate running, the
- * updater completes {@link SelfUpdate.stopped}; `run` in `bin.ts` waits on it, so the runner exits
- * 0 by the normal path and launchd's `KeepAlive` starts it again on `current/src/bin.ts`.
+ * after, it reads its repo's `v*` tags. A tag higher than the running version, and on the repo's
+ * default branch, is cloned, given its runtime dependencies and smoke-run under `versions/`, then
+ * placed with install's own `stage` and `place`, so `versions/X.Y.Z` holds it while `current` still
+ * points at the running version. From then on no gate starts. After the next pass that ends with no
+ * gate running, the updater points `current` at the new version and completes
+ * {@link SelfUpdate.stopped}; `run` in `bin.ts` waits on it, so the runner exits 0 by the normal
+ * path and launchd's `KeepAlive` starts it again on `current/src/bin.ts`.
  *
  * Only a runner that `install` placed under `versions/` updates itself: a checkout run by hand is
- * never replaced under a developer.
+ * never replaced under a developer. `self_update` is read from the loaded config before each tag
+ * read and before the restart, so a reload that turns it off stops the update where it is.
  */
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -23,16 +26,15 @@ import {
   HARDENED_GIT_ENV,
   fetchCredentialEnv,
 } from "./gitHardening.ts";
-import { stage, swapIn } from "./install.ts";
+import { place, pointCurrent, stage } from "./install.ts";
 import { installPathsOf, packageVersion } from "./paths.ts";
 import { FactoryProcess, type RunInput } from "./process.ts";
-import { CONFIG_NOT_LOADED_REASON } from "./status.ts";
 
 /** How long after start the first tag read waits, and the wait between reads. */
 export const CHECK_INTERVAL = Duration.minutes(10);
 /** The limit of each staging step: the clone, `npm ci` and the smoke. */
 const STEP_TIMEOUT_MS = 10 * 60 * 1000;
-/** The limit of the tag read, as the tracker gives a `gh` call. */
+/** The limit of each `gh` call, as the tracker gives one. */
 const GH_TIMEOUT_MS = 60_000;
 /** Enough for thousands of tag names; a longer list is a failed read, not a short one. */
 const REFS_BYTES = 1024 * 1024;
@@ -42,8 +44,11 @@ const SMOKE_BYTES = 16 * 1024 * 1024;
 const WARN_TAIL_CHARS = 2_000;
 /** The temp clone of a tag being staged: `versions/.clone-<version>-<random>`. */
 const CLONE_PREFIX = ".clone-";
+/** What GitHub's compare of the tag with the default branch says when the tag is on it. */
+const ON_BRANCH = new Set(["identical", "ahead"]);
 const TAG = /^refs\/tags\/v(\d+)\.(\d+)\.(\d+)$/;
 const REPOSITORY = /^github:([^/\s]+)\/([^/\s]+)$/;
+const OFF_LINE = "self-update off: self_update is false";
 
 type Version = readonly [number, number, number];
 
@@ -95,6 +100,8 @@ const tailOf = (text: string): string => {
   return trimmed.length > WARN_TAIL_CHARS ? `…${trimmed.slice(-WARN_TAIL_CHARS)}` : trimmed;
 };
 
+const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
 export interface SelfUpdateOptions {
   /** HOME: `versions/` and `current` are under it, as `install` put them. */
   readonly home: string;
@@ -115,22 +122,42 @@ export interface SelfUpdateOptions {
 
 export interface SelfUpdate {
   /**
-   * The check loop, forked once per start. With `enabled` false, or a package root that is not an
+   * The check loop, forked once per start. `enabled` is `self_update` of the config loaded now,
+   * read before each tag read and before the restart. With a package root that is not an
    * installed version, it logs one line and ends.
    */
-  readonly run: (enabled: boolean) => Effect.Effect<void, never, FactoryProcess>;
-  /** Run after every pass: once an update is staged and no gate runs, completes `stopped`. */
+  readonly run: (enabled: () => boolean) => Effect.Effect<void, never, FactoryProcess>;
+  /**
+   * Run after every pass: once an update is staged, `enabled` still holds and no gate runs, it
+   * points `current` at the update and completes `stopped`.
+   */
   readonly afterPass: Effect.Effect<void>;
   /** Completed once, when the runner should end so launchd starts the staged version. */
   readonly stopped: Deferred.Deferred<void>;
+  /** Whether an update is staged: no gate starts then, so the restart is not put off. */
+  readonly staged: () => boolean;
 }
 
 export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: SelfUpdateOptions) {
   const stopped = yield* Deferred.make<void>();
   const { versions } = installPathsOf(options.home);
-  let staged: string | null = null;
+  let staged: { readonly tag: string; readonly version: string } | null = null;
   /** Tags whose staging failed; not tried again until the runner restarts. */
   const failed = new Set<string>();
+  let enabled: () => boolean = () => false;
+  /** Whether the off line was logged since the key was last seen on. */
+  let offSaid = false;
+
+  /** `self_update` now; the first read that finds it off logs one line, until it is on again. */
+  const enabledNow = Effect.suspend(() => {
+    if (enabled()) {
+      offSaid = false;
+      return Effect.succeed(true);
+    }
+    if (offSaid) return Effect.succeed(false);
+    offSaid = true;
+    return Effect.logInfo(OFF_LINE).pipe(Effect.as(false));
+  });
 
   /** One staging step: its output when it exited 0, else what the warning says of it. */
   const step = (
@@ -148,8 +175,9 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
       );
       if (done._tag === "Failure") return { failed: `${name} did not start: ${String(done.failure.cause)}` };
       const output = `${done.success.tail}\n${done.success.stderrTail}`;
+      const minutes = (input.timeoutMs ?? STEP_TIMEOUT_MS) / 60_000;
       if (done.success.timedOut) {
-        return { failed: `${name} timed out after ${STEP_TIMEOUT_MS / 60_000} minutes: ${tailOf(output)}` };
+        return { failed: `${name} timed out after ${minutes} minute${minutes === 1 ? "" : "s"}: ${tailOf(output)}` };
       }
       if (done.success.exitCode !== 0) {
         return { failed: `${name} exited ${done.success.exitCode ?? "by a signal"}: ${tailOf(output)}` };
@@ -157,91 +185,128 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
       return { ok: done.success.tail, truncated: done.success.tailTruncated };
     });
 
+  /** A `gh api` read as the factory's login, within the tracker's limit. */
+  const ghApi = (name: string, path: string, jq: string) =>
+    step(name, {
+      command: "gh",
+      args: ["api", path, "--jq", jq],
+      env: { GH_CONFIG_DIR: options.ghConfigDir() },
+      timeoutMs: GH_TIMEOUT_MS,
+      separateStderr: true,
+    });
+
   /**
-   * Clones `tag`, checks the clone is the tag, installs and smokes it, and places it; a failure
-   * warns once and marks the tag. A runner stopped part way leaves its clone for the next start.
+   * Checks the tag is on the default branch, clones it, checks the clone is the tag, installs and
+   * smokes it, and places it under `versions/`; a failure warns once and marks the tag. A runner
+   * stopped part way leaves its clone for the next start.
    */
   const stageTag = (repository: Repository, version: string, running: string) =>
     Effect.gen(function* () {
       const tag = `v${version}`;
-      NodeFS.mkdirSync(versions, { recursive: true });
-      const clone = NodeFS.mkdtempSync(NodePath.join(versions, `${CLONE_PREFIX}${version}-`));
+      const repo = `repos/${repository.owner}/${repository.repo}`;
       const fail = (why: string) =>
         Effect.sync(() => {
           failed.add(tag);
-          NodeFS.rmSync(clone, { recursive: true, force: true });
         }).pipe(Effect.andThen(Effect.logWarning(`update ${tag} not staged: ${why}`)));
 
-      const cloned = yield* step("git clone", {
-        command: "git",
-        args: [
-          ...FETCH_CREDENTIAL_FLAGS,
-          "clone",
-          "--quiet",
-          "--depth",
-          "1",
-          "--branch",
-          tag,
-          `https://github.com/${repository.owner}/${repository.repo}.git`,
-          clone,
-        ],
-        env: { ...HARDENED_GIT_ENV, ...fetchCredentialEnv(options.ghConfigDir()) },
-      });
-      if ("failed" in cloned) return yield* fail(cloned.failed);
-      // `--branch` takes a branch of the same name over the tag; only the tag is a release.
-      const tagged = yield* step("tag check", {
-        command: "git",
-        args: ["-C", clone, "tag", "--points-at", "HEAD"],
-        env: HARDENED_GIT_ENV,
-        separateStderr: true,
-      });
-      if ("failed" in tagged) return yield* fail(tagged.failed);
-      if (!tagged.ok.split("\n").some((line) => line.trim() === tag)) {
-        return yield* fail(`the clone's HEAD is not the tag ${tag}: a branch of that name was cloned`);
+      // A release is a tag on the default branch: whoever can push a tag could otherwise run any
+      // commit on every runner, with the factory's login.
+      const branch = yield* ghApi("default branch read", repo, ".default_branch");
+      if ("failed" in branch) return yield* fail(branch.failed);
+      const defaultBranch = branch.ok.trim();
+      const compared = yield* ghApi("branch check", `${repo}/compare/${tag}...${defaultBranch}`, ".status");
+      if ("failed" in compared) return yield* fail(compared.failed);
+      const status = compared.ok.trim();
+      if (!ON_BRANCH.has(status)) {
+        return yield* fail(`${tag} is not on ${defaultBranch}: GitHub compares them as ${status || "nothing"}`);
       }
 
-      const nodeDir = NodePath.dirname(options.execPath);
-      const installed = yield* step("npm ci", {
-        command: "npm",
-        args: ["ci", "--omit=dev"],
-        cwd: clone,
-        env: { PATH: [nodeDir, globalThis.process.env["PATH"] ?? "/usr/bin:/bin"].join(":") },
-      });
-      if ("failed" in installed) return yield* fail(installed.failed);
+      NodeFS.mkdirSync(versions, { recursive: true });
+      const clone = NodeFS.mkdtempSync(NodePath.join(versions, `${CLONE_PREFIX}${version}-`));
+      const failClone = (why: string) =>
+        Effect.sync(() => {
+          NodeFS.rmSync(clone, { recursive: true, force: true });
+        }).pipe(Effect.andThen(fail(why)));
 
-      const smoked = yield* step("smoke", {
-        command: options.execPath,
-        args: [NodePath.join(clone, "src", "bin.ts"), "status", "--json"],
-        env: { FACTORY_RUNNER_HOME: options.dataDir },
-        separateStderr: true,
-        tailBytes: SMOKE_BYTES,
-      });
-      if ("failed" in smoked) return yield* fail(smoked.failed);
-      if (smoked.truncated) return yield* fail(`smoke: status --json printed longer than ${SMOKE_BYTES} bytes`);
-      let report: { version?: unknown; reason?: unknown } = {};
-      try {
-        report = JSON.parse(smoked.ok) as typeof report;
-      } catch {
-        // Not JSON: the version check below says so.
-      }
-      if (report.version !== version) {
-        return yield* fail(`smoke: status --json did not report version ${version}: ${tailOf(smoked.ok)}`);
-      }
-      // The staged tree must read this machine's config: a runner that cannot stays idle, and an
-      // idle runner runs no pass, so it would never update past itself.
-      if (report.reason === CONFIG_NOT_LOADED_REASON) {
-        return yield* fail(`smoke: status --json says ${CONFIG_NOT_LOADED_REASON} under ${tag}`);
-      }
+      return yield* Effect.gen(function* () {
+        const cloned = yield* step("git clone", {
+          command: "git",
+          args: [
+            ...FETCH_CREDENTIAL_FLAGS,
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            "--branch",
+            tag,
+            `https://github.com/${repository.owner}/${repository.repo}.git`,
+            clone,
+          ],
+          env: { ...HARDENED_GIT_ENV, ...fetchCredentialEnv(options.ghConfigDir()) },
+        });
+        if ("failed" in cloned) return yield* failClone(cloned.failed);
+        // `--branch` takes a branch of the same name over the tag; only the tag is a release.
+        const tagged = yield* step("tag check", {
+          command: "git",
+          args: ["-C", clone, "tag", "--points-at", "HEAD"],
+          env: HARDENED_GIT_ENV,
+          separateStderr: true,
+        });
+        if ("failed" in tagged) return yield* failClone(tagged.failed);
+        if (!tagged.ok.split("\n").some((line) => line.trim() === tag)) {
+          return yield* failClone(`the clone's HEAD is not the tag ${tag}: a branch of that name was cloned`);
+        }
 
-      try {
-        const copy = stage({ home: options.home, packageRoot: clone }, version);
-        swapIn({ home: options.home }, version, copy);
-      } catch (error) {
-        return yield* fail(`placing it failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      NodeFS.rmSync(clone, { recursive: true, force: true });
-      staged = tag;
-      yield* Effect.logInfo(`update staged: ${tag} (running ${running}); restarting when no gate runs`);
+        const nodeDir = NodePath.dirname(options.execPath);
+        const installed = yield* step("npm ci", {
+          command: "npm",
+          args: ["ci", "--omit=dev"],
+          cwd: clone,
+          env: { PATH: [nodeDir, globalThis.process.env["PATH"] ?? "/usr/bin:/bin"].join(":") },
+        });
+        if ("failed" in installed) return yield* failClone(installed.failed);
+
+        const smoked = yield* step("smoke", {
+          command: options.execPath,
+          args: [NodePath.join(clone, "src", "bin.ts"), "status", "--json"],
+          env: { FACTORY_RUNNER_HOME: options.dataDir },
+          separateStderr: true,
+          tailBytes: SMOKE_BYTES,
+        });
+        if ("failed" in smoked) return yield* failClone(smoked.failed);
+        if (smoked.truncated) return yield* failClone(`smoke: status --json printed longer than ${SMOKE_BYTES} bytes`);
+        let report: { state?: unknown; version?: unknown; reason?: unknown } = {};
+        try {
+          report = JSON.parse(smoked.ok) as typeof report;
+        } catch {
+          // Not JSON: the version check below says so.
+        }
+        if (report.version !== version) {
+          return yield* failClone(`smoke: status --json did not report version ${version}: ${tailOf(smoked.ok)}`);
+        }
+        // The staged tree must see this runner (it holds the lock) and read this machine's config,
+        // as `status` under the running version does: a tree that reports idle would stay idle
+        // after the restart, and an idle runner runs no pass, so it would never update past itself.
+        if (report.state !== "running") {
+          const reason = typeof report.reason === "string" ? ` (${report.reason})` : "";
+          return yield* failClone(`smoke: status --json says the runner is ${String(report.state)}${reason} under ${tag}`);
+        }
+
+        let copy: string | null = null;
+        try {
+          copy = stage({ home: options.home, packageRoot: clone }, version);
+          place({ home: options.home }, version, copy);
+        } catch (error) {
+          if (copy !== null) NodeFS.rmSync(copy, { recursive: true, force: true });
+          return yield* failClone(`placing it failed: ${messageOf(error)}`);
+        }
+        NodeFS.rmSync(clone, { recursive: true, force: true });
+        staged = { tag, version };
+        yield* Effect.logInfo(`update staged: ${tag} (running ${running}); restarting when no gate runs`);
+      }).pipe(
+        // A step that throws (an EMFILE from the spawn) is a failed step, not a clone left behind.
+        Effect.catchDefect((defect) => failClone(`a step threw: ${messageOf(defect)}`)),
+      );
     });
 
   /** One period: read the tags and stage the highest when it is newer than the running version. */
@@ -278,8 +343,8 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
       yield* stageTag(repository, version, runningText);
     });
 
-  const run = Effect.fn("SelfUpdate.run")(function* (enabled: boolean) {
-    if (!enabled) return yield* Effect.logInfo("self-update off: self_update is false");
+  const run = Effect.fn("SelfUpdate.run")(function* (isEnabled: () => boolean) {
+    enabled = isEnabled;
     if (!isUnder(options.packageRoot, versions)) {
       return yield* Effect.logInfo(
         `self-update off: ${options.packageRoot} is not an installed version under ${versions}`,
@@ -305,29 +370,37 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
         `self-update off: ${options.packageRoot}/package.json needs a "github:<owner>/<repo>" repository and an X.Y.Z version`,
       );
     }
-    while (staged === null) {
+    yield* enabledNow;
+    // The loop outlives a staged update: a placement that fails at the restart clears it, and the
+    // next period reads the tags again.
+    while (true) {
       yield* Effect.sleep(CHECK_INTERVAL);
+      if (staged !== null || !(yield* enabledNow)) continue;
       yield* check(repository, running, runningText).pipe(
         Effect.catchDefect((defect) =>
-          Effect.logWarning(`self-update check failed: ${defect instanceof Error ? defect.message : String(defect)}`),
+          Effect.logWarning(`self-update check failed: ${messageOf(defect)}`),
         ),
       );
     }
   });
 
-  const afterPass = Effect.suspend(() => {
-    if (staged === null || options.gatesRunning() > 0 || gateLocksHeld(options.dataDir) > 0) {
-      return Effect.void;
+  const afterPass = Effect.gen(function* () {
+    if (staged === null) return;
+    const { tag, version } = staged;
+    if (!(yield* enabledNow)) return;
+    if (options.gatesRunning() > 0 || gateLocksHeld(options.dataDir) > 0) return;
+    if (yield* Deferred.isDone(stopped)) return;
+    try {
+      pointCurrent({ home: options.home }, version);
+    } catch (error) {
+      // The placed tree stays under versions/; the tag is not tried again until a restart.
+      staged = null;
+      failed.add(tag);
+      return yield* Effect.logWarning(`update ${tag} not placed: pointing current at it failed: ${messageOf(error)}`);
     }
-    const tag = staged;
-    return Deferred.isDone(stopped).pipe(
-      Effect.flatMap((done) =>
-        done
-          ? Effect.void
-          : Effect.logInfo(`restarting into ${tag}`).pipe(Effect.andThen(Deferred.succeed(stopped, undefined))),
-      ),
-    );
+    yield* Effect.logInfo(`restarting into ${tag}`);
+    yield* Deferred.succeed(stopped, undefined);
   });
 
-  return { run, afterPass, stopped } satisfies SelfUpdate;
+  return { run, afterPass, stopped, staged: () => staged !== null } satisfies SelfUpdate;
 });

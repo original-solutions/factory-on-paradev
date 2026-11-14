@@ -4267,6 +4267,22 @@ describe("following a building run", () => {
     }),
   );
 
+  it.effect("a building run whose gate waits for the runner's restart into a staged update says so", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(40, BUILDING, REPO, true);
+      fake.advances[`${REPO}#40`] = [
+        { kind: "ready-for-gate", pr: 3, prUrl: "https://github.com/rawphp/softfac/pull/3" },
+      ];
+      fake.gateStarts[`${REPO}#40`] = { kind: "draining" };
+      const { lines } = yield* pass(fake, [REPO], 3);
+      assert.equal(
+        runLine(lines, `${REPO}#40 `),
+        `${REPO}#40 building: session finished, gate queued: the runner restarts into a staged update once no gate runs`,
+      );
+    }),
+  );
+
   it.effect("a session that reports its pull request has its gate started in the same pass", () =>
     Effect.gen(function* () {
       const fake = new Fake();

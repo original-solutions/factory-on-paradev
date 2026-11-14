@@ -2920,6 +2920,44 @@ archive: (threadId) => Effect.sync(() => void archived.push(threadId)),
     }),
   );
 
+  it.effect("no gate starts while a self-update is staged, so the ones in flight end and the restart fires", () =>
+    Effect.gen(function* () {
+      const dataDir = tempDir();
+      const run = prOpenRun(dataDir);
+      const seen: Array<ReadonlyArray<string>> = [];
+      const gh: FactoryProcess["Service"] = {
+        run: (input) => {
+          seen.push(input.args ?? []);
+          return answered(PR_VIEW("MERGED", HEAD));
+        },
+      };
+      let staged = true;
+      const world = liveWorld(
+        background,
+        dataDir,
+        gh,
+        NodeServices.layer,
+        sessionsOf({}),
+        () => 1_000,
+        "mac-mini",
+        noAttention,
+        {
+          gate: { run: () => Effect.die("no gate runs while an update is staged") },
+          wake: Effect.void,
+          scope: yield* Scope.make(),
+          updateStaged: () => staged,
+        },
+      );
+      assert.deepStrictEqual(yield* world.gate(backgroundRepo, run), { kind: "draining" });
+      assert.strictEqual(world.gateRunning(run), false);
+      assert.deepStrictEqual(seen, []);
+      // Once nothing is staged (the placement failed), gates start again.
+      staged = false;
+      assert.deepStrictEqual(yield* world.gate(backgroundRepo, run), { kind: "started" });
+      yield* waitUntil("the gate to end", () => !world.gateRunning(run));
+    }),
+  );
+
   it.effect("a re-gate whose relaunch finds no room logs the wait and writes no error to the run", () =>
     Effect.gen(function* () {
       const dataDir = tempDir();
@@ -4238,14 +4276,14 @@ describe("self-update wiring", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const stop = yield* Deferred.make<void>();
-        const runs: Array<boolean> = [];
+        const runs: Array<() => boolean> = [];
         let afterPasses = 0;
         const made: Array<SelfUpdateOptions> = [];
         const selfUpdate = (options: SelfUpdateOptions) =>
           Effect.sync(() => {
             made.push(options);
             return {
-              run: (enabled: boolean) =>
+              run: (enabled: () => boolean) =>
                 Effect.sync(() => {
                   runs.push(enabled);
                 }),
@@ -4253,18 +4291,25 @@ describe("self-update wiring", () => {
                 afterPasses += 1;
               }),
               stopped: stop,
+              staged: () => false,
             };
           });
         const shared = newShared();
-        const { loop, factoryDir } = yield* started(`${VALID}self_update: false\n`, noGhProcess, {
+        const { loop, factoryDir, write } = yield* started(`${VALID}self_update: false\n`, noGhProcess, {
           selfUpdate,
           shared,
         });
         yield* idleAfter(loop, factoryDir, 1);
         yield* onePassMore(loop, factoryDir);
-        assert.deepStrictEqual(runs, [false]);
+        assert.strictEqual(runs.length, 1);
         assert.strictEqual(afterPasses, 2);
         assert.strictEqual(made.length, 1);
+        // `enabled` reads the config loaded now: a reload that changes the key changes the answer.
+        assert.strictEqual(runs[0]!(), false);
+        yield* write(`${VALID}self_update: true\n`);
+        yield* loop.reload;
+        assert.strictEqual(runs[0]!(), true);
+        assert.strictEqual(runs.length, 1);
         const options = made[0]!;
         assert.strictEqual(options.dataDir, factoryDir);
         assert.strictEqual(options.ghConfigDir(), "/gh");

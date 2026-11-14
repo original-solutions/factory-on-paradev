@@ -194,29 +194,44 @@ export const stage = (
   const temp = NodePath.join(versions, `.${version}.${process.pid}.tmp`);
   NodeFS.rmSync(temp, { recursive: true, force: true });
   NodeFS.mkdirSync(temp);
-  for (const entry of PACKAGE_ENTRIES) {
-    const from = NodePath.join(env.packageRoot, entry);
-    if (!exists(from)) continue;
-    NodeFS.cpSync(from, NodePath.join(temp, entry), {
-      recursive: true,
-      verbatimSymlinks: true,
-    });
+  try {
+    for (const entry of PACKAGE_ENTRIES) {
+      const from = NodePath.join(env.packageRoot, entry);
+      if (!exists(from)) continue;
+      NodeFS.cpSync(from, NodePath.join(temp, entry), {
+        recursive: true,
+        verbatimSymlinks: true,
+      });
+    }
+  } catch (error) {
+    // A copy that failed part way is not left beside the versions.
+    NodeFS.rmSync(temp, { recursive: true, force: true });
+    throw error;
   }
   return temp;
 };
 
-/** Puts the staged copy (when there is one) at `versions/<version>` and points `current` at it. */
-export const swapIn = (env: Pick<InstallEnv, "home">, version: string, staged: string | null): void => {
+/** Puts the staged copy (when there is one) at `versions/<version>`; `current` is not touched. */
+export const place = (env: Pick<InstallEnv, "home">, version: string, staged: string | null): void => {
+  if (staged === null) return;
+  const target = NodePath.join(installPathsOf(env.home).versions, version);
+  NodeFS.rmSync(target, { recursive: true, force: true });
+  NodeFS.renameSync(staged, target);
+};
+
+/** Points `current` at `versions/<version>`, in one rename over the old link. */
+export const pointCurrent = (env: Pick<InstallEnv, "home">, version: string): void => {
   const { versions, current } = installPathsOf(env.home);
-  const target = NodePath.join(versions, version);
-  if (staged !== null) {
-    NodeFS.rmSync(target, { recursive: true, force: true });
-    NodeFS.renameSync(staged, target);
-  }
   const link = `${current}.${process.pid}.tmp`;
   NodeFS.rmSync(link, { force: true });
-  NodeFS.symlinkSync(target, link);
+  NodeFS.symlinkSync(NodePath.join(versions, version), link);
   NodeFS.renameSync(link, current);
+};
+
+/** Puts the staged copy (when there is one) at `versions/<version>` and points `current` at it. */
+export const swapIn = (env: Pick<InstallEnv, "home">, version: string, staged: string | null): void => {
+  place(env, version, staged);
+  pointCurrent(env, version);
 };
 
 /** The log from `offset` on; all of it when the file is now shorter, as after a rotation. */
