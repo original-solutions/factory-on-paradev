@@ -198,10 +198,20 @@ const QUOTED = `'${QUOTED_TEXT}'`;
 const WORD = "\u0000word";
 /** In a builder's text, stands for a name of letters, digits and `-`, unquoted. */
 const NAME = "\u0000name";
+/** In a builder's text, stands for a branch name as `isSafeBranchName` takes it: never an option, never `..`. */
+const BRANCH = "\u0000branch";
+/** In a builder's text, stands for a commit id. */
+const COMMIT = "\u0000commit";
 
-/** The shape of a builder's text: the text as it is, but {@link WORD} and {@link NAME} match their kind. */
+/** The shape of a builder's text: the text as it is, but each placeholder matches its kind. */
 const shapeOf = (text: string): RegExp =>
-  new RegExp(`^${escapeRegExp(text).replaceAll(WORD, QUOTED_TEXT).replaceAll(NAME, "[A-Za-z0-9-]+")}$`);
+  new RegExp(
+    `^${escapeRegExp(text)
+      .replaceAll(WORD, QUOTED_TEXT)
+      .replaceAll(NAME, "[A-Za-z0-9-]+")
+      .replaceAll(BRANCH, "(?!-)(?:[A-Za-z0-9/_-]|\\.(?!\\.))+")
+      .replaceAll(COMMIT, "(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")}$`,
+  );
 
 const CONSTANTS: ReadonlySet<string> = new Set([
   LOAD_COMMAND,
@@ -223,8 +233,8 @@ const SHAPES: ReadonlyArray<RegExp> = [
   hostGit(WORD, ["symbolic-ref", "-q", "--short", "HEAD"]),
   hostGit(WORD, ["rev-list", "--max-count=1", "HEAD", "--not", "--branches", "--remotes"]),
   hostGit(WORD, ["rev-list", "--max-count=1", "HEAD", "--not", `--exclude=${WORD}`, "--branches", `--exclude=*/${WORD}`, "--remotes"]),
-  hostGit(WORD, ["fetch", "--quiet", "origin", WORD]),
-  hostGit(WORD, ["reset", "--hard", "--no-recurse-submodules", "-q", WORD], ["-c", "submodule.recurse=false"]),
+  hostGit(WORD, ["fetch", "--quiet", "origin", BRANCH]),
+  hostGit(WORD, ["reset", "--hard", "--no-recurse-submodules", "-q", COMMIT], ["-c", "submodule.recurse=false"]),
   pathExists(WORD),
 ].map(shapeOf);
 
