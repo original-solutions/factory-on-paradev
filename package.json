@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "license": "MIT",
+  "repository": "github:original-solutions/factory-on-paradev",
   "engines": {
     "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
   },

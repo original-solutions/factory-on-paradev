@@ -9,12 +9,13 @@ import * as NodePath from "node:path";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { runCli, USAGE } from "./cli.ts";
 import type { InstallEnv } from "./install.ts";
-import { FactoryLayer } from "./main.ts";
+import { FactoryLayer, FactoryLoop } from "./main.ts";
 import * as Paths from "./paths.ts";
 import { runCommand } from "./runCommand.ts";
 import { takeRunnerLock } from "./runnerLock.ts";
@@ -46,7 +47,7 @@ const realInstallEnv = (): InstallEnv => {
   };
 };
 
-/** Takes the runner lock, then runs the factory until the process is told to stop. */
+/** Takes the runner lock, then runs the factory until the process is told to stop or restarts into an update. */
 const run = Effect.gen(function* () {
   const { baseDir } = yield* Paths.FactoryPaths;
   const lock = yield* Effect.acquireRelease(
@@ -61,8 +62,10 @@ const run = Effect.gen(function* () {
       process.exitCode = 1;
     });
   }
-  yield* Layer.build(FactoryLayer);
-  return yield* Effect.never;
+  const factory = yield* Layer.build(FactoryLayer);
+  // Ends when the runner has staged an update and a pass ended with no gate running: the scope
+  // closes, the lock is released and the process exits 0, and launchd starts `current` again.
+  return yield* Context.get(factory, FactoryLoop).stopped;
 }).pipe(Effect.scoped, Effect.provide(Paths.layer), Effect.provide(NodeServices.layer));
 
 const [command, ...rest] = process.argv.slice(2);
