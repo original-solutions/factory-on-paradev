@@ -312,7 +312,7 @@ describe("checkHost: gh login", () => {
     machineOf([{ ...HOST, ...host }], repoHosts);
   const ghLines = (lines: ReadonlyArray<CheckLine>) => lines.filter((l) => l.check.startsWith("gh login"));
 
-  it("is ok when the token command exits 0 for the runner's login, the host's own key's login or both", async () => {
+  it("is ok when the token command exits 0 for the host's own gh_login, and only that login is checked", async () => {
     const w = world();
     w.ssh.set(ghTokenCheck("tomkaczocha"), ok());
     const h = { ...HOST, ghLogin: "tomkaczocha" };

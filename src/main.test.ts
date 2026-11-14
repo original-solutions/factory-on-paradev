@@ -4256,6 +4256,57 @@ describe("liveWorld: a model that cools down", () => {
   );
 });
 
+describe("liveWorld: the login a run acts as on each host", () => {
+  const hosts = ["h1", "h2", "h3"].map((id) => ({ id, name: id, ssh: `me@${id}`, maxRuns: 1, maxLoadPerCore: 1 }));
+  const started = (machine: MachineConfig, repo: Repo) =>
+    Effect.gen(function* () {
+      const world = liveWorld(
+        machine,
+        "/factory-test/data",
+        noGh,
+        NodeServices.layer,
+        stubSessions,
+        () => T0,
+        "mac-mini",
+        noAttention,
+        baseLive(yield* Scope.make()),
+      );
+      stub.on = true;
+      yield* Effect.ensuring(
+        world.start(repo, 7),
+        Effect.sync(() => {
+          stub.on = false;
+        }),
+      );
+      return startContexts.at(-1) as StartContext;
+    });
+
+  it.effect("the repo's override, else the host's gh_login, else the runner's, reach both contexts", () =>
+    Effect.gen(function* () {
+      const watched = {
+        ...baseRepo.watched,
+        hosts: [
+          { id: "h1", path: "/a" },
+          { id: "h2", path: "/b", ghLogin: "repo-bot" },
+          { id: "h3", path: "/c" },
+        ],
+      };
+      const repo: Repo = { ...baseRepo, watched };
+      const machine: MachineConfig = {
+        ...baseMachine,
+        repos: [watched],
+        hosts: [{ ...hosts[0]!, ghLogin: "tomkaczocha" }, { ...hosts[1]!, ghLogin: "host-bot" }, hosts[2]!],
+      };
+      const ctx = yield* started(machine, repo);
+      assert.deepStrictEqual([...ctx.hostLogins], [
+        ["h1", "tomkaczocha"],
+        ["h2", "repo-bot"],
+        ["h3", "rawphp"],
+      ]);
+    }),
+  );
+});
+
 describe("liveWorld: the sessions of runs, for threads on a broken worktree", () => {
   const tempDir = useTempDirs();
 

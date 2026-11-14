@@ -2853,6 +2853,11 @@ describe("start: the resume onto an open pull request of an earlier attempt", ()
       yield* startIn(dataDir, tracker, t3.sessions, { hostLogins: new Map([["h1", "tomkaczocha"]]) });
       assert.strictEqual(t3.launchRequests[0]!.baseRef, "t3code/abc");
       assert.ok(t3.launchRequests[0]!.message.includes(URL12));
+      const host = t3.launchRequests[0]!.hostMessage!("h1");
+      assert.ok(host.includes(URL12), host);
+      assert.ok(host.includes("Do not open another pull request"), host);
+      assert.ok(host.includes("You act on GitHub as tomkaczocha."), host);
+      assert.ok(host.includes("GH_TOKEN=$(gh auth token --user tomkaczocha)"), host);
     }),
   );
 
@@ -3009,6 +3014,10 @@ describe("start: an issue that names its base", () => {
           "Open the pull request against feature/x, not the repo's default base.",
         ),
         request.message,
+      );
+      assert.ok(
+        request.hostMessage!("h1").includes("Open the pull request against feature/x"),
+        request.hostMessage!("h1"),
       );
       assert.strictEqual(baseOf(dataDir), "feature/x");
     }),
