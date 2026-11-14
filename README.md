@@ -33,7 +33,7 @@ A release is a tag. `make release VERSION=0.1.0` runs the gate, bumps `package.j
 
 `make deploy` clones the highest `v*` tag, installs its runtime dependencies and runs its `factory-runner install`, which places it at `~/.local/share/factory-runner/versions/<version>/`, points `current` at it and reloads the LaunchAgent. `make deploy TAG=v0.1.0` installs that version instead, which is how to go back.
 
-A running runner with `self_update` on installs a new tag itself within about ten minutes and restarts between passes when no gate runs; `make deploy` is for the first install, for going back, and after a node or PATH change.
+A running runner with `self_update` on installs a new tag itself within about ten minutes and restarts between passes when no gate runs; `make deploy` is for the first install, for going back, and after a node or PATH change. To go back, set `self_update: false` in the machine config first: the older runner otherwise installs the newer tag again ten minutes after it starts.
 
 ## Not affiliated with Paradev
 

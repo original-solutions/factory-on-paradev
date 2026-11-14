@@ -35,8 +35,14 @@ const STEP_TIMEOUT_MS = 10 * 60 * 1000;
 const GH_TIMEOUT_MS = 60_000;
 /** Enough for thousands of tag names; a longer list is a failed read, not a short one. */
 const REFS_BYTES = 1024 * 1024;
+/** Room for the whole `status --json` of a busy data dir; a longer report fails the smoke. */
+const SMOKE_BYTES = 16 * 1024 * 1024;
+/** What `status --json` says when the machine config does not load under the staged tree. */
+const CONFIG_NOT_LOADED = "the machine config does not load";
 /** How much of a failed step's output its warning carries. */
 const WARN_TAIL_CHARS = 2_000;
+/** The temp clone of a tag being staged: `versions/.clone-<version>-<random>`. */
+const CLONE_PREFIX = ".clone-";
 const TAG = /^refs\/tags\/v(\d+)\.(\d+)\.(\d+)$/;
 const REPOSITORY = /^github:([^/\s]+)\/([^/\s]+)$/;
 
@@ -62,7 +68,12 @@ const highestTag = (refs: ReadonlyArray<string>): Version | null => {
 };
 
 /** `owner` and `repo` of the package's `"repository": "github:<owner>/<repo>"`. */
-const repositoryOf = (packageRoot: string): { readonly owner: string; readonly repo: string } | null => {
+interface Repository {
+  readonly owner: string;
+  readonly repo: string;
+}
+
+const repositoryOf = (packageRoot: string): Repository | null => {
   const json = JSON.parse(
     NodeFS.readFileSync(NodePath.join(packageRoot, "package.json"), "utf8"),
   ) as { repository?: unknown };
@@ -96,6 +107,11 @@ export interface SelfUpdateOptions {
   readonly execPath: string;
   /** The `gh` login directory of the current machine config. */
   readonly ghConfigDir: () => string;
+  /**
+   * Gate calls this process is running now. A gate holds its lock file only while an attempt
+   * runs, so the restart waits on both.
+   */
+  readonly gatesRunning: () => number;
 }
 
 export interface SelfUpdate {
@@ -104,7 +120,7 @@ export interface SelfUpdate {
    * installed version, it logs one line and ends.
    */
   readonly run: (enabled: boolean) => Effect.Effect<void, never, FactoryProcess>;
-  /** Run after every pass: once an update is staged and no gate lock is held, completes `stopped`. */
+  /** Run after every pass: once an update is staged and no gate runs, completes `stopped`. */
   readonly afterPass: Effect.Effect<void>;
   /** Completed once, when the runner should end so launchd starts the staged version. */
   readonly stopped: Deferred.Deferred<void>;
@@ -121,7 +137,11 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
   const step = (
     name: string,
     input: RunInput,
-  ): Effect.Effect<{ readonly ok: string } | { readonly failed: string }, never, FactoryProcess> =>
+  ): Effect.Effect<
+    { readonly ok: string; readonly truncated: boolean } | { readonly failed: string },
+    never,
+    FactoryProcess
+  > =>
     Effect.gen(function* () {
       const process = yield* FactoryProcess;
       const done = yield* Effect.result(
@@ -135,19 +155,18 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
       if (done.success.exitCode !== 0) {
         return { failed: `${name} exited ${done.success.exitCode ?? "by a signal"}: ${tailOf(output)}` };
       }
-      return { ok: done.success.tail };
+      return { ok: done.success.tail, truncated: done.success.tailTruncated };
     });
 
-  /** Clones `tag`, installs and smokes it, and places it; a failure warns once and marks it. */
-  const stageTag = (
-    repository: { readonly owner: string; readonly repo: string },
-    version: string,
-    running: string,
-  ) =>
+  /**
+   * Clones `tag`, checks the clone is the tag, installs and smokes it, and places it; a failure
+   * warns once and marks the tag. A runner stopped part way leaves its clone for the next start.
+   */
+  const stageTag = (repository: Repository, version: string, running: string) =>
     Effect.gen(function* () {
       const tag = `v${version}`;
       NodeFS.mkdirSync(versions, { recursive: true });
-      const clone = NodeFS.mkdtempSync(NodePath.join(versions, `.clone-${version}-`));
+      const clone = NodeFS.mkdtempSync(NodePath.join(versions, `${CLONE_PREFIX}${version}-`));
       const fail = (why: string) =>
         Effect.sync(() => {
           failed.add(tag);
@@ -170,6 +189,17 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
         env: { ...HARDENED_GIT_ENV, ...fetchCredentialEnv(options.ghConfigDir()) },
       });
       if ("failed" in cloned) return yield* fail(cloned.failed);
+      // `--branch` takes a branch of the same name over the tag; only the tag is a release.
+      const tagged = yield* step("tag check", {
+        command: "git",
+        args: ["-C", clone, "tag", "--points-at", "HEAD"],
+        env: HARDENED_GIT_ENV,
+        separateStderr: true,
+      });
+      if ("failed" in tagged) return yield* fail(tagged.failed);
+      if (!tagged.ok.split("\n").some((line) => line.trim() === tag)) {
+        return yield* fail(`the clone's HEAD is not the tag ${tag}: a branch of that name was cloned`);
+      }
 
       const nodeDir = NodePath.dirname(options.execPath);
       const installed = yield* step("npm ci", {
@@ -185,16 +215,23 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
         args: [NodePath.join(clone, "src", "bin.ts"), "status", "--json"],
         env: { FACTORY_RUNNER_HOME: options.dataDir },
         separateStderr: true,
+        tailBytes: SMOKE_BYTES,
       });
       if ("failed" in smoked) return yield* fail(smoked.failed);
-      let reported: unknown = null;
+      if (smoked.truncated) return yield* fail(`smoke: status --json printed longer than ${SMOKE_BYTES} bytes`);
+      let report: { version?: unknown; reason?: unknown } = {};
       try {
-        reported = (JSON.parse(smoked.ok) as { version?: unknown }).version;
+        report = JSON.parse(smoked.ok) as typeof report;
       } catch {
-        // Not JSON: the check below says so.
+        // Not JSON: the version check below says so.
       }
-      if (reported !== version) {
-        return yield* fail(`smoke: status --json reported version ${JSON.stringify(reported)}, not ${version}`);
+      if (report.version !== version) {
+        return yield* fail(`smoke: status --json did not report version ${version}: ${tailOf(smoked.ok)}`);
+      }
+      // The staged tree must read this machine's config: a runner that cannot stays idle, and an
+      // idle runner runs no pass, so it would never update past itself.
+      if (report.reason === CONFIG_NOT_LOADED) {
+        return yield* fail(`smoke: status --json says ${CONFIG_NOT_LOADED} under ${tag}`);
       }
 
       try {
@@ -209,7 +246,7 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
     });
 
   /** One period: read the tags and stage the highest when it is newer than the running version. */
-  const check = (repository: { readonly owner: string; readonly repo: string }, running: Version, runningText: string) =>
+  const check = (repository: Repository, running: Version, runningText: string) =>
     Effect.gen(function* () {
       const process = yield* FactoryProcess;
       const read = yield* Effect.result(
@@ -249,7 +286,13 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
         `self-update off: ${options.packageRoot} is not an installed version under ${versions}`,
       );
     }
-    let repository: { readonly owner: string; readonly repo: string } | null = null;
+    // A clone a stopped runner left part way through staging.
+    for (const entry of NodeFS.readdirSync(versions)) {
+      if (entry.startsWith(CLONE_PREFIX)) {
+        NodeFS.rmSync(NodePath.join(versions, entry), { recursive: true, force: true });
+      }
+    }
+    let repository: Repository | null = null;
     let runningText = "";
     try {
       repository = repositoryOf(options.packageRoot);
@@ -274,7 +317,9 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
   });
 
   const afterPass = Effect.suspend(() => {
-    if (staged === null || gateLocksHeld(options.dataDir) > 0) return Effect.void;
+    if (staged === null || options.gatesRunning() > 0 || gateLocksHeld(options.dataDir) > 0) {
+      return Effect.void;
+    }
     const tag = staged;
     return Deferred.isDone(stopped).pipe(
       Effect.flatMap((done) =>
