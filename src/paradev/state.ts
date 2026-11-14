@@ -171,6 +171,10 @@ const decodePlaced = Schema.decodeUnknownOption(Schema.fromJsonString(PlacedSche
 const placementFile = (path: Path.Path, dataDir: string, commandId: string) =>
   path.join(dataDir, "paradev", "placements", `${sha256(commandId)}.json`);
 
+const runnerIdFile = (path: Path.Path, dataDir: string) => path.join(dataDir, "paradev", "runner-id");
+
+const RUNNER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /** The file's text; null when it does not exist. */
 const readText = (file: string) =>
   Effect.gen(function* () {
@@ -285,4 +289,26 @@ export const writePlacement = Effect.fn("ParadevState.writePlacement")(function*
 ) {
   const path = yield* Path.Path;
   yield* writeFileAtomically(placementFile(path, dataDir, commandId), `${JSON.stringify(target)}\n`);
+});
+
+/**
+ * This runner's id: a random UUID written to `<data>/paradev/runner-id` on first use and read back
+ * after that. It marks the cloud workspaces this runner creates, so its orphan sweep archives no
+ * other runner's. A file that does not read back as an id is replaced, with a warning: the workspaces
+ * tagged with what it held leave the sweep.
+ */
+export const runnerId = Effect.fn("ParadevState.runnerId")(function* (dataDir: string) {
+  const path = yield* Path.Path;
+  const file = runnerIdFile(path, dataDir);
+  const text = yield* readText(file);
+  const read = text?.trim();
+  if (read !== undefined && RUNNER_ID.test(read)) return read;
+  const id = crypto.randomUUID();
+  yield* writeFileAtomically(file, `${id}\n`);
+  if (text !== null) {
+    yield* Effect.logWarning(
+      `${file} held ${JSON.stringify(text.trim().slice(0, 80))}, not a runner id; wrote ${id}. Cloud workspaces tagged with an earlier id are no longer swept`,
+    );
+  }
+  return id;
 });
