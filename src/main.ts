@@ -851,6 +851,8 @@ interface Current {
   readonly world: PassWorld;
   /** Hands the pass's status to the belt writer; does nothing with the belt off. Never fails. */
   readonly afterPass: Effect.Effect<void, never, FileSystem.FileSystem | Path.Path>;
+  /** Archives orphaned cloud workspaces; does nothing when no repo names a cloud environment. Never fails. */
+  readonly sweep: Effect.Effect<void>;
 }
 
 /** What the Paradev hold reads from a failed CLI call. */
@@ -968,6 +970,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
   const beltMemo = newBeltMemo();
   const beltRuns: RunReadCache = new Map();
   let beltWriting = false;
+  let sweeping = false;
 
   const onePass = Effect.gen(function* () {
     const current = state.current;
@@ -980,6 +983,19 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     const context = yield* Effect.context<never>();
     const log = Effect.runSyncWith(context);
     let lastError: string | null = null;
+    // The sweep goes beside the pass, one at a time, as the belt does: a slow cloud holds up no pass.
+    if (!sweeping) {
+      sweeping = true;
+      yield* current.sweep.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            sweeping = false;
+          }),
+        ),
+        Effect.interruptible,
+        Effect.forkIn(scope),
+      );
+    }
     // The belt goes to Paradev beside the loop, one write at a time, so a hung Paradev holds up
     // no pass and no shutdown. A pass that ends while a write is still going hands nothing over:
     // the next one does.
@@ -1034,7 +1050,18 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       ...(machine.paradev.model === undefined ? {} : { model: machine.paradev.model }),
       ...(machine.paradev.effort === undefined ? {} : { effort: machine.paradev.effort }),
       ghConfigDir: machine.ghConfigDir,
+      hosts: machine.hosts,
     }).pipe(Effect.provide(paradev));
+    // Only a repo that names a cloud environment can have a cloud run, and so an orphan.
+    const sweep = machine.repos.some((entry) => entry.cloud !== undefined)
+      ? sessions.sweepOrphans.pipe(
+          Effect.catch((error) =>
+            Effect.logWarning(
+              `the cloud orphan sweep failed: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
+            ),
+          ),
+        )
+      : Effect.void;
     // The CLI check runs at start and on every reload, and again each pass until it passes.
     let cliChecked = false;
     // What the belt says of Paradev: the version the check read, and the last pass's answer.
@@ -1210,7 +1237,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         ),
     };
     options.onWorld?.(world);
-    state.current = { machine, world, afterPass };
+    state.current = { machine, world, afterPass, sweep };
     state.status = {
       state: "running",
       settings: {

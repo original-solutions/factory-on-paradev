@@ -15,14 +15,19 @@ const Projects = Schema.Array(
 );
 export type ParadevProject = (typeof Projects.Type)[number];
 
-/** `projects list --local`: 30 s, one retry after 2 s. */
-export const listProjects: Effect.Effect<ReadonlyArray<ParadevProject>, CliError, SupersetCli> =
+/** `projects list` with `location` (`--local`, or `--host <machineId>`): 30 s, one retry after 2 s. */
+export const listProjectsAt = (
+  location: ReadonlyArray<string>,
+): Effect.Effect<ReadonlyArray<ParadevProject>, CliError, SupersetCli> =>
   Effect.gen(function* () {
     const cli = yield* SupersetCli;
-    const argv = ["projects", "list", "--local"];
+    const argv = ["projects", "list", ...location];
     const answer = yield* callWithRetry(cli, argv, 30_000);
     return yield* decodeAnswer(Projects, answer, argv);
   });
+
+/** `projects list --local`. */
+export const listProjects = listProjectsAt(["--local"]);
 
 /** `path` with its symlinks resolved; the path itself, resolved, when it does not exist. */
 const realPath = (path: string) =>

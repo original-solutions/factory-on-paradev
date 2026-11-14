@@ -1683,15 +1683,24 @@ it.live("a second run for the same run while one is running returns running", ()
       ...baseInput(remote, dataDir, run, sha, sha),
       gate: [`touch '${started}'; while [ ! -f '${release}' ]; do sleep 0.05; done`],
     };
-    const first = yield* Effect.forkChild(gate.run(input));
+    let firstEnded = false;
+    const first = yield* Effect.forkChild(
+      gate.run(input).pipe(Effect.ensuring(Effect.sync(() => (firstEnded = true)))),
+    );
     yield* Effect.gen(function* () {
+      // The first gate's checkout and its command at niceness 10 can take well past any fixed
+      // wait on a loaded machine, so wait until the command starts or the gate ends, inside the
+      // test's own timeout.
       yield* Effect.promise(() =>
-        vi.waitFor(
-          () =>
-            assert.isTrue(NodeFS.existsSync(started), "the first gate never started its command"),
-          { timeout: 10_000, interval: 25 },
-        ),
+        vi.waitFor(() => assert.isTrue(NodeFS.existsSync(started) || firstEnded), {
+          timeout: 100_000,
+          interval: 25,
+        }),
       );
+      if (!NodeFS.existsSync(started)) {
+        const ended = yield* Fiber.join(first);
+        assert.fail(`the first gate ended as ${ended._tag} without starting its command`);
+      }
       const before = entries(dataDir, run).length;
       const second = yield* gate.run(input);
       assert.deepStrictEqual(second, { _tag: "running" });

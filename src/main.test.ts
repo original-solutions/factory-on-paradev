@@ -311,6 +311,9 @@ const paradevAnswer = (paradev: FakeParadev, argv: ReadonlyArray<string>): RunRe
       return paradev.listDown === undefined
         ? reply(0, JSON.stringify(paradev.projects))
         : reply(1, "", `Error: ${paradev.listDown}\n`);
+    // The orphan sweep's listing: no cloud workspace.
+    case "workspaces list --host cloud":
+      return reply(0, "[]");
     default:
       if (argv[0] === "pages" && paradev.pages !== undefined) return paradev.pages(argv);
       throw new Error(`the scripted superset got an unexpected call: ${argv.join(" ")}`);
@@ -1386,6 +1389,27 @@ describe("on the Paradev CLI", () => {
           loop.status.state === "running" ? loop.status.settings.repos : null,
           ["a/b", "c/d"],
         );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("each pass sweeps the cloud for orphans beside the pass while a repo names an environment, and never otherwise", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const sweeps = (calls: ReadonlyArray<ReadonlyArray<string>>) =>
+          calls.filter((argv) => argv.join(" ") === "workspaces list --host cloud").length;
+        const cloudBlock = "cloud:\n  proxy: https://proxy.example\n";
+        const named = `gh_config_dir: /gh\nmax_concurrent_runs: 1\nmin_free_gib: 0\n${cloudBlock}repos:\n  - repo: a/b\n    path: /b\n    cloud: edad9805-e48d-40f3-a06c-e19a4105f974\n${PARADEV_BLOCK}`;
+        const cloud = yield* started(named);
+        yield* idleAfter(cloud.loop, cloud.factoryDir, 1);
+        yield* waitUntil("the first sweep", () => sweeps(cloud.paradev.calls) === 1);
+        yield* onePassMore(cloud.loop, cloud.factoryDir);
+        yield* waitUntil("the second sweep", () => sweeps(cloud.paradev.calls) === 2);
+        // A cloud block with no repo naming an environment has nothing of its own to sweep.
+        const none = yield* started(configFor([["a/b", "/b"]], "/gh", cloudBlock));
+        yield* idleAfter(none.loop, none.factoryDir, 1);
+        yield* onePassMore(none.loop, none.factoryDir);
+        assert.strictEqual(sweeps(none.paradev.calls), 0);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
