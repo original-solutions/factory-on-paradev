@@ -43,7 +43,8 @@ const WIDE: WatchedRepo = {
   cloud: "env-1",
 };
 const HOSTED: WatchedRepo = { repo: "acme/hosted", path: "/Users/tom/hosted", hosts: [{ id: "h1", path: "/srv/hosted" }] };
-const BY_PROJECT: Record<string, WatchedRepo> = { mac: MAC, wide: WIDE, hosted: HOSTED };
+const CLOUDY: WatchedRepo = { repo: "acme/cloudy", path: "/Users/tom/cloudy", cloud: "env-1" };
+const BY_PROJECT: Record<string, WatchedRepo> = { mac: MAC, wide: WIDE, hosted: HOSTED, cloudy: CLOUDY };
 
 const request = (projectId: string, n = 1): LaunchRequest => ({
   commandId: `launch-${projectId}-${n}`,
@@ -109,6 +110,10 @@ const setup = (
   return { placer, reads, asked, items, events };
 };
 
+/** The placement drops the machine log got, in order. */
+const drops = (events: ReadonlyArray<MachineEvent>) =>
+  events.flatMap((event) => (event.event === "placement" ? [event.data] : []));
+
 const full = (target: TargetCount["target"]): TargetCount => ({ target, running: 1 });
 
 describe("placer", () => {
@@ -135,7 +140,7 @@ describe("placer", () => {
     Effect.gen(function* () {
       const t = setup({ machine: machine({ hosts: [], cloud: undefined }) });
       t.placer.beginPass(null);
-      assert.deepStrictEqual(yield* t.placer.place(request("wide")), { kind: "local" });
+      assert.deepStrictEqual(yield* t.placer.place(request("cloudy")), { kind: "local" });
       assert.deepStrictEqual(t.reads, { running: 0, proxy: 0, load: 0 });
     }),
   );
@@ -188,13 +193,13 @@ describe("placer", () => {
       assert.strictEqual(error.message, "no target has room");
       yield* t.placer.place(request("hosted", 2)).pipe(Effect.flip);
       const dropped = [
-        { event: "placement", data: { repo: "acme/hosted", target: "local", reason: "slots full: 1 of 1 running" } },
-        { event: "placement", data: { repo: "acme/hosted", target: "mini", reason: "slots full: 1 of 1 running" } },
+        { repo: "acme/hosted", target: "local", reason: "slots full: 1 of 1 running" },
+        { repo: "acme/hosted", target: "mini", reason: "slots full: 1 of 1 running" },
       ];
-      assert.deepStrictEqual(t.events, dropped);
+      assert.deepStrictEqual(drops(t.events), dropped);
       t.placer.beginPass(null);
       yield* t.placer.place(request("hosted", 3)).pipe(Effect.flip);
-      assert.deepStrictEqual(t.events, [...dropped, ...dropped]);
+      assert.deepStrictEqual(drops(t.events), [...dropped, ...dropped]);
     }),
   );
 
@@ -203,8 +208,8 @@ describe("placer", () => {
       const t = setup({ counts: [{ target: { kind: "local" }, running: 0 }] });
       t.placer.beginPass(null);
       assert.deepStrictEqual(yield* t.placer.place(request("hosted")), { kind: "local" });
-      assert.deepStrictEqual(t.events, [
-        { event: "placement", data: { repo: "acme/hosted", target: "mini", reason: "its running agents could not be counted" } },
+      assert.deepStrictEqual(drops(t.events), [
+        { repo: "acme/hosted", target: "mini", reason: "its running agents could not be counted" },
       ]);
     }),
   );
@@ -214,13 +219,13 @@ describe("placer", () => {
       const notReady = setup({ notReady: new Map([["h1", "claude is not trusted"]]) });
       notReady.placer.beginPass(null);
       yield* notReady.placer.place(request("hosted"));
-      assert.deepStrictEqual(notReady.events.map((e) => e.data), [
+      assert.deepStrictEqual(drops(notReady.events), [
         { repo: "acme/hosted", target: "mini", reason: "not ready: claude is not trusted" },
       ]);
       const unread = setup({ hostLoad: null });
       unread.placer.beginPass(null);
       yield* unread.placer.place(request("hosted"));
-      assert.deepStrictEqual(unread.events.map((e) => e.data), [
+      assert.deepStrictEqual(drops(unread.events), [
         { repo: "acme/hosted", target: "mini", reason: "its load was not read this pass" },
       ]);
     }),
@@ -235,7 +240,7 @@ describe("placer", () => {
         environmentId: "env-1",
         machineSize: "small",
       });
-      assert.deepStrictEqual(t.asked, [PROXY]);
+      assert.deepStrictEqual(t.asked, [`${PROXY}/v1/models`]);
       assert.deepStrictEqual([...t.items.keys()], []);
     }),
   );
@@ -264,7 +269,7 @@ describe("placer", () => {
       assert.include(item.message, PROXY);
       assert.include(item.message, "key check is off");
       assert.deepStrictEqual(
-        t.events.filter((e) => e.data.target === "cloud").map((e) => e.data),
+        drops(t.events).filter((e) => e.target === "cloud"),
         [{ repo: "acme/wide", target: "cloud", reason: "the proxy's key check is off (it answered 200 with no key)" }],
       );
     }),
@@ -287,7 +292,7 @@ describe("placer", () => {
       assert.include(item.message, "tailscale funnel --bg --https=8443");
       assert.notInclude(item.message, "503");
       assert.isTrue(
-        t.events.some((e) => e.data.target === "cloud" && "reason" in e.data && e.data.reason === "the proxy check failed: answered HTTP 503"),
+        drops(t.events).some((e) => e.target === "cloud" && e.reason === "the proxy check failed: answered HTTP 503"),
       );
       yield* pass;
       assert.isFalse(t.items.has(CLOUD_PROXY_DOWN_ITEM_ID));

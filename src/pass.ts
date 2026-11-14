@@ -403,6 +403,12 @@ export interface PassWorld {
    */
   readonly hostLoads: Map<string, Load | null>;
   /**
+   * Starts placement's pass, right after the host loads are read: it forgets the last pass's
+   * counts and proxy answer. `localHeld` is why this Mac takes no claim this pass, else null.
+   * See `paradev/placer.ts`.
+   */
+  readonly beginPlacement: (localHeld: string | null) => void;
+  /**
    * The hosts that are not ready, by host id, with the first failing line of their last check:
    * none of them is a launch candidate. A new world starts with every configured host here, as
    * not checked yet; `checkHosts`, beside the pass, takes a host out when its check passes. Per world,
@@ -837,6 +843,7 @@ export const runPass = Effect.fn("Pass.runPass")(function* (
   pass.highLoad = yield* highLoad(world, machine, pass);
   pass.paradevOffline = yield* paradevOffline(world, pass);
   yield* hostLoads(world, machine, pass);
+  world.beginPlacement(pass.lowDisk ? "low disk" : pass.highLoad ? "high load" : null);
   yield* brokenWorktrees(world, pass);
   // Without the ledger there is no telling how many runs are active, so nothing is claimed.
   const infos = yield* runs(world, pass);

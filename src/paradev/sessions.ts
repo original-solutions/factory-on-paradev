@@ -38,6 +38,7 @@ import {
   isPlainId,
   type LaunchRequest,
   MessageRejectedError,
+  type NoTargetHasRoom,
   type RunStatus,
   SessionsError,
   ThreadNotFoundError,
@@ -279,9 +280,10 @@ export interface ParadevSessionsConfig {
   readonly hosts?: ReadonlyArray<ParadevHost>;
   /**
    * Where a new launch runs, asked once per launch command id: a retry finds its launch file
-   * first and never asks again. Default this Mac.
+   * first and never asks again. Placement's answer; fails with `NoTargetHasRoom` when nothing has
+   * room. Default this Mac.
    */
-  readonly place?: (request: LaunchRequest) => Effect.Effect<LaunchTarget, ParadevAdapterError>;
+  readonly place?: (request: LaunchRequest) => Effect.Effect<LaunchTarget, ParadevAdapterError | NoTargetHasRoom>;
   /** Whether the machine config has a cloud block, so `snapshot --host cloud` is read for the counts. Default false. */
   readonly cloud?: boolean;
   /** How the adapter reaches a host. Default `ssh` through the runner's process service. */

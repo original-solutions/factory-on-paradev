@@ -121,7 +121,9 @@ import * as Paths from "./paths.ts";
 import type { FactorySessions, Model } from "./sessions.ts";
 import { type CliError, layer as cliLayer, SupersetCli } from "./paradev/cli.ts";
 import { afterPass as writeBeltAfterPass, newBeltMemo } from "./paradev/belt.ts";
+import { makePlacer } from "./paradev/placer.ts";
 import { addProjectCommand } from "./paradev/projects.ts";
+import { liveProxyGet, type ProxyGet } from "./paradev/proxy.ts";
 import { check as checkCli, describeFailure } from "./paradev/schema.ts";
 import {
   AgentProcess,
@@ -456,7 +458,7 @@ const NOTHING_PRUNED = { pruned: [], left: [], failed: [], waiting: 0 } as const
 /**
  * The pass over this machine: GitHub through `gh`, the ledger under `dataDir`, the wall clock.
  * It does not know which repos are watched, where the worktrees are or whether Paradev answers:
- * `startFactory` adds `watchedRepos`, `freeSpace` and `paradevDown`.
+ * `startFactory` adds `watchedRepos`, `freeSpace`, `paradevDown` and `beginPlacement`.
  */
 export const liveWorld = (
   machine: MachineConfig,
@@ -485,7 +487,7 @@ export const liveWorld = (
     hostMisses,
     hostLoads,
   }: LiveShared = newShared(),
-): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown"> => {
+): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown" | "beginPlacement"> => {
   const load = live.readLoad ?? readLoad;
   const ssh = live.ssh ?? liveSshSpawn(process);
   // Every host is not ready until its check has passed: a new world is a new config load.
@@ -871,6 +873,8 @@ export interface RuntimeOptions {
   readonly readLoad?: () => Load;
   /** How a host is read over ssh. Default the `ssh` binary; a test passes the answers it needs. */
   readonly ssh?: SshSpawn;
+  /** How the cloud proxy is asked with no key. Default `fetch`; a test passes the answers it needs. */
+  readonly proxyGet?: ProxyGet;
   /** What the Paradev adapter is built with beyond the `paradev` block: a test's remote base and waits. */
   readonly sessions?: Partial<Omit<ParadevSessionsConfig, "agent" | "model" | "effort">>;
 }
@@ -1092,6 +1096,10 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       }),
       paradev,
     );
+    // Placement is made after the world, whose host readings it reads; `launch` only asks it later.
+    let placer: ReturnType<typeof makePlacer> | null = null;
+    // The watched repo of each local Paradev project, from the last project listing that answered.
+    let repoOfProject = new Map<string, WatchedRepo>();
     const sessions = yield* makeParadevSessions({
       ...options.sessions,
       agent: machine.paradev.agent,
@@ -1099,6 +1107,8 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       ...(machine.paradev.effort === undefined ? {} : { effort: machine.paradev.effort }),
       ghConfigDir: machine.ghConfigDir,
       hosts: machine.hosts,
+      cloud: machine.cloud !== undefined,
+      place: (request) => Effect.suspend(() => (placer === null ? Effect.succeed({ kind: "local" } as const) : placer.place(request))),
     }).pipe(Effect.provide(paradev));
     // Only a repo that names a cloud environment can have a cloud run, and so an orphan.
     const sweep = machine.repos.some((entry) => entry.cloud !== undefined)
@@ -1184,6 +1194,20 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       undefined,
       shared,
     );
+    placer = makePlacer({
+      machine,
+      repoOfProject: (projectId) => repoOfProject.get(projectId) ?? null,
+      hostLoads: shared.hostLoads,
+      hostsNotReady: () => base.hostsNotReady,
+      readLoad: options.readLoad ?? readLoad,
+      running: Effect.suspend(() => sessions.runningByTarget),
+      proxyGet: options.proxyGet ?? liveProxyGet,
+      attention,
+      record: (event) =>
+        base.record(event).pipe(
+          Effect.catch((error) => Effect.logWarning(`the machine log could not take a placement: ${error.message}`)),
+        ),
+    });
     // The repos `repos:` lists, each with its clone a Paradev project on this Mac. A repo whose
     // clone is none, or is the project of another GitHub repo (a `path` copied from another
     // entry), is skipped with one item that says so: a session there would work on the other
@@ -1198,6 +1222,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       // One `projects list` answers every repo.
       const listing = yield* Effect.result(sessions.findProjects(machine.repos.map((entry) => entry.path)));
       const projects = Result.isSuccess(listing) ? listing.success : null;
+      const byProject = new Map<string, WatchedRepo>();
       for (const [index, entry] of machine.repos.entries()) {
         if (projects !== null) {
           const project = projects[index] ?? null;
@@ -1236,6 +1261,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
             });
             continue;
           }
+          if (project !== null) byProject.set(project.id, entry);
         }
         if (machine.defaultProject === undefined) {
           repos.push({ ...entry, title: entry.repo });
@@ -1245,6 +1271,8 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         if (defaulted === "unresolved") unresolved.push(entry.path);
         else repos.push({ ...entry, title: entry.repo, defaulted });
       }
+      // A lookup that failed keeps the last listing: placement then still knows each project's repo.
+      if (projects !== null) repoOfProject = byProject;
       const listed = new Set(machine.repos.map((entry) => asciiLower(entry.repo)));
       const departed = [
         ...new Set(
@@ -1265,6 +1293,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     const world: PassWorld = {
       ...base,
       watchedRepos: listWatched,
+      beginPlacement: placer.beginPass,
       paradevDown,
       // The sessions write under Paradev's worktrees folder, the gate under the factory dir.
       freeSpace: () =>
