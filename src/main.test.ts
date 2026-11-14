@@ -3974,7 +3974,7 @@ describe("liveWorld: the hosts", () => {
         yield* idleAfter(loop, factoryDir, 1);
         const items = (yield* attention.list()).filter((item) => item.id === "host-not-ready:h1");
         assert.strictEqual(items.length, 1);
-        assert.include(items[0]!.message, "host mini is not ready: online: superset hosts list failed");
+        assert.include(items[0]!.message, "host mini is not ready: online: add it with superset hosts add me@mini --name mini");
         assert.isTrue(paradev.calls.some((argv) => argv.join(" ") === "hosts list"));
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
