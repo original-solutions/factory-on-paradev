@@ -180,6 +180,16 @@ export const writeThread = Effect.fn("ParadevState.writeThread")(function* (
   yield* writeFileAtomically(file, `${JSON.stringify(record)}\n`);
 });
 
+/** Whether `workspaceId` has a thread record file, whole or torn. */
+export const threadFileExists = Effect.fn("ParadevState.threadFileExists")(function* (
+  dataDir: string,
+  workspaceId: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return yield* fs.exists(path.join(threadsDir(path, dataDir), `${workspaceId}.json`));
+});
+
 /** Every whole thread record; torn files are skipped. */
 export const listThreads = Effect.fn("ParadevState.listThreads")(function* (dataDir: string) {
   const fs = yield* FileSystem.FileSystem;

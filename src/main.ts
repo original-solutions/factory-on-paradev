@@ -851,7 +851,7 @@ interface Current {
   readonly world: PassWorld;
   /** Hands the pass's status to the belt writer; does nothing with the belt off. Never fails. */
   readonly afterPass: Effect.Effect<void, never, FileSystem.FileSystem | Path.Path>;
-  /** Archives orphaned cloud workspaces; does nothing with no `cloud` block. Never fails. */
+  /** Archives orphaned cloud workspaces; does nothing when no repo names a cloud environment. Never fails. */
   readonly sweep: Effect.Effect<void>;
 }
 
@@ -970,6 +970,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
   const beltMemo = newBeltMemo();
   const beltRuns: RunReadCache = new Map();
   let beltWriting = false;
+  let sweeping = false;
 
   const onePass = Effect.gen(function* () {
     const current = state.current;
@@ -982,7 +983,19 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     const context = yield* Effect.context<never>();
     const log = Effect.runSyncWith(context);
     let lastError: string | null = null;
-    yield* current.sweep;
+    // The sweep goes beside the pass, one at a time, as the belt does: a slow cloud holds up no pass.
+    if (!sweeping) {
+      sweeping = true;
+      yield* current.sweep.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            sweeping = false;
+          }),
+        ),
+        Effect.interruptible,
+        Effect.forkIn(scope),
+      );
+    }
     // The belt goes to Paradev beside the loop, one write at a time, so a hung Paradev holds up
     // no pass and no shutdown. A pass that ends while a write is still going hands nothing over:
     // the next one does.
@@ -1039,10 +1052,11 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       ghConfigDir: machine.ghConfigDir,
       hosts: machine.hosts,
     }).pipe(Effect.provide(paradev));
+    const environments = [...new Set(machine.repos.flatMap((entry) => (entry.cloud === undefined ? [] : [entry.cloud])))];
     const sweep =
-      machine.cloud === undefined
+      environments.length === 0
         ? Effect.void
-        : sessions.sweepOrphans.pipe(
+        : sessions.sweepOrphans(environments).pipe(
             Effect.catch((error) =>
               Effect.logWarning(
                 `the cloud orphan sweep failed: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
