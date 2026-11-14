@@ -4,9 +4,10 @@
  *
  * Two callers, and both go through the allowlist ({@link isAllowed}): a text that is not one of the
  * shapes below is refused before ssh starts. The adapter (#53) runs its calls through `sshRunner`;
- * the host readings and `hosts check` (#54) go through `runSsh`. Each text is built here. The
- * readings write nothing on a host (decision U4); the adapter's one write is the reset of a
- * worktree to its base, after a fetch.
+ * the host readings and `hosts check` (#54) go through `runSsh`. Each text is built here; the
+ * adapter's git argument lists are spelled again in the shapes, and its contract tests fail on a
+ * call the shapes refuse. The readings write nothing on a host (decision U4); the adapter's
+ * writes are the fetch of the base and the reset of a worktree to it.
  */
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -37,7 +38,7 @@ export class SshError extends Schema.TaggedError<SshError>()("ParadevSshError", 
 
 /**
  * Runs `command` on `destination` (`user@host`), as one line for the host's login shell, so the
- * caller quotes each word ({@link shellQuote}). The answer is the command's own exit code and
+ * caller builds it here, from a builder the allowlist takes. The answer is the command's own exit code and
  * output; ssh's own failure, a timeout or a spawn error is `SshError`.
  */
 export interface SshRunner {
@@ -191,8 +192,6 @@ const escapeRegExp = (text: string): string => text.replaceAll(/[.*+?^${}()|[\]\
 
 /** What one shell word holds inside its single quotes, where `'\''` is a quote. A backslash anywhere else is refused. */
 const QUOTED_TEXT = "(?:[^'\\\\]|'\\\\'')*";
-/** One shell word in single quotes. */
-const QUOTED = `'${QUOTED_TEXT}'`;
 
 /** In a builder's text, stands for any text inside one quoted word. */
 const WORD = "\u0000word";
@@ -241,12 +240,12 @@ const SHAPES: ReadonlyArray<RegExp> = [
 /**
  * `sh -c` and one quoted word: the script, matched against {@link SCRIPTS} once unquoted. In this
  * word a backslash is taken as it is, as `sh` takes it inside single quotes: the lookup's `printf`
- * has one. Each word inside the script is still {@link QUOTED}.
+ * has one. Each word inside the script is still one {@link shellQuote} word.
  */
 const SH_C = /^sh -c ('(?:[^']|'\\'')*')$/;
 const SCRIPTS: ReadonlyArray<RegExp> = [agentLookupScript(WORD, WORD), newestSessionScript(NAME)].map(shapeOf);
 
-/** The text `sh` reads from one {@link QUOTED} word. */
+/** The text `sh` reads from one {@link shellQuote} word. */
 const unquote = (word: string): string => word.slice(1, -1).replaceAll("'\\''", "'");
 
 /** Whether `command` is one of the shapes the runner may send to a host. */
