@@ -12,7 +12,7 @@ import { ledgerCall as ledger } from "../ledger/errors.ts";
 import { makeCause } from "../ledger/events.ts";
 import { runIdToString, type RunId } from "../ledger/runId.ts";
 import { isSafeBranchName, type IssueDetail } from "../tracker/github.ts";
-import type { FactorySessions } from "../sessions.ts";
+import { isNoTargetHasRoom, type FactorySessions } from "../sessions.ts";
 import {
   END_WITH_DONE,
   LAUNCH_FAILED,
@@ -106,6 +106,8 @@ export const relaunchSession = Effect.fn("RunnerRelaunch.relaunchSession")(funct
     }),
   );
   if (launched._tag === "Failure") {
+    // No room: an error with nothing written, so a later call sends the same relaunch again.
+    if (isNoTargetHasRoom(launched.failure)) return yield* Effect.fail(launched.failure);
     return yield* refuse(sessionMayExistNote(describe(launched.failure.cause), commandId));
   }
   const { threadId, worktreePath, branch } = launched.success;
