@@ -32,12 +32,20 @@ export interface PlacerDeps {
   readonly record: (event: MachineEvent) => Effect.Effect<void>;
 }
 
+/** Why cloud takes no run before a pass has checked the proxy under the config in use. */
+export const PROXY_NOT_CHECKED = "the proxy is not checked yet since the config load";
+
 export const makePlacer = (deps: PlacerDeps) => {
   let localHeld: string | null = null;
   /** Running agents per target this pass; null when its snapshot could not be read. Null here: not read yet. */
   let counts: Map<string, number | null> | null = null;
   /** Why cloud takes no run this pass, from the pass's proxy check; null when it passed or was not run. */
   let proxyReason: string | null = null;
+  /**
+   * The machine config the last pass began under. The proxy check that pass made holds for it
+   * alone: before the first pass, or after a reload until the next one, cloud is unchecked.
+   */
+  let checkedUnder: MachineConfig | null = null;
   let recorded = new Set<string>();
   /**
    * The placements whose launch has not ended, by command id, with the key of their target; kept
@@ -90,7 +98,7 @@ export const makePlacer = (deps: PlacerDeps) => {
         environmentId: repo.cloud,
         machineSize: cloud.machineSize,
         slots: { running: countOf("cloud"), max: cloud.maxRuns },
-        proxy: proxyReason,
+        proxy: checkedUnder === deps.machine ? proxyReason : PROXY_NOT_CHECKED,
       });
     }
     return candidates;
@@ -146,6 +154,7 @@ export const makePlacer = (deps: PlacerDeps) => {
     beginPass: (began: { readonly localHeld: string | null; readonly proxy: string | null }): void => {
       localHeld = began.localHeld;
       proxyReason = began.proxy;
+      checkedUnder = deps.machine;
       counts = null;
       recorded = new Set();
     },

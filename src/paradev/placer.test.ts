@@ -356,16 +356,23 @@ describe("placer", () => {
 
   it.effect("cloud takes no launch until a pass has checked the proxy: before the first pass, and again after a config load", () =>
     Effect.gen(function* () {
-      const t = setup({ counts: [full({ kind: "local" }), full({ kind: "host", machineId: "h1" }), { target: { kind: "cloud" }, running: 0 }] });
+      const roomy = () => machine({ cloud: { machineSize: "small", maxRuns: 3, proxy: PROXY } });
+      const t = setup({
+        machine: roomy(),
+        counts: [full({ kind: "local" }), full({ kind: "host", machineId: "h1" }), { target: { kind: "cloud" }, running: 0 }],
+      });
       const unchecked = { repo: "acme/wide", target: "cloud", reason: PROXY_NOT_CHECKED };
       assert.instanceOf(yield* t.placer.place(request("wide", 1)).pipe(Effect.flip), NoTargetHasRoom);
       assert.deepStrictEqual(drops(t.events).filter((e) => e.target === "cloud"), [unchecked]);
       t.placer.beginPass({ localHeld: null, proxy: null });
       assert.strictEqual((yield* t.placer.place(request("wide", 2))).kind, "cloud");
-      t.reload(machine());
+      t.reload(roomy());
       t.events.length = 0;
       assert.instanceOf(yield* t.placer.place(request("wide", 3)).pipe(Effect.flip), NoTargetHasRoom);
       assert.deepStrictEqual(drops(t.events).filter((e) => e.target === "cloud"), [unchecked]);
+      // The first pass under the new config checks it again.
+      t.placer.beginPass({ localHeld: null, proxy: null });
+      assert.strictEqual((yield* t.placer.place(request("wide", 4))).kind, "cloud");
     }),
   );
 
