@@ -42,8 +42,9 @@ export const makePlacer = (deps: PlacerDeps) => {
   /** Why cloud takes no run this pass, from the pass's proxy check; null when it passed or was not run. */
   let proxyReason: string | null = null;
   /**
-   * The machine config the last pass began under. The proxy check that pass made holds for it
-   * alone: before the first pass, or after a reload until the next one, cloud is unchecked.
+   * The machine config the last pass's proxy check ran under, as the pass says. The check holds for
+   * it alone: before the first pass, or after a reload until a pass under the new config, cloud is
+   * unchecked.
    */
   let checkedUnder: MachineConfig | null = null;
   let recorded = new Set<string>();
@@ -149,12 +150,17 @@ export const makePlacer = (deps: PlacerDeps) => {
     /**
      * Starts a pass: forgets the last pass's counts and recorded drops. `localHeld` is why P1's
      * checks hold claims this pass ("low disk", "high load"), else null; `proxy` is why cloud
-     * takes no run this pass (the pass's proxy check), else null.
+     * takes no run this pass (the pass's proxy check), else null; `machine` is the config that
+     * check ran under, so a reload during the pass does not take the check as its own.
      */
-    beginPass: (began: { readonly localHeld: string | null; readonly proxy: string | null }): void => {
+    beginPass: (began: {
+      readonly localHeld: string | null;
+      readonly proxy: string | null;
+      readonly machine: MachineConfig;
+    }): void => {
       localHeld = began.localHeld;
       proxyReason = began.proxy;
-      checkedUnder = deps.machine;
+      checkedUnder = began.machine;
       counts = null;
       recorded = new Set();
     },

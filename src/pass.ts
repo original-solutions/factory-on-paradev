@@ -416,11 +416,13 @@ export interface PassWorld {
   /**
    * Starts placement's pass, right after the host loads and the proxy are read: it forgets the
    * last pass's counts. `localHeld` is why this Mac takes no claim this pass, else null; `proxy`
-   * is why cloud takes none (the proxy check did not pass), else null. See `paradev/placer.ts`.
+   * is why cloud takes none (the proxy check did not pass), else null; `machine` is the config the
+   * pass ran that check under. See `paradev/placer.ts`.
    */
   readonly beginPlacement: (began: {
     readonly localHeld: string | null;
     readonly proxy: string | null;
+    readonly machine: MachineConfig;
   }) => void;
   /**
    * The hosts that are not ready, by host id, with the first failing line of their last check:
@@ -876,6 +878,7 @@ export const runPass = Effect.fn("Pass.runPass")(function* (
   world.beginPlacement({
     localHeld: pass.lowDisk ? "low disk" : pass.highLoad ? "high load" : null,
     proxy,
+    machine,
   });
   yield* brokenWorktrees(world, pass);
   // Without the ledger there is no telling how many runs are active, so nothing is claimed.
