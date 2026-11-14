@@ -46,8 +46,8 @@ const result = (exitCode: number, tail = "", stderrTail = ""): RunResult => ({
 
 /** What each faked command does; a test changes it between periods. */
 interface Answers {
-  refs: ReadonlyArray<string> | "fail";
-  npm: "ok" | "fail";
+  refs: ReadonlyArray<string> | "fail" | "too-long";
+  npm: "ok" | "fail" | "timeout" | "throw";
   /** The version the staged tree's `status --json` reports, or a failed run. */
   smoke: string | "fail";
   /** What else that report says: an idle reason, or output longer than the tail kept. */
@@ -120,9 +120,11 @@ const fakeProcess = (f: Fixture) =>
       Effect.sync(() => {
         f.calls.push(input);
         if (input.command === "gh") {
-          return f.answers.refs === "fail"
-            ? result(1, "", "HTTP 502: Bad Gateway")
-            : result(0, f.answers.refs.map((ref) => `${ref}\n`).join(""));
+          if (f.answers.refs === "fail") return result(1, "", "HTTP 502: Bad Gateway");
+          if (f.answers.refs === "too-long") {
+            return { ...result(0, "refs/tags/v0.2.0\n"), truncated: true, tailTruncated: true };
+          }
+          return result(0, f.answers.refs.map((ref) => `${ref}\n`).join(""));
         }
         if (input.command === "git") {
           const args = input.args ?? [];
@@ -139,6 +141,9 @@ const fakeProcess = (f: Fixture) =>
         }
         if (input.command === "npm") {
           if (f.answers.npm === "fail") return result(1, "npm ERR! code ERESOLVE\nnpm ERR! last line");
+          // Killed at its limit; npm can still exit 0 on the SIGTERM.
+          if (f.answers.npm === "timeout") return { ...result(0, "npm http fetch"), timedOut: true };
+          if (f.answers.npm === "throw") throw new Error("EMFILE: too many open files");
           write(NodePath.join(input.cwd!, "node_modules", "yaml", "index.js"), "// yaml\n");
           return result(0, "added 3 packages");
         }
@@ -291,6 +296,49 @@ describe("self-update", () => {
         f.answers.refs = ["refs/tags/v0.2.0"];
         yield* TestClock.adjust(TEN_MINUTES);
         expect(commands(f)).toEqual(["gh", "gh", "git", "git", "npm", EXEC_PATH]);
+      }),
+    );
+  });
+
+  it.effect("a tag list longer than the read keeps is a failed read, not a shorter list", () => {
+    const f = fixture();
+    f.answers.refs = "too-long";
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(f.calls[0]!.tailBytes).toBe(1024 * 1024);
+        expect(commands(f)).toEqual(["gh"]);
+        expect(loud(f).map((log) => log.level)).toEqual(["Warn"]);
+        expect(loud(f)[0]!.text).toContain("printed more than");
+      }),
+    );
+  });
+
+  it.effect("a step that hits its time limit fails even when it exits 0", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.npm = "timeout";
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(versionDirs(f)).toEqual(["0.1.0"]);
+        expect(loud(f).map((log) => log.level)).toEqual(["Warn"]);
+        expect(loud(f)[0]!.text).toContain("npm ci timed out");
+      }),
+    );
+  });
+
+  it.effect("a defect inside a period is one warning, and the next period reads again", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.npm = "throw";
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(loud(f).map((log) => log.level)).toEqual(["Warn"]);
+        expect(loud(f)[0]!.text).toContain("EMFILE");
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f).filter((command) => command === "gh")).toHaveLength(2);
       }),
     );
   });
