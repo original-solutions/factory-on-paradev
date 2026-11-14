@@ -1485,7 +1485,9 @@ describe("on the Paradev CLI", () => {
         );
         yield* onePassMore(loop, factoryDir);
         yield* waitUntil("the second sweep", () => lists === 2 && sweeps(paradev.calls) === 2);
-        assert.strictEqual(logs.filter((line) => line.startsWith("the cloud orphan sweep failed")).length, 1);
+        const warnings = logs.filter((line) => line.startsWith("the cloud orphan sweep failed"));
+        assert.strictEqual(warnings.length, 1);
+        assert.include(warnings[0], "No active organization");
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
