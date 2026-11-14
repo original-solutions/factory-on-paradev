@@ -2,6 +2,7 @@
 // @effect-diagnostics globalDate:off - the waits for a pass use the wall clock, as the loop does.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -57,6 +58,7 @@ import { readFixture } from "./paradev/fake-superset.ts";
 import { AgentProcess } from "./paradev/sessions.ts";
 import { writeThread } from "./paradev/state.ts";
 import * as Paths from "./paths.ts";
+import type { SelfUpdateOptions } from "./selfUpdate.ts";
 import { LOAD_COMMAND, PROXY_ENV_READ, type SshSpawn } from "./paradev/ssh.ts";
 import { PARADEV_HOLD_PASSES, PARADEV_OFFLINE_ITEM_ID, type PassWorld, type Repo } from "./pass.ts";
 import {
@@ -241,6 +243,7 @@ const baseMachine: MachineConfig = {
   maxConcurrentGates: 1,
   feedbackSeconds: 600,
   notify: true,
+  selfUpdate: true,
   minFreeGib: 0,
   maxLoadPerCore: 0,
   modelFallbacks: {},
@@ -3070,6 +3073,44 @@ archive: (threadId) => Effect.sync(() => void archived.push(threadId)),
     }),
   );
 
+  it.effect("no gate starts while a self-update is staged, so the ones in flight end and the restart fires", () =>
+    Effect.gen(function* () {
+      const dataDir = tempDir();
+      const run = prOpenRun(dataDir);
+      const seen: Array<ReadonlyArray<string>> = [];
+      const gh: FactoryProcess["Service"] = {
+        run: (input) => {
+          seen.push(input.args ?? []);
+          return answered(PR_VIEW("MERGED", HEAD));
+        },
+      };
+      let staged = true;
+      const world = liveWorld(
+        background,
+        dataDir,
+        gh,
+        NodeServices.layer,
+        sessionsOf({}),
+        () => 1_000,
+        "mac-mini",
+        noAttention,
+        {
+          gate: { run: () => Effect.die("no gate runs while an update is staged") },
+          wake: Effect.void,
+          scope: yield* Scope.make(),
+          updateStaged: () => staged,
+        },
+      );
+      assert.deepStrictEqual(yield* world.gate(backgroundRepo, run), { kind: "draining" });
+      assert.strictEqual(world.gateRunning(run), false);
+      assert.deepStrictEqual(seen, []);
+      // Once nothing is staged (the placement failed), gates start again.
+      staged = false;
+      assert.deepStrictEqual(yield* world.gate(backgroundRepo, run), { kind: "started" });
+      yield* waitUntil("the gate to end", () => !world.gateRunning(run));
+    }),
+  );
+
   it.effect("a re-gate whose relaunch finds no room logs the wait and writes no error to the run", () =>
     Effect.gen(function* () {
       const dataDir = tempDir();
@@ -4444,6 +4485,88 @@ describe("liveWorld: the hosts", () => {
           { repo: "a/b", target: "local", reason: "slots full: 1 of 1 running" },
           { repo: "a/b", target: "mini", reason: "its load was not read this pass" },
         ]);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("self-update wiring", () => {
+  it.effect("forks the self-update once with self_update, checks it after every pass, and stopped follows it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const stop = yield* Deferred.make<void>();
+        const runs: Array<() => boolean> = [];
+        let afterPasses = 0;
+        let staged = false;
+        const made: Array<SelfUpdateOptions> = [];
+        const selfUpdate = (options: SelfUpdateOptions) =>
+          Effect.sync(() => {
+            made.push(options);
+            return {
+              run: (enabled: () => boolean) =>
+                Effect.sync(() => {
+                  runs.push(enabled);
+                }),
+              afterPass: Effect.sync(() => {
+                afterPasses += 1;
+              }),
+              stopped: stop,
+              staged: () => staged,
+            };
+          });
+        const shared = newShared();
+        const worlds: Array<PassWorld> = [];
+        const { loop, factoryDir, write } = yield* started(`${VALID}self_update: false\n`, noGhProcess, {
+          selfUpdate,
+          shared,
+          onWorld: (world) => worlds.push(world),
+        });
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* onePassMore(loop, factoryDir);
+        assert.strictEqual(runs.length, 1);
+        assert.strictEqual(afterPasses, 2);
+        assert.strictEqual(made.length, 1);
+        // `enabled` reads the config loaded now, so a reload changes the answer. Nothing reloads the
+        // config at run time yet: in production the key changes at a restart.
+        assert.strictEqual(runs[0]!(), false);
+        yield* write(`${VALID}self_update: true\n`);
+        yield* loop.reload;
+        assert.strictEqual(runs[0]!(), true);
+        assert.strictEqual(runs.length, 1);
+        // The gate path reads the updater's `staged`: no gate starts while an update is staged.
+        const repo: Repo = {
+          watched: { repo: "a/b", path: "/b" },
+          project: { ...timeLimitOnlyProjectConfig(), base: "main" },
+          trackerUser: "rawphp",
+        };
+        const run = newRunId("a/b", "11", 1);
+        const world = worlds.at(-1)!;
+        staged = true;
+        assert.deepStrictEqual(yield* world.gate(repo, run), { kind: "draining" });
+        assert.strictEqual(world.gateRunning(run), false);
+        staged = false;
+        assert.deepStrictEqual(yield* world.gate(repo, run), { kind: "started" });
+        yield* waitUntil("the gate to end", () => !world.gateRunning(run));
+        const options = made[0]!;
+        assert.strictEqual(options.dataDir, factoryDir);
+        assert.strictEqual(options.ghConfigDir(), "/gh");
+        assert.strictEqual(options.home, NodeOS.homedir());
+        assert.strictEqual(options.gatesRunning(), 0);
+        // A gate call in flight counts before its attempt takes a lock file.
+        shared.gating.add("a~b~1~run");
+        assert.strictEqual(options.gatesRunning(), 1);
+        shared.gating.clear();
+        assert.strictEqual(options.packageRoot, NodePath.resolve(import.meta.dirname, ".."));
+        assert.strictEqual(options.execPath, process.execPath);
+        // `stopped` waits on the updater's signal, not less.
+        const before = yield* Effect.raceFirst(
+          loop.stopped.pipe(Effect.as("stopped")),
+          realDelay(50).pipe(Effect.as("waiting")),
+        );
+        assert.strictEqual(before, "waiting");
+        const waiting = yield* Effect.forkChild(loop.stopped, { startImmediately: true });
+        yield* Deferred.succeed(stop, undefined);
+        yield* Fiber.join(waiting);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );

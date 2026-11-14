@@ -480,7 +480,8 @@ export interface PassWorld {
 export type GateStart =
   | { readonly kind: "started" }
   | { readonly kind: "queued"; readonly running: number; readonly max: number }
-  | { readonly kind: "high-load"; readonly oneMinute: number; readonly limit: number };
+  | { readonly kind: "high-load"; readonly oneMinute: number; readonly limit: number }
+  | { readonly kind: "draining" };
 
 /** The line of a run that ended in `stuck`. The reason is not printed: it can hold text the session or GitHub wrote. */
 export const stuckLine = (run: string): string =>
@@ -631,6 +632,9 @@ const loadAboveLimit = (over: Pick<Overload, "oneMinute" | "limit">): string =>
 /** The line of a gate held back because the load is high and a gate runs already. */
 const gateHeldByLoad = (over: Pick<Overload, "oneMinute" | "limit">) =>
   `gate queued: ${loadAboveLimit(over)} and a gate is already running`;
+/** The line of a gate held back because the runner restarts into a staged update once no gate runs. */
+export const GATE_WAITS_FOR_RESTART =
+  "gate queued: the runner restarts into a staged update once no gate runs";
 /** The line of a run whose gate passed. */
 export const GATE_PASSED_LINE = "the gate passed and the pull request is ready for review";
 
@@ -2078,7 +2082,9 @@ const startGate = (
         ? GATE_STARTED
         : start.kind === "queued"
           ? gateQueued(start)
-          : gateHeldByLoad(start),
+          : start.kind === "draining"
+            ? GATE_WAITS_FOR_RESTART
+            : gateHeldByLoad(start),
     );
   });
 };

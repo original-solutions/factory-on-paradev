@@ -109,6 +109,7 @@ const machine = (max: number): MachineConfig => ({
   maxConcurrentGates: 2,
   feedbackSeconds: 600,
   notify: true,
+  selfUpdate: true,
   minFreeGib: 10,
   maxLoadPerCore: 1,
   modelFallbacks: {},
@@ -4262,6 +4263,22 @@ describe("following a building run", () => {
       assert.equal(
         runLine(lines, `${REPO}#40 `),
         `${REPO}#40 building: session finished, gate queued: 1-minute load 55.2 is above 12 and a gate is already running`,
+      );
+    }),
+  );
+
+  it.effect("a building run whose gate waits for the runner's restart into a staged update says so", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(40, BUILDING, REPO, true);
+      fake.advances[`${REPO}#40`] = [
+        { kind: "ready-for-gate", pr: 3, prUrl: "https://github.com/rawphp/softfac/pull/3" },
+      ];
+      fake.gateStarts[`${REPO}#40`] = { kind: "draining" };
+      const { lines } = yield* pass(fake, [REPO], 3);
+      assert.equal(
+        runLine(lines, `${REPO}#40 `),
+        `${REPO}#40 building: session finished, gate queued: the runner restarts into a staged update once no gate runs`,
       );
     }),
   );

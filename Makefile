@@ -20,7 +20,8 @@ release: build
 
 # Installs a tagged version, the latest by default: clones the tag, installs its runtime dependencies,
 # and runs its own `install`, which places it at ~/.local/share/factory-runner/versions/<version>
-# and reloads the LaunchAgent. `make deploy TAG=v0.1.0` installs that one instead, for a rollback.
+# and reloads the LaunchAgent. `make deploy TAG=v0.1.0` installs that one instead, for a rollback;
+# take self-update out of the way first (README, "Release and deploy").
 deploy:
 	test -n "$(TAG)" || { echo "no v* tag on $(REPO); run make release first"; exit 2; }
 	tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \

@@ -31,6 +31,13 @@ export interface StatusSettings {
 }
 
 /**
+ * The idle reason of a live runner whose machine config does not load. A newer version's
+ * `status --json` must report `state: running` to pass an older runner's self-update smoke; this
+ * text only shows in the warning that names why it did not.
+ */
+export const CONFIG_NOT_LOADED_REASON = "the machine config does not load";
+
+/**
  * What the factory is doing: running, or idle for a reason (no config, or one it cannot read).
  * `running` means the pass loop started; it says nothing about whether passes succeed, which the
  * server log records. The reason names no path and no error, as every reading client gets it;

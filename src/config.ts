@@ -217,6 +217,11 @@ export interface MachineConfig {
   /** Whether a new attention item posts a macOS notification. The list is kept either way. */
   readonly notify: boolean;
   /**
+   * `self_update`: whether a runner installed under `versions/` stages a newer `v*` tag of its
+   * own repo and restarts into it between passes when no gate runs.
+   */
+  readonly selfUpdate: boolean;
+  /**
    * The free GiB the volumes of the worktrees and of the factory's data must have for a pass to
    * claim an issue or start a gate. 0 turns the check off.
    */
@@ -585,6 +590,7 @@ const MACHINE_KEYS = [
   "max_concurrent_gates",
   "feedback_seconds",
   "notify",
+  "self_update",
   "min_free_gib",
   "max_load_per_core",
   "model_fallbacks",
@@ -983,6 +989,7 @@ const machineFrom = (c: Checker, root: Mapping): MachineConfig | undefined => {
   );
   const feedbackSeconds = c.optionalUint(root, "", "feedback_seconds", DEFAULT_FEEDBACK_SECONDS, 0);
   const notify = c.optionalBoolean(root, "", "notify", true);
+  const selfUpdate = c.optionalBoolean(root, "", "self_update", true);
   const minFreeGib = c.optionalUint(root, "", "min_free_gib", DEFAULT_MIN_FREE_GIB, 0);
   const maxLoadPerCore = c.optionalUint(
     root,
@@ -1010,6 +1017,7 @@ const machineFrom = (c: Checker, root: Mapping): MachineConfig | undefined => {
     maxConcurrentGates === undefined ||
     feedbackSeconds === undefined ||
     notify === undefined ||
+    selfUpdate === undefined ||
     minFreeGib === undefined ||
     maxLoadPerCore === undefined ||
     modelFallbacks === undefined ||
@@ -1029,6 +1037,7 @@ const machineFrom = (c: Checker, root: Mapping): MachineConfig | undefined => {
     maxConcurrentGates,
     feedbackSeconds,
     notify,
+    selfUpdate,
     minFreeGib,
     maxLoadPerCore,
     modelFallbacks,
