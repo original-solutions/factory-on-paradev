@@ -20,6 +20,7 @@ import { isRunner, lockHolder } from "./runnerLock.ts";
 import { retro, RETRO_USAGE } from "./retro.ts";
 import { readTextOrNull } from "./syncFiles.ts";
 import {
+  CONFIG_NOT_LOADED_REASON,
   buildStatus,
   type FactoryStatus,
   type StatusReport,
@@ -63,7 +64,7 @@ const factoryStatus = (io: CliIo): FactoryStatus => {
   if (text === null) return { state: "idle", reason: "no factory config" };
   const parsed = parseMachineConfig(text, io.machineConfigPath);
   if (Result.isFailure(parsed)) {
-    return { state: "idle", reason: "the machine config does not load" };
+    return { state: "idle", reason: CONFIG_NOT_LOADED_REASON };
   }
   const { config } = parsed.success;
   return {

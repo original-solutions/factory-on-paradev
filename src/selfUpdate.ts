@@ -26,6 +26,7 @@ import {
 import { stage, swapIn } from "./install.ts";
 import { installPathsOf, packageVersion } from "./paths.ts";
 import { FactoryProcess, type RunInput } from "./process.ts";
+import { CONFIG_NOT_LOADED_REASON } from "./status.ts";
 
 /** How long after start the first tag read waits, and the wait between reads. */
 export const CHECK_INTERVAL = Duration.minutes(10);
@@ -37,8 +38,6 @@ const GH_TIMEOUT_MS = 60_000;
 const REFS_BYTES = 1024 * 1024;
 /** Room for the whole `status --json` of a busy data dir; a longer report fails the smoke. */
 const SMOKE_BYTES = 16 * 1024 * 1024;
-/** What `status --json` says when the machine config does not load under the staged tree. */
-const CONFIG_NOT_LOADED = "the machine config does not load";
 /** How much of a failed step's output its warning carries. */
 const WARN_TAIL_CHARS = 2_000;
 /** The temp clone of a tag being staged: `versions/.clone-<version>-<random>`. */
@@ -230,8 +229,8 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
       }
       // The staged tree must read this machine's config: a runner that cannot stays idle, and an
       // idle runner runs no pass, so it would never update past itself.
-      if (report.reason === CONFIG_NOT_LOADED) {
-        return yield* fail(`smoke: status --json says ${CONFIG_NOT_LOADED} under ${tag}`);
+      if (report.reason === CONFIG_NOT_LOADED_REASON) {
+        return yield* fail(`smoke: status --json says ${CONFIG_NOT_LOADED_REASON} under ${tag}`);
       }
 
       try {

@@ -51,7 +51,7 @@ import { readLowestFreeSpace, type FreeSpace } from "./disk.ts";
 import { overload, readLoad, type Load } from "./load.ts";
 import { checkHost, type CliCall } from "./paradev/hostsCheck.ts";
 import { liveSshSpawn, type SshSpawn } from "./paradev/ssh.ts";
-import { makeSelfUpdate, type SelfUpdate } from "./selfUpdate.ts";
+import { makeSelfUpdate, type SelfUpdate, type SelfUpdateOptions } from "./selfUpdate.ts";
 import * as Gate from "./gate.ts";
 import { guardLogStreams } from "./logStreams.ts";
 import { FactoryGate, clearGateLocks, gateLockFile } from "./gate.ts";
@@ -902,8 +902,8 @@ export interface RuntimeOptions {
   readonly proxyGet?: ProxyGet;
   /** What the Paradev adapter is built with beyond the `paradev` block: a test's remote base and waits. */
   readonly sessions?: Partial<Omit<ParadevSessionsConfig, "agent" | "model" | "effort">>;
-  /** The self-update the factory forks and checks after each pass. Default the real one; a test passes its own. */
-  readonly selfUpdate?: SelfUpdate;
+  /** Makes the self-update the factory forks and checks after each pass. Default the real one; a test passes its own. */
+  readonly selfUpdate?: (options: SelfUpdateOptions) => Effect.Effect<SelfUpdate>;
 }
 
 /** A pass of a factory with no config to run on. */
@@ -1069,16 +1069,14 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
   let sweeping = false;
   let checkingHosts = false;
   let updating = false;
-  const selfUpdate =
-    options.selfUpdate ??
-    (yield* makeSelfUpdate({
-      home: NodeOS.homedir(),
-      dataDir: factoryDir,
-      packageRoot: NodePath.resolve(import.meta.dirname, ".."),
-      execPath: globalThis.process.execPath,
-      ghConfigDir: () => placingNow().machine.ghConfigDir,
-      gatesRunning: () => shared.gating.size,
-    }));
+  const selfUpdate = yield* (options.selfUpdate ?? makeSelfUpdate)({
+    home: NodeOS.homedir(),
+    dataDir: factoryDir,
+    packageRoot: NodePath.resolve(import.meta.dirname, ".."),
+    execPath: globalThis.process.execPath,
+    ghConfigDir: () => placingNow().machine.ghConfigDir,
+    gatesRunning: () => shared.gating.size,
+  });
 
   const onePass = Effect.gen(function* () {
     const current = state.current;
