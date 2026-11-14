@@ -14,6 +14,7 @@ import { useTempDirs } from "../ledger/testSupport.ts";
 import { FactoryPaths } from "../paths.ts";
 import { FactoryProcess, layer as processLayer, type RunResult } from "../process.ts";
 import { MessageRejectedError, SessionsError, ThreadNotFoundError, type LaunchRequest } from "../sessions.ts";
+import { sha256 } from "../text.ts";
 import { layer as cliLayer } from "./cli.ts";
 import { fakeSuperset, readFixture, type Step } from "./fake-superset.ts";
 import {
@@ -3372,12 +3373,17 @@ describe("the orphan sweep", () => {
       yield* seedSweep(t.data);
       // A launch file of the same command that names another record does not find this one.
       yield* writeLaunch(t.data, NO_AGENT_LAUNCH, `cloud:${C6_WS}`).pipe(Effect.provide(NodeServices.layer));
+      // The live run's launch file does not read back: its record has an agent, so it is spared.
+      const launches = NodePath.join(t.data, "paradev", "launches");
+      const live = NodePath.join(launches, `${sha256(LAUNCH_ID)}.json`);
+      assert.isTrue(NodeFS.existsSync(live));
+      NodeFS.writeFileSync(live, '{"threa');
       yield* TestClock.setTime(NOW);
       const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
       assert.deepStrictEqual(t.unused(), []);
       assert.strictEqual(logs.length, 3, logs.join("\n"));
       assert.include(logs[1], `archived cloud workspace ${NO_AGENT}`);
-      assert.include(logs[1], "no launch file names its record");
+      assert.include(logs[1], "no agent, and no launch file names its record");
       const after = yield* readThread(t.data, NO_AGENT).pipe(Effect.provide(NodeServices.layer));
       assert.strictEqual(after!.archivedAt, NOW);
       assert.isNull((yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer)))!.archivedAt);

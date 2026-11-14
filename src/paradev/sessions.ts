@@ -1708,8 +1708,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * whole or torn, created over 10 minutes ago: a launch that died between its create and its
    * record left it, and an idle box bills. A workspace with a record is the core's, whatever state
    * the record is in, unless the core can never reach it: the record has `pendingArchive` (its
-   * launch failed and could not archive it), or no launch file names it (the launch died between
-   * its record and its launch file, so a repeat of it creates another workspace). One log line
+   * launch failed and could not archive it), or it has no agent and no launch file names it (the
+   * launch died between its record and its launch file, so a repeat of it creates another
+   * workspace). A record with an agent is the core's whatever its launch file says. One log line
    * each; a workspace that fails to archive is one warning, and the rest go on. The tag is the only mark of whose a workspace is, so this assumes one runner
    * per Paradev organisation (P2's solo runner).
    */
@@ -1728,8 +1729,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         const why =
           record.pendingArchive === true
             ? "its launch failed, and so did that launch's archive"
-            : (yield* local(readLaunch(dataDir, record.launchCommandId))) !== record.threadId
-              ? "no launch file names its record"
+            : record.terminals.length === 0 &&
+                (yield* local(readLaunch(dataDir, record.launchCommandId))) !== record.threadId
+              ? "no agent, and no launch file names its record"
               : null;
         if (why === null) continue;
         yield* archiveRecord(record).pipe(
