@@ -24,5 +24,6 @@ release: build
 deploy:
 	test -n "$(TAG)" || { echo "no v* tag on $(REPO); run make release first"; exit 2; }
 	tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
-	git clone -q --depth 1 --branch "$(TAG)" "$(REPO)" "$$tmp" && \
-	cd "$$tmp" && npm ci --omit=dev && $(NODE) src/bin.ts install
+	git init -q "$$tmp" && cd "$$tmp" && \
+	git fetch -q --depth 1 "$(REPO)" tag "$(TAG)" && git -c advice.detachedHead=false checkout -q FETCH_HEAD && \
+	npm ci --omit=dev && $(NODE) src/bin.ts install
