@@ -1834,6 +1834,24 @@ describe("runs that are confirmed and still in triage", () => {
     }),
   );
 
+  it.effect("a triage run refused for no room holds the repo's ready issues back this pass, and other repos go on", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.ready[REPO] = [1];
+      fake.ready[OTHER] = [4];
+      fake.pushStart(`${REPO}#12`, noRoom());
+      fake.pushStart(`${OTHER}#4`, started(4, OTHER));
+      const { report } = yield* pass(fake, [REPO, OTHER], 5);
+      assert.deepEqual(starts(fake), [`resume ${REPO}#12`, `start ${OTHER}#4`]);
+      assert.equal(report.errors, 0);
+      assert.deepEqual(
+        fake.events.filter((e) => e.event === "claim_skipped"),
+        [{ event: "claim_skipped", data: { repo: REPO, reason: "no-room" } }],
+      );
+    }),
+  );
+
   it.effect("a triage run that went stuck says so and names the run", () =>
     Effect.gen(function* () {
       const fake = new Fake();
