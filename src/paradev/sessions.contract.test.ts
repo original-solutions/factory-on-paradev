@@ -3267,6 +3267,8 @@ describe("the orphan sweep", () => {
       { ...tagged, id: "e1e2d3c4-0000-4000-8000-000000000003", createdAt: ago(9 * MINUTE) },
       { ...tagged, id: "a1e2d3c4-0000-4000-8000-000000000004", status: "deleted" },
       { ...tagged, id: OBJECT_TAG, tags: [{ name: "factory" }] },
+      { ...tagged, id: "a5e2d3c4-0000-4000-8000-000000000009", createdAt: "not a date" },
+      { ...tagged, id: "../a6e2d3c4" }, // not a plain id: never a path or an argv word
     ];
   };
   const seedSweep = (data: string) =>
