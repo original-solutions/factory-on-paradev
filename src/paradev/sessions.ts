@@ -332,13 +332,6 @@ const runnerTag = (id: string): string => `factory-${id}`;
 const hasTag = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined, name: string): boolean =>
   (tags ?? []).some((tag) => (typeof tag === "string" ? tag : tag.name) === name);
 
-/**
- * The location flag of every call against `target`: the one place the adapter writes `--local`.
- * Cloud is the host Paradev calls `cloud`. The target modules take their flag from here.
- */
-const at = (target: Target | ThreadTarget): ReadonlyArray<string> =>
-  target.kind === "local" ? ["--local"] : ["--host", "machineId" in target ? target.machineId : "cloud"];
-
 export const make = Effect.fn("ParadevSessions.make")(function* (config: ParadevSessionsConfig) {
   const cli = yield* SupersetCli;
   const runner = yield* FactoryProcess;
@@ -649,6 +642,13 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       } satisfies GitRepo;
     });
 
+  /**
+   * The location flag of every call against `target`: the one place the adapter writes `--local`.
+   * Cloud is the host Paradev calls `cloud`. With {@link targetFor} below, the one place the
+   * adapter tells this Mac, a host and cloud apart; each module takes its flag from here.
+   */
+  const at = (target: Target | ThreadTarget): ReadonlyArray<string> =>
+    target.kind === "local" ? ["--local"] : ["--host", "machineId" in target ? target.machineId : "cloud"];
   const localTarget = makeLocalTarget({ cli, at: at({ kind: "local" }), fs, processes, commandOf, claudeProjectsDir, sessionRepo, git, gitOk });
   const cloudTarget = makeCloudTarget({ cli, at: at({ kind: "cloud" }), commandOf, aliveReads: cloudAliveReads });
   const hostDeps = { cli, at: (machineId: string) => at({ kind: "host", machineId }), ssh, hostOf, commandOf, trustReads };
