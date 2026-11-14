@@ -131,7 +131,7 @@ describe("beltPayload", () => {
       run(4, {}, "host:gone:ws-4"),
       run(5),
     ]);
-    assert.deepStrictEqual(belt.runner.targets, RUNNER.targets);
+    assert.deepStrictEqual(belt.runner.targets.slice(0, 2), RUNNER.targets.slice(0, 2));
     assert.deepStrictEqual(
       belt.runs.map((entry) => [entry.target, entry.workspaceId]),
       [
@@ -142,6 +142,50 @@ describe("beltPayload", () => {
         ["gone", "ws-4"],
         [null, null],
       ],
+    );
+  });
+
+  it("says only which check failed for a target that is not ready: its line can quote paths, users and addresses", () => {
+    const row = (kind: "local" | "host" | "cloud", reason: string) => ({
+      kind,
+      name: kind,
+      online: true,
+      load: null,
+      slots: { used: 0, max: 1 },
+      ready: false,
+      reason,
+    });
+    const belt = beltPayload({
+      nowMs: NOW,
+      runner: {
+        ...RUNNER,
+        targets: [
+          row("local", "this Mac holds claims: low disk"),
+          row("host", "not ready: clone /Users/tomk/app: clone it on the host: git clone https://github.com/acme/app /Users/tomk/app"),
+          row("cloud", "the proxy check failed: getaddrinfo ENOTFOUND trilogy-mac.tail459612.ts.net"),
+        ],
+      },
+      runs: [],
+      attention: [],
+      hostNames: HOST_NAMES,
+    });
+    assert.deepStrictEqual(
+      belt.runner.targets.map((target) => target.reason),
+      [
+        "this Mac's load or disk check holds claims; factory-runner status says why",
+        "its hosts check failed; factory-runner status says why",
+        "its proxy check did not pass; factory-runner status says why",
+      ],
+    );
+    const text = JSON.stringify(belt.runner.targets);
+    for (const leak of ["/Users/", "git clone", "ENOTFOUND", "ts.net"]) assert.notInclude(text, leak);
+  });
+
+  it("keeps the reason of a target that is ready: placement's own words, with no outside text", () => {
+    const belt = payload([]);
+    assert.deepStrictEqual(
+      belt.runner.targets.map((target) => target.reason),
+      ["slots full: 1 of 1 running", null, "its proxy check did not pass; factory-runner status says why"],
     );
   });
 
