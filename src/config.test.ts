@@ -1184,9 +1184,11 @@ describe("the example machine config", () => {
           Object.assign(tree, parse(yaml));
         }),
       );
-      expect(c.hosts.map((h) => [h.id, h.name])).toEqual([["c9c39956e0c1756e30d6bb9f4f907ff1", "trilogy-mac"]]);
+      expect(c.hosts.map((h) => [h.id, h.name, h.ghLogin])).toEqual([
+        ["c9c39956e0c1756e30d6bb9f4f907ff1", "trilogy-mac", "tomkaczocha"],
+      ]);
       expect(c.repos[0]!.hosts).toEqual([
-        { id: "c9c39956e0c1756e30d6bb9f4f907ff1", path: expect.stringMatching(/^\//) },
+        { id: "c9c39956e0c1756e30d6bb9f4f907ff1", path: expect.stringMatching(/^\//), ghLogin: "tomkaczocha" },
       ]);
       expect(c.repos[0]!.cloud).toBe("edad9805-e48d-40f3-a06c-e19a4105f974");
       expect(c.cloud).toBeDefined();
