@@ -22,6 +22,7 @@ import {
   AgentProcess,
   agentProcessLayer,
   make,
+  type LaunchTarget,
   type ParadevSessions,
   type ParadevSessionsConfig,
 } from "./sessions.ts";
@@ -3985,10 +3986,11 @@ describe("placement, once per command id (#55)", () => {
 });
 
 describe("placement is durable under the command id (#55)", () => {
-  it.live("a launch cut off after placement is sent again to the recorded target, and places nothing again", () =>
+  it.live("a launch cut off after placement is sent again to the recorded target, which placement is asked to check", () =>
     Effect.gen(function* () {
       const r = repos();
       let placed = 0;
+      const asked: Array<LaunchTarget | undefined> = [];
       // The first send is placed on the host, and its `workspaces create` fails: nothing is recorded but the placement.
       const first = rig(
         [
@@ -4012,22 +4014,30 @@ describe("placement is durable under the command id (#55)", () => {
         path: HOST_CLONE,
       });
 
-      // A second send, with the same data dir, never asks `place` and creates on the host.
+      // A second send, with the same data dir, asks `place` about the recorded target and creates on the host.
       const second = rig(
         [
           { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
           { argv: ["projects", "list", "--host", HOST], answer: [{ id: HOST_PROJECT, name: "factory-paradev-spike", path: `${HOST_CLONE}/`, repo: "https://github.com/original-solutions/factory-paradev-spike" }] },
           { argv: argvIs("workspaces", "create"), fail: "stop here" },
         ],
-        { config: { remoteBase: r.remoteBase, hosts: HOSTS, place: () => Effect.die("placed again") } },
+        {
+          config: {
+            remoteBase: r.remoteBase,
+            hosts: HOSTS,
+            // The kept target qualifies: placement answers it.
+            place: (_request, kept) => Effect.sync(() => (asked.push(kept), kept ?? { kind: "local" as const })),
+          },
+        },
       );
       NodeFS.cpSync(first.data, second.data, { recursive: true });
       yield* second.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.deepStrictEqual(asked, [{ kind: "host", machineId: HOST, path: HOST_CLONE }]);
       assert.deepStrictEqual(second.calls.find(argvIs("workspaces", "create"))?.slice(0, 3), ["workspaces", "create", "--host"]);
     }),
   );
 
-  it.live("launchEnded is told the command id once after a fresh placement, whether the launch succeeds or fails, and not on a resend", () =>
+  it.live("launchEnded is told the command id once after every placement, fresh or kept, whether the launch succeeds or fails", () =>
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/x8", "main");
@@ -4047,25 +4057,25 @@ describe("placement is durable under the command id (#55)", () => {
       );
       yield* failing.run((s) => s.launch(request())).pipe(Effect.flip);
       assert.deepStrictEqual(ended, [LAUNCH_ID]);
-      // The resend reuses the placement file: it places nothing and tells nothing.
+      // The resend finds the placement file: the placer checks that target, and counts it again.
       NodeFS.rmSync(NodePath.join(failing.data, "paradev", "launches"), { recursive: true, force: true });
       const resend = rig(
         [
           { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
           { argv: argvIs("workspaces", "create"), fail: "create refused" },
         ],
-        { config: { ...config, place: () => Effect.die("placed again") } },
+        { config: { ...config, place: (_request, kept) => Effect.succeed(kept ?? { kind: "host" as const, machineId: "none", path: "/none" }) } },
       );
       NodeFS.cpSync(failing.data, resend.data, { recursive: true });
       yield* resend.run((s) => s.launch(request())).pipe(Effect.flip);
-      assert.deepStrictEqual(ended, [LAUNCH_ID]);
+      assert.deepStrictEqual(ended, [LAUNCH_ID, LAUNCH_ID]);
       // A launch that succeeds.
       const ok = rig(
         [...launchScript(r), { argv: argvIs("agents", "explain"), fixture: "agents-explain-local-starting" }],
         { config },
       );
       yield* ok.run((s) => s.launch(request({ commandId: "softfac:o__r__2__1:launch" })));
-      assert.deepStrictEqual(ended, [LAUNCH_ID, "softfac:o__r__2__1:launch"]);
+      assert.deepStrictEqual(ended, [LAUNCH_ID, LAUNCH_ID, "softfac:o__r__2__1:launch"]);
     }),
   );
 
@@ -4079,6 +4089,81 @@ describe("placement is durable under the command id (#55)", () => {
       assert.deepStrictEqual(t.calls, []);
       assert.isNull(yield* readLaunch(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)));
       assert.isNull(yield* readPlacement(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)));
+    }),
+  );
+});
+
+describe("a kept placement is checked again (#55)", () => {
+  const hostTarget = { kind: "host", machineId: HOST, path: HOST_CLONE } as const;
+  const cloudTarget = { kind: "cloud", environmentId: ENV, machineSize: "small" } as const;
+  const hostScript = (r: ReturnType<typeof repos>): ReadonlyArray<Step> => [
+    { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+    { argv: ["projects", "list", "--host", HOST], answer: [{ id: HOST_PROJECT, name: "factory-paradev-spike", path: `${HOST_CLONE}/`, repo: "https://github.com/original-solutions/factory-paradev-spike" }] },
+    { argv: argvIs("workspaces", "create"), fail: "create refused" },
+  ];
+
+  it.live("a kept host placement whose host is full is refused: no launch, and the placement file stays", () =>
+    Effect.gen(function* () {
+      const asked: Array<LaunchTarget | undefined> = [];
+      const ended: Array<string> = [];
+      const t = rig([], {
+        config: {
+          hosts: HOSTS,
+          place: (_request, kept) => Effect.sync(() => void asked.push(kept)).pipe(Effect.andThen(Effect.fail(new NoTargetHasRoom()))),
+          launchEnded: (id: string) => Effect.sync(() => void ended.push(id)),
+        },
+      });
+      yield* writePlacement(t.data, LAUNCH_ID, hostTarget).pipe(Effect.provide(NodeServices.layer));
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.isTrue(isNoTargetHasRoom(error));
+      assert.deepStrictEqual(asked, [hostTarget]);
+      assert.deepStrictEqual(t.calls, []);
+      assert.isNull(yield* readLaunch(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)));
+      assert.deepStrictEqual(yield* readPlacement(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)), hostTarget);
+      // Nothing was placed, so nothing is in flight to end.
+      assert.deepStrictEqual(ended, []);
+    }),
+  );
+
+  it.live("a kept host placement that qualifies launches there and is released when the launch ends", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      const ended: Array<string> = [];
+      const t = rig(hostScript(r), {
+        config: {
+          remoteBase: r.remoteBase,
+          hosts: HOSTS,
+          place: (_request, kept) => Effect.succeed(kept ?? { kind: "local" as const }),
+          launchEnded: (id: string) => Effect.sync(() => void ended.push(id)),
+        },
+      });
+      yield* writePlacement(t.data, LAUNCH_ID, hostTarget).pipe(Effect.provide(NodeServices.layer));
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.deepStrictEqual(t.calls.find(argvIs("workspaces", "create"))?.slice(0, 3), ["workspaces", "create", "--host"]);
+      assert.deepStrictEqual(ended, [LAUNCH_ID]);
+    }),
+  );
+
+  it.live("a kept cloud placement is ignored: placement is asked afresh and its answer is kept", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      const asked: Array<LaunchTarget | undefined> = [];
+      const t = rig(
+        [
+          { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
+          { argv: argvIs("workspaces", "create"), fail: "create refused" },
+        ],
+        {
+          config: {
+            remoteBase: r.remoteBase,
+            place: (_request, kept) => Effect.sync(() => (asked.push(kept), { kind: "local" as const })),
+          },
+        },
+      );
+      yield* writePlacement(t.data, LAUNCH_ID, cloudTarget).pipe(Effect.provide(NodeServices.layer));
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.deepStrictEqual(asked, [undefined]);
+      assert.deepStrictEqual(yield* readPlacement(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)), { kind: "local" });
     }),
   );
 });

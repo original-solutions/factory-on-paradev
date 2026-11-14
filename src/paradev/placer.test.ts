@@ -359,4 +359,96 @@ describe("placer", () => {
       ]);
     }),
   );
+
+  describe("a placement kept from an earlier send", () => {
+    const HOST_TARGET = { kind: "host", machineId: "h1", path: "/srv/hosted" } as const;
+
+    it.effect("is checked as the only candidate and, when it qualifies, counted like a fresh placement", () =>
+      Effect.gen(function* () {
+        const t = setup();
+        t.placer.beginPass({ localHeld: "high load", proxy: null });
+        assert.deepStrictEqual(yield* t.placer.place(request("hosted", 1), HOST_TARGET), HOST_TARGET);
+        // The host's one slot is taken by the kept launch, and this Mac holds claims.
+        const second = yield* t.placer.place(request("hosted", 2)).pipe(Effect.flip);
+        assert.instanceOf(second, NoTargetHasRoom);
+        // It is in flight until its launch ends, as a fresh placement is.
+        t.placer.beginPass({ localHeld: "high load", proxy: null });
+        assert.instanceOf(yield* t.placer.place(request("hosted", 3)).pipe(Effect.flip), NoTargetHasRoom);
+        yield* t.placer.launchEnded("launch-hosted-1");
+        t.placer.beginPass({ localHeld: "high load", proxy: null });
+        assert.deepStrictEqual(yield* t.placer.place(request("hosted", 4)), HOST_TARGET);
+      }),
+    );
+
+    it.effect("that no longer qualifies is refused, and the launch does not move to a machine with room", () =>
+      Effect.gen(function* () {
+        const t = setup({
+          counts: [
+            { target: { kind: "local" }, running: 0 },
+            { target: { kind: "host", machineId: "h1" }, running: 1 },
+          ],
+        });
+        t.placer.beginPass({ localHeld: null, proxy: null });
+        const error = yield* t.placer.place(request("hosted"), HOST_TARGET).pipe(Effect.flip);
+        assert.instanceOf(error, NoTargetHasRoom);
+        assert.deepStrictEqual(drops(t.events), [
+          { repo: "acme/hosted", target: "mini", reason: "slots full: 1 of 1 running" },
+        ]);
+      }),
+    );
+
+    it.effect("on a host that is not ready, or over its load, is refused", () =>
+      Effect.gen(function* () {
+        const notReady = setup({ notReady: new Map([["h1", "claude is not trusted"]]) });
+        notReady.placer.beginPass({ localHeld: null, proxy: null });
+        assert.instanceOf(yield* notReady.placer.place(request("hosted"), HOST_TARGET).pipe(Effect.flip), NoTargetHasRoom);
+        const busy = setup({ hostLoad: { oneMinute: 20, cores: 10 } });
+        busy.placer.beginPass({ localHeld: null, proxy: null });
+        assert.instanceOf(yield* busy.placer.place(request("hosted"), HOST_TARGET).pipe(Effect.flip), NoTargetHasRoom);
+      }),
+    );
+
+    it.effect("on this Mac is refused when its slots are full, though a host has room", () =>
+      Effect.gen(function* () {
+        const t = setup({ counts: [{ target: { kind: "local" }, running: 1 }, { target: { kind: "host", machineId: "h1" }, running: 0 }] });
+        t.placer.beginPass({ localHeld: null, proxy: null });
+        const error = yield* t.placer.place(request("hosted"), { kind: "local" }).pipe(Effect.flip);
+        assert.instanceOf(error, NoTargetHasRoom);
+      }),
+    );
+
+    it.effect("on this Mac qualifies and is counted", () =>
+      Effect.gen(function* () {
+        const t = setup();
+        t.placer.beginPass({ localHeld: null, proxy: null });
+        assert.deepStrictEqual(yield* t.placer.place(request("hosted", 1), { kind: "local" }), { kind: "local" });
+        // This Mac's one slot is taken: the next hosted launch goes to the host.
+        assert.deepStrictEqual(yield* t.placer.place(request("hosted", 2)), HOST_TARGET);
+      }),
+    );
+
+    it.effect("on a target the repo no longer lists is placed afresh", () =>
+      Effect.gen(function* () {
+        const t = setup();
+        t.placer.beginPass({ localHeld: null, proxy: null });
+        // The repo lists no hosts now: it runs on this Mac.
+        assert.deepStrictEqual(yield* t.placer.place(request("mac"), HOST_TARGET), { kind: "local" });
+        // The repo lists the host, but the machine config no longer has it.
+        const gone = setup({ machine: machine({ hosts: [] }) });
+        gone.placer.beginPass({ localHeld: null, proxy: null });
+        assert.deepStrictEqual(yield* gone.placer.place(request("hosted"), HOST_TARGET), { kind: "local" });
+      }),
+    );
+
+    it.effect("uses the path the repo lists now", () =>
+      Effect.gen(function* () {
+        const t = setup();
+        t.placer.beginPass({ localHeld: null, proxy: null });
+        assert.deepStrictEqual(
+          yield* t.placer.place(request("hosted"), { kind: "host", machineId: "h1", path: "/old/place" }),
+          HOST_TARGET,
+        );
+      }),
+    );
+  });
 });
