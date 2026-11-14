@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe } from "vitest";
 
 import { installPathsOf } from "./paths.ts";
 import { FactoryProcess, type RunInput, type RunResult } from "./process.ts";
-import { makeSelfUpdate } from "./selfUpdate.ts";
+import { makeSelfUpdate, repositoryOf } from "./selfUpdate.ts";
 import { CONFIG_NOT_LOADED_REASON } from "./status.ts";
 
 const EXEC_PATH = "/opt/node/bin/node";
@@ -281,6 +281,42 @@ describe("self-update", () => {
         ]);
       }),
     );
+  });
+
+  it.effect("does nothing but say so when package.json has no github repository or no X.Y.Z version", () =>
+    Effect.gen(function* () {
+      const cases = [
+        { version: "0.1.0" },
+        { version: "0.1.0", repository: { type: "git", url: "https://github.com/o/r.git" } },
+        { version: "0.1.0", repository: "https://github.com/o/r" },
+        { version: "0.1.0", repository: "o/r" },
+        { version: "0.1.0-rc.1", repository: "github:o/r" },
+      ];
+      for (const manifest of cases) {
+        const f = fixture();
+        f.answers.refs = ["refs/tags/v0.2.0"];
+        write(NodePath.join(f.packageRoot, "package.json"), JSON.stringify(manifest));
+        yield* withUpdater(f, true, () =>
+          Effect.gen(function* () {
+            yield* TestClock.adjust("30 minutes");
+            expect(f.calls).toEqual([]);
+            expect(loud(f)).toEqual([
+              {
+                level: "Info",
+                text: `self-update off: ${f.packageRoot}/package.json needs a "github:<owner>/<repo>" repository and an X.Y.Z version`,
+              },
+            ]);
+          }),
+        );
+      }
+    }),
+  );
+
+  it("reads this package's repository, so the shipped runner updates from its own repo", () => {
+    expect(repositoryOf(NodePath.resolve(import.meta.dirname, ".."))).toEqual({
+      owner: "original-solutions",
+      repo: "factory-on-paradev",
+    });
   });
 
   it.effect("first reads the tags ten minutes after start, as the factory's gh login", () => {

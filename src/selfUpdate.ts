@@ -89,7 +89,7 @@ interface Repository {
   readonly repo: string;
 }
 
-const repositoryOf = (packageRoot: string): Repository | null => {
+export const repositoryOf = (packageRoot: string): Repository | null => {
   const json = JSON.parse(
     NodeFS.readFileSync(NodePath.join(packageRoot, "package.json"), "utf8"),
   ) as { repository?: unknown };
