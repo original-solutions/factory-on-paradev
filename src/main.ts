@@ -118,7 +118,7 @@ import {
 } from "./runner/start.ts";
 import { takeStopRequest } from "./runner/stop.ts";
 import * as Paths from "./paths.ts";
-import type { FactorySessions, Model } from "./sessions.ts";
+import { isNoTargetHasRoom, NO_TARGET_HAS_ROOM, type FactorySessions, type Model } from "./sessions.ts";
 import { type CliError, layer as cliLayer, SupersetCli } from "./paradev/cli.ts";
 import { afterPass as writeBeltAfterPass, newBeltMemo } from "./paradev/belt.ts";
 import { makePlacer } from "./paradev/placer.ts";
@@ -631,8 +631,11 @@ export const liveWorld = (
             words === null ? Effect.void : Effect.logInfo(`${label} ${state}: ${words}`)
           ).pipe(Effect.as(step));
         },
+        // No room for a relaunch is a wait, not an error: the next call sends it again.
         onFailure: (error) =>
-          Effect.logError(`error: ${label} gate: ${plain(error.message)}`).pipe(
+          isNoTargetHasRoom(error)
+            ? Effect.logInfo(`${label} pr-open: waits: ${NO_TARGET_HAS_ROOM}`).pipe(Effect.as(null))
+            : Effect.logError(`error: ${label} gate: ${plain(error.message)}`).pipe(
             Effect.andThen(
               recordError(run, "gate", errorKind(error), error.message).pipe(
                 Effect.catch((failed) =>
