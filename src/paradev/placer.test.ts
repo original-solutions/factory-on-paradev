@@ -1,5 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 
 import type { HostConfig, MachineConfig, WatchedRepo } from "../config.ts";
 import type { MachineEvent } from "../ledger/events.ts";
@@ -288,6 +290,112 @@ describe("placer", () => {
       t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
       yield* t.placer.place(request("hosted"));
       assert.strictEqual(t.reads.running, 2);
+    }),
+  );
+
+  it.effect("targets: a row for this Mac, each configured host and cloud, from the pass's readings", () =>
+    Effect.gen(function* () {
+      const t = setup({
+        counts: [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "host", machineId: "h1" }, running: 0 },
+          { target: { kind: "cloud" }, running: null },
+        ],
+        notReady: new Map([["h1", "git identity: no user.email"]]),
+      });
+      t.placer.beginPass({ localHeld: "high load", proxy: null, machine: t.machine() });
+      assert.deepStrictEqual(yield* t.placer.targets, [
+        {
+          kind: "local",
+          name: "local",
+          online: true,
+          load: quiet,
+          slots: { used: 1, max: 1 },
+          ready: false,
+          reason: "slots full: 1 of 1 running",
+        },
+        {
+          kind: "host",
+          name: "mini",
+          online: true,
+          load: quiet,
+          slots: { used: 0, max: 1 },
+          ready: false,
+          reason: "not ready: git identity: no user.email",
+        },
+        {
+          kind: "cloud",
+          name: "cloud",
+          online: false,
+          load: null,
+          slots: { used: null, max: 1 },
+          ready: true,
+          reason: "its running agents could not be counted",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("targets: no cloud row without a cloud block, and cloud is not ready before a pass checked the proxy", () =>
+    Effect.gen(function* () {
+      const none = setup({ machine: machine({ cloud: undefined, hosts: [] }) });
+      none.placer.beginPass({ localHeld: null, proxy: null, machine: none.machine() });
+      assert.deepStrictEqual((yield* none.placer.targets).map((row) => row.name), ["local"]);
+      const unchecked = setup();
+      const cloud = (yield* unchecked.placer.targets).find((row) => row.kind === "cloud")!;
+      assert.deepStrictEqual({ ready: cloud.ready, reason: cloud.reason }, { ready: false, reason: PROXY_NOT_CHECKED });
+    }),
+  );
+
+  it.effect("targets: shares the pass's one read of the counts and load with placement, and counts the slot a launch took", () =>
+    Effect.gen(function* () {
+      const t = setup();
+      t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
+      assert.deepStrictEqual(yield* t.placer.place(request("hosted")), { kind: "local" });
+      const rows = yield* t.placer.targets;
+      assert.deepStrictEqual(t.reads, { running: 1, load: 1 });
+      assert.deepStrictEqual(rows[0]!.slots, { used: 1, max: 1 });
+    }),
+  );
+
+  it.effect("targets: reads the counts off the placement lock, and a read that ends after the next pass began is not that pass's counts", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const t = setup({ machine: machine({ local: { maxRuns: 4 } }), slowRead: Deferred.await(gate) });
+      t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
+      // No launch read the counts this pass, so the rows read them, and the snapshot is slow.
+      const rows = yield* Effect.forkChild(t.placer.targets);
+      yield* Effect.yieldNow;
+      assert.strictEqual(t.reads.running, 1);
+      // A launch with nothing to read is not held up by it, and the rows count it once they have the snapshot.
+      const placed = { done: false };
+      yield* Effect.forkChild(
+        t.placer.place(request("mac")).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              placed.done = true;
+            }),
+          ),
+        ),
+      );
+      yield* Effect.forEach([1, 2, 3], () => Effect.yieldNow, { discard: true });
+      assert.ok(placed.done, "the launch waited on the rows' read");
+      // The next pass begins before the snapshot answers: its launches read their own counts.
+      t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
+      yield* Deferred.succeed(gate, undefined);
+      assert.deepStrictEqual((yield* Fiber.join(rows)).map((row) => row.slots.used), [1, 0, 0]);
+      yield* t.placer.place(request("hosted"));
+      assert.strictEqual(t.reads.running, 2);
+    }),
+  );
+
+  it.effect("targets: a read the rows made this pass is the pass's one read, which a launch after it shares", () =>
+    Effect.gen(function* () {
+      const t = setup();
+      t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
+      assert.deepStrictEqual((yield* t.placer.targets).map((row) => row.slots.used), [0, 0, 0]);
+      assert.deepStrictEqual(yield* t.placer.place(request("hosted")), { kind: "local" });
+      assert.deepStrictEqual(t.reads, { running: 1, load: 1 });
     }),
   );
 

@@ -226,6 +226,49 @@ describe("status", () => {
     );
   });
 
+  it("shows the targets the runner last wrote, and each run's target by the host's name", async () => {
+    const s = setup({ isRunner: (pid) => pid === 4242 });
+    NodeFS.writeFileSync(
+      s.machineConfigPath,
+      `gh_config_dir: /gh
+max_concurrent_runs: 2
+repos:
+  - repo: rawphp/softfac
+    path: /Users/tom/softfac
+    hosts:
+      - id: h1
+        path: /Users/me/softfac
+hosts:
+  - id: h1
+    name: mini
+    ssh: me@mini
+    max_runs: 2
+paradev:
+  cli: /opt/superset
+  agent: claude
+  belt:
+    enabled: false
+`,
+    );
+    NodeFS.writeFileSync(NodePath.join(s.dataDir, LOCK_FILE), "4242\n");
+    seed(s.dataDir, [...BUILDING, { event: "session_launched", data: { thread_id: "host:h1:ws-1", worktree: null, branch: null } } as RunEvent]);
+    const targets = [
+      { kind: "local", name: "local", online: true, load: { oneMinute: 1, cores: 10 }, slots: { used: 0, max: 1 }, ready: true, reason: null },
+      { kind: "host", name: "mini", online: true, load: { oneMinute: 3, cores: 8 }, slots: { used: 1, max: 2 }, ready: false, reason: "not ready: gh: not logged in" },
+    ];
+    NodeFS.writeFileSync(NodePath.join(s.dataDir, "targets.json"), `${JSON.stringify(targets)}\n`);
+    expect(await runCli(["status", "--json"], s.io)).toBe(0);
+    const report = JSON.parse(s.outs.join("\n"));
+    expect(report.targets).toEqual(targets);
+    expect(report.runs.map((run: { target: string | null }) => run.target)).toEqual(["mini"]);
+    s.outs.length = 0;
+    expect(await runCli(["status"], s.io)).toBe(0);
+    const text = s.outs.join("\n");
+    expect(text).toContain("target local: 0/1");
+    expect(text).toContain("target mini: 1/2 (not ready: gh: not logged in)");
+    expect(text).toContain(`${ID}  building  mini`);
+  });
+
   it("prints a short summary without --json", async () => {
     const s = setup();
     seed(s.dataDir);

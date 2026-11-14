@@ -18,6 +18,7 @@ import {
 } from "./ledger/listRuns.ts";
 import { asciiLower, runIdToString } from "./ledger/runId.ts";
 import { formatTs } from "./ledger/time.ts";
+import { readTargetRows, targetNameOf, type TargetRow } from "./targets.ts";
 
 /** The settings of the machine config the status report shows. */
 export interface StatusSettings {
@@ -25,6 +26,8 @@ export interface StatusSettings {
   readonly maxConcurrentRuns: number;
   /** The `repo` of every repo the last pass listed as watched, `owner/name`; empty before the first pass lists them. */
   readonly repos: ReadonlyArray<string>;
+  /** Each configured host's name by its machine id, so a run on a host shows by name; one not here shows by its id. */
+  readonly hostNames?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -72,6 +75,8 @@ export interface StatusReport {
    * Autodeploy waits for none, as installing restarts the server under them.
    */
   readonly threads: { readonly running: number | null };
+  /** Where runs go, as the runner's last pass read each target; none while the runner is idle. */
+  readonly targets: ReadonlyArray<TargetRow>;
   /** Claims held back by a person, or null. */
   readonly paused_by_hand: { readonly since: string; readonly for_ms: number } | null;
   /** The runs that are not finished, oldest first. */
@@ -87,6 +92,8 @@ export interface StatusReport {
     readonly for_ms: number | null;
     readonly pr_url: string | null;
     readonly thread_id: string | null;
+    /** Where it runs, from its thread id: "local", the host's name, or "cloud"; null with no thread. */
+    readonly target: string | null;
     /** Its session reported a pull request since it last entered `building`: it waits for the gate. */
     readonly pr_reported: boolean;
     readonly unreadable: boolean;
@@ -238,7 +245,11 @@ const passesOf = (
   };
 };
 
-const runRow = (read: RunRead, nowMs: number): StatusReport["runs"][number] => {
+const runRow = (
+  read: RunRead,
+  nowMs: number,
+  hostNames: ReadonlyMap<string, string>,
+): StatusReport["runs"][number] => {
   const { summary, seen } = read;
   const lastChange = read.record?.entries.findLast((entry) => entry.event === "state_changed");
   return {
@@ -250,6 +261,7 @@ const runRow = (read: RunRead, nowMs: number): StatusReport["runs"][number] => {
     for_ms: lastChange === undefined ? null : Math.max(0, nowMs - lastChange.ms),
     pr_url: summary.prUrl,
     thread_id: seen?.threadId ?? null,
+    target: targetNameOf(seen?.threadId ?? null, hostNames),
     pr_reported: seen?.prReported ?? false,
     unreadable: summary.unreadable,
   };
@@ -328,11 +340,13 @@ export const buildStatus = (input: {
     passes: passesOf(log, settings, input.passRunning, nowMs),
     slots: { used, max: settings === null ? null : settings.maxConcurrentRuns },
     threads: { running: input.runningThreads },
+    // The runner writes them after each pass; while it is idle they are from one that stopped.
+    targets: settings === null ? [] : readTargetRows(dataDir),
     paused_by_hand:
       pause === null
         ? null
         : { since: formatTs(pause.sinceMs), for_ms: Math.max(0, nowMs - pause.sinceMs) },
-    runs: open.map((read) => runRow(read, nowMs)),
+    runs: open.map((read) => runRow(read, nowMs, settings?.hostNames ?? new Map())),
     left_out:
       watched === null
         ? []
