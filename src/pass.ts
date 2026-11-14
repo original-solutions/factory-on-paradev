@@ -63,7 +63,7 @@ import {
   type StartError,
   type StartOutcome,
 } from "./runner/start.ts";
-import type { Model, SessionsError } from "./sessions.ts";
+import { isNoTargetHasRoom, type Model, type SessionsError } from "./sessions.ts";
 import type { StopRequestOutcome } from "./runner/stop.ts";
 import { sanitize } from "./text.ts";
 import {
@@ -517,7 +517,12 @@ interface Notes {
   readonly raises: Array<NewItem>;
   /** How `advance` found the session's run ended, when it ended badly: the pass decides about it after every run. */
   endedBadly: BadEnd | null;
+  /** A launch found no target with room: the repo's other ready issues wait too. */
+  noRoom: boolean;
 }
+
+/** What the issue's line says of a launch that found no target with room. */
+const NO_ROOM_WAIT = "waits: no target has room";
 
 /** An error, as printed and as recorded. */
 interface NoteError {
@@ -749,11 +754,18 @@ class Pass {
       errors: [],
       raises: [],
       endedBadly: null,
+      noRoom: false,
     };
   }
 
   /** The step called `label` in the pass line failed for this issue; the ledger records it under `step`. */
   failed(notes: Notes, label: string, step: CauseStep, error: StartError | BuildingError): void {
+    // A launch that found no room is a wait: the issue's line says so, and nothing is an error.
+    if (isNoTargetHasRoom(error)) {
+      notes.parts.push(NO_ROOM_WAIT);
+      notes.noRoom = true;
+      return;
+    }
     notes.errors.push({
       line: `${notes.label} ${label}: ${plain(error.message)}`,
       step,
@@ -2694,6 +2706,11 @@ const claim = Effect.fn("Pass.claim")(function* (
     });
     yield* pass.flush(notes, run);
     if (known.lost) return;
+    // No target has room for this repo: its other ready issues would be refused the same way.
+    if (notes.noRoom) {
+      queue.issues.length = 0;
+      yield* pass.record({ event: "claim_skipped", data: { repo: name, reason: "no-room" } });
+    }
     // Count again: a claim that ended in `stuck`, or in an error that left the issue in
     // `triage`, changes how many runs are active, and which repo has the fewest.
     active = count(known, queues);

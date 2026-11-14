@@ -207,6 +207,14 @@ export class SessionsError extends Schema.TaggedError<SessionsError>()("FactoryS
   }
 }
 
+/**
+ * Whether `error` is a launch that found no target with room: a `SessionsError` of operation
+ * `launch` whose cause is `NoTargetHasRoom`. Nothing was started; the same request may be sent
+ * again later, so callers treat it as a wait, not a failure.
+ */
+export const isNoTargetHasRoom = (error: unknown): boolean =>
+  error instanceof SessionsError && error.operation === "launch" && error.cause instanceof NoTargetHasRoom;
+
 export class FactorySessions extends Context.Service<
   FactorySessions,
   {
@@ -219,6 +227,9 @@ export class FactorySessions extends Context.Service<
      * worktree is prepared asynchronously, so the answer may not carry a
      * branch or path yet; `status` will. The same `commandId` again is the
      * same launch: T3 answers with the thread it made and starts nothing.
+     * It can fail with operation `launch` whose cause is `NoTargetHasRoom` when
+     * no target has room: nothing was started, and the same request may be sent
+     * again later (see `isNoTargetHasRoom`).
      */
     readonly launch: (request: LaunchRequest) => Effect.Effect<Launched, SessionsError>;
     /** The status of the thread's run, the last assistant message and where the thread works. */

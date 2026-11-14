@@ -44,7 +44,7 @@ import {
   type IssueDetail,
 } from "../tracker/github.ts";
 import {
-  NoTargetHasRoom,
+  isNoTargetHasRoom,
   type FactoryProject,
   type FactorySessions,
   type MessageRejectedError,
@@ -805,7 +805,7 @@ const launchSession = Effect.fn("RunnerStart.launchSession")(function* (
   );
   if (launched._tag === "Failure") {
     // No target has room: the run stays in `triage` and the next pass sends the same launch again.
-    if (launched.failure.cause instanceof NoTargetHasRoom) return yield* Effect.fail(launched.failure);
+    if (isNoTargetHasRoom(launched.failure)) return yield* Effect.fail(launched.failure);
     return {
       ok: false,
       detail: sessionMayExistNote(describe(launched.failure.cause), commandId),
