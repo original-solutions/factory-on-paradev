@@ -35,7 +35,8 @@ notify: true
 
 # A runner installed by `factory-runner install` checks this repo's v* tags every ten minutes,
 # installs a newer one that is on the default branch itself, and restarts into it after a pass when
-# no gate runs. Defaults to true. A reload that sets it to false stops the update where it is.
+# no gate runs. Defaults to true. The runner reads it when it starts: to hold back an update it has
+# already staged, set it to false and restart the runner (README, "Release and deploy").
 # Set it to false before going back to an older version with `make deploy TAG=...`, or the older
 # runner installs the newer tag again. A version from before this key (v0.2.0 and earlier) rejects
 # it: delete the line instead when going back to one of those.

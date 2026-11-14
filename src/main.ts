@@ -1114,7 +1114,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       );
     }
     // The self-update goes beside the pass too, once per start: it reads the tags every ten
-    // minutes, and `self_update` from the config current at each read, so a reload turns it off.
+    // minutes, and `self_update` from the config current at each read, not pinned to the first pass's.
     if (!updating) {
       updating = true;
       yield* selfUpdate.run(() => state.current?.machine.selfUpdate ?? false).pipe(
