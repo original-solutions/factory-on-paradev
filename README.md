@@ -25,7 +25,13 @@ npm ci
 npm run check
 ```
 
-Scripts run with Node's built-in type stripping (`node file.ts`), so there is no build step.
+Scripts run with Node's built-in type stripping (`node file.ts`), so there is no build step. `make build` is the same two commands.
+
+## Release and deploy
+
+A release is a tag. `make release VERSION=0.1.0` runs the gate, bumps `package.json`, commits `release: v0.1.0` on `main`, tags `v0.1.0` and pushes both. Merges to `main` are not deploys; the tag is the decision to ship.
+
+`make deploy` clones the highest `v*` tag, installs its runtime dependencies and runs its `factory-runner install`, which places it at `~/.local/share/factory-runner/versions/<version>/`, points `current` at it and reloads the LaunchAgent. `make deploy TAG=v0.1.0` installs that version instead, which is how to go back.
 
 ## Not affiliated with Paradev
 
