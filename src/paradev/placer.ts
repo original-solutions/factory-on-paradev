@@ -13,6 +13,10 @@ import { NoTargetHasRoom, type LaunchRequest } from "../sessions.ts";
 import { type Candidate, choosePlacement } from "./placement.ts";
 import type { LaunchTarget, TargetCount } from "./sessions.ts";
 
+/**
+ * What the placer reads. The placer is made once per process and every field is read on each use,
+ * so a getter lets it follow a config reload while its in-flight launches and semaphore stay.
+ */
 export interface PlacerDeps {
   readonly machine: MachineConfig;
   /** The watched repo whose local Paradev project is `projectId`, from the last project listing; null when none is known. */
@@ -34,7 +38,6 @@ const keyOf = (
 ): string => (target.kind === "host" ? `host:${target.machineId}` : target.kind);
 
 export const makePlacer = (deps: PlacerDeps) => {
-  const { machine } = deps;
   let localHeld: string | null = null;
   /** Running agents per target this pass; null when its snapshot could not be read. Null here: not read yet. */
   let counts: Map<string, number | null> | null = null;
@@ -64,14 +67,14 @@ export const makePlacer = (deps: PlacerDeps) => {
     const candidates: Array<Candidate> = [
       {
         kind: "local",
-        slots: { running: countOf("local"), max: machine.local.maxRuns },
+        slots: { running: countOf("local"), max: deps.machine.local.maxRuns },
         load: deps.readLoad(),
         held: localHeld,
       },
     ];
     const notReady = deps.hostsNotReady();
     for (const listed of repo.hosts ?? []) {
-      const host = machine.hosts.find((entry) => entry.id === listed.id);
+      const host = deps.machine.hosts.find((entry) => entry.id === listed.id);
       if (host === undefined) continue;
       candidates.push({
         kind: "host",
@@ -84,12 +87,13 @@ export const makePlacer = (deps: PlacerDeps) => {
         notReady: notReady.get(host.id) ?? null,
       });
     }
-    if (repo.cloud !== undefined && machine.cloud !== undefined) {
+    const { cloud } = deps.machine;
+    if (repo.cloud !== undefined && cloud !== undefined) {
       candidates.push({
         kind: "cloud",
         environmentId: repo.cloud,
-        machineSize: machine.cloud.machineSize,
-        slots: { running: countOf("cloud"), max: machine.cloud.maxRuns },
+        machineSize: cloud.machineSize,
+        slots: { running: countOf("cloud"), max: cloud.maxRuns },
         proxy: proxyReason,
       });
     }
@@ -122,7 +126,7 @@ export const makePlacer = (deps: PlacerDeps) => {
         const repo = deps.repoOfProject(request.projectId);
         // A repo with no hosts and no cloud runs as in P1: on this Mac, with nothing read.
         const hosted = (repo?.hosts?.length ?? 0) > 0;
-        const clouded = repo?.cloud !== undefined && machine.cloud !== undefined;
+        const clouded = repo?.cloud !== undefined && deps.machine.cloud !== undefined;
         if (repo === null || (!hosted && !clouded)) {
           // It still takes a slot on this Mac, when this pass has counted them.
           if (counts !== null) bump(counts, "local");

@@ -130,6 +130,7 @@ import {
   agentProcessLayer,
   make as makeParadevSessions,
   type ParadevSessionsConfig,
+  type TargetCount,
 } from "./paradev/sessions.ts";
 import {
   bindProcess,
@@ -1018,6 +1019,30 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     started: false,
   };
   const shared = newShared();
+  // What the one placer reads from the current start; a reload sets it again, and the placer, with
+  // its launches in flight, stays. A gate fiber that outlives a reload places through it too.
+  let placing: {
+    readonly machine: MachineConfig;
+    readonly repoOfProject: (projectId: string) => WatchedRepo | null;
+    readonly hostsNotReady: () => ReadonlyMap<string, string>;
+    readonly running: Effect.Effect<ReadonlyArray<TargetCount>>;
+    readonly record: (event: MachineEvent) => Effect.Effect<void>;
+  } | null = null;
+  const placingNow = () => {
+    if (placing === null) throw new Error("a launch was placed before the factory started");
+    return placing;
+  };
+  const placer = makePlacer({
+    get machine() {
+      return placingNow().machine;
+    },
+    repoOfProject: (projectId) => placingNow().repoOfProject(projectId),
+    hostLoads: shared.hostLoads,
+    hostsNotReady: () => placingNow().hostsNotReady(),
+    readLoad: options.readLoad ?? readLoad,
+    running: Effect.suspend(() => placingNow().running),
+    record: (event) => Effect.suspend(() => placingNow().record(event)),
+  });
   // The last belt written, and the run reads it was made from: kept across reloads.
   const beltMemo = newBeltMemo();
   const beltRuns: RunReadCache = new Map();
@@ -1115,18 +1140,16 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     let repoOfProject = new Map<string, WatchedRepo>();
     // Placement reads the world's host readings and the adapter's counts; both are built after it,
     // and neither is read before a launch, so its dependencies are looked up when it asks.
-    const placer = makePlacer({
+    placing = {
       machine,
       repoOfProject: (projectId) => repoOfProject.get(projectId) ?? null,
-      hostLoads: shared.hostLoads,
       hostsNotReady: () => base.hostsNotReady,
-      readLoad: options.readLoad ?? readLoad,
       running: Effect.suspend(() => sessions.runningByTarget),
       record: (event) =>
         base.record(event).pipe(
           Effect.catch((error) => Effect.logWarning(`the machine log could not take a placement: ${error.message}`)),
         ),
-    });
+    };
     const sessions = yield* makeParadevSessions({
       ...options.sessions,
       agent: machine.paradev.agent,
