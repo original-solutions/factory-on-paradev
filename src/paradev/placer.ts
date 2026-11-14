@@ -77,7 +77,7 @@ export const makePlacer = (deps: PlacerDeps) => {
         id: host.id,
         name: host.name,
         path: listed.path,
-        slots: { running: countOf(`host:${host.id}`), max: host.maxRuns },
+        slots: { running: countOf(targetKey({ kind: "host", id: host.id })), max: host.maxRuns },
         maxLoadPerCore: host.maxLoadPerCore,
         load: deps.hostLoads.get(host.id) ?? null,
         notReady: notReady.get(host.id) ?? null,
