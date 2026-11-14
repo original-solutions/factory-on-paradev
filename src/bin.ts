@@ -59,7 +59,7 @@ const realInstallEnv = (): InstallEnv => {
     execPath: process.execPath,
     pathEnv: process.env["PATH"] ?? "/usr/bin:/bin",
     packageRoot,
-    run: (command, args) => runCommand(command, args, 30_000),
+    run: (command, args, timeoutMs = 30_000) => runCommand(command, args, timeoutMs),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: Date.now,
     out: (line) => process.stdout.write(`${line}\n`),

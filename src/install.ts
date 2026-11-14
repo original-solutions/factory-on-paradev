@@ -16,7 +16,7 @@ import {
   parseMachineConfig,
   type MachineConfig,
 } from "./config.ts";
-import { checkHost, firstFailure, hostCheckIoFromCommands } from "./paradev/hostsCheck.ts";
+import { checkHost, firstFailure, formatHostCheck, hostCheckIoFromCommands } from "./paradev/hostsCheck.ts";
 import { lstatOrNull, readTextOrNull, writeFileWhole } from "./syncFiles.ts";
 import { installPathsOf, LABEL, LOGROTATE_LABEL, packageVersion } from "./paths.ts";
 
@@ -59,7 +59,8 @@ export interface InstallEnv {
   readonly pathEnv: string;
   /** The folder holding this package's `package.json`. */
   readonly packageRoot: string;
-  readonly run: (command: string, args: ReadonlyArray<string>) => CommandResult;
+  /** Runs a command to the end or `timeoutMs` (default 30 s); the host checks give ssh 10 s. */
+  readonly run: (command: string, args: ReadonlyArray<string>, timeoutMs?: number) => CommandResult;
   readonly sleep: (ms: number) => Promise<void>;
   readonly now: () => number;
   readonly out: (line: string) => void;
@@ -246,15 +247,12 @@ const WAIT_TEXT = `${WAIT_MS / 1000} s`;
  * the runner starts either way and gives that host no run until a reload passes the check.
  */
 const checkHosts = async (env: InstallEnv, config: MachineConfig, cli: string): Promise<void> => {
-  const io = hostCheckIoFromCommands((command, args) => env.run(command, args), cli);
+  const io = hostCheckIoFromCommands(env.run, cli);
   for (const host of config.hosts) {
-    env.out(`${host.name} (${host.ssh})`);
     const lines = await Effect.runPromise(checkHost(io, config, host));
-    for (const entry of lines) env.out(`  ${entry.check}: ${entry.text}`);
+    for (const text of formatHostCheck(host, lines)) env.out(text);
     if (firstFailure(lines) !== null) {
-      env.out(
-        `host ${host.name} is not ready; the runner gives it no run until a reload passes factory-runner hosts check ${host.name}`,
-      );
+      env.out(`host ${host.name} is not ready; the runner gives it no run until its check passes`);
     }
   }
 };

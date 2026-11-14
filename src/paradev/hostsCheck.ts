@@ -6,9 +6,9 @@
  */
 import * as Effect from "effect/Effect";
 
-import type { Attention, NewItem } from "../attention.ts";
+import type { NewItem } from "../attention.ts";
 import type { HostConfig, MachineConfig } from "../config.ts";
-import type { CommandResult } from "../install.ts";
+import { classify } from "./cli.ts";
 import {
   CLAUDE_VERSION,
   fromCommandRunner,
@@ -17,9 +17,12 @@ import {
   PROXY_ENV_READ,
   remoteUrl,
   runSsh,
+  shellQuote,
   trustRead,
   TRUE_COMMAND,
+  type SshError,
   type SshRunner,
+  type SyncCommandResult,
 } from "./ssh.ts";
 
 /** What the checks read from: a host over ssh, and the Superset CLI. */
@@ -28,6 +31,9 @@ export interface HostCheckIo {
   /** Runs `superset <argv> --json`: the parsed answer, or the error text. */
   readonly superset: (argv: ReadonlyArray<string>) => Effect.Effect<unknown, string>;
 }
+
+/** How the checks ask the Paradev CLI: the parsed answer, or the error text. */
+export type CliCall = HostCheckIo["superset"];
 
 /** One check's result: `text` is `ok` or the fix; the line printed is `<check>: <text>`. */
 export interface CheckLine {
@@ -43,9 +49,26 @@ const PROXY_KEYS = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"] as const;
 const SSH_SKIPPED = "not checked: ssh failed";
 const CLI_SKIPPED = "not checked: superset projects list --host failed";
 
-/** The fix when the host is not in `hosts list` or its CLI does not answer. */
+/** The fix when the host is not in `hosts list` or is offline. */
 const addHostFix = (host: HostConfig): string =>
   `add it with superset hosts add ${host.ssh} --name ${host.name}, or start its host service (sh.superset.host)`;
+
+/** Sets `hasTrustDialogAccepted` for the folder in `~/.claude.json`. Printed for the person to run on the host, never sent. */
+const trustFixScript =
+  'import json,os,sys;f=os.path.expanduser("~/.claude.json");d=json.load(open(f));' +
+  'd.setdefault("projects",{}).setdefault(sys.argv[1],{})["hasTrustDialogAccepted"]=True;' +
+  'json.dump(d,open(f,"w"),indent=2)';
+
+/** The fix for a CLI or ssh command that is not on a non-interactive ssh shell's PATH, else `fix`. */
+const missingOrFix = (
+  answer: { readonly _tag: "Failure"; readonly failure: SshError } | { readonly _tag: "Success" },
+  tool: string,
+  folder: string,
+  fix: string,
+): string =>
+  answer._tag === "Failure" && answer.failure.message.startsWith("exit 127")
+    ? `${tool} is not on the PATH of a non-interactive ssh shell; add its folder (e.g. ${folder}) to PATH in ~/.zshenv on the host`
+    : fix;
 
 /** The last folder of a path: the project name `projects create` is given. */
 const lastFolder = (path: string): string => path.split("/").filter((part) => part !== "").at(-1) ?? path;
@@ -99,7 +122,16 @@ export const checkHost = (
     const online =
       hostsList._tag === "Success" &&
       rowsOf(hostsList.success).some((row) => row["id"] === host.id && row["online"] === "yes");
-    lines.push(line("online", online ? null : addHostFix(host)));
+    lines.push(
+      line(
+        "online",
+        online
+          ? null
+          : hostsList._tag === "Failure"
+            ? `superset hosts list failed: ${hostsList.failure}`
+            : addHostFix(host),
+      ),
+    );
 
     const reached = yield* ssh(TRUE_COMMAND);
     const sshOk = reached._tag === "Success";
@@ -113,7 +145,14 @@ export const checkHost = (
     );
 
     const projects = yield* Effect.result(io.superset(["projects", "list", "--host", host.id]));
-    lines.push(line("cli", projects._tag === "Success" ? null : addHostFix(host)));
+    lines.push(
+      line(
+        "cli",
+        projects._tag === "Success"
+          ? null
+          : `superset projects list --host ${host.id} failed: ${projects.failure}`,
+      ),
+    );
 
     const skipped = (check: string, text: string): CheckLine => ({ check, ok: false, text });
     for (const { repo, path } of repos) {
@@ -150,7 +189,7 @@ export const checkHost = (
           check,
           trusted
             ? null
-            : `open Claude Code once in ${path} on the host and accept the trust dialog, or set projects["${path}"].hasTrustDialogAccepted to true in the host's ~/.claude.json`,
+            : `open Claude Code once in ${path} on the host and accept the trust dialog, or run this on the host: python3 -c '${trustFixScript}' ${shellQuote(path)}`,
         ),
       );
     }
@@ -171,11 +210,32 @@ export const checkHost = (
       ),
     );
     const gh = yield* ssh(GH_AUTH_STATUS);
-    lines.push(line("gh", gh._tag === "Success" ? null : "gh auth login on the host"));
+    lines.push(
+      line(
+        "gh",
+        gh._tag === "Success" ? null : missingOrFix(gh, "gh", "/opt/homebrew/bin", "gh auth login on the host"),
+      ),
+    );
     const claude = yield* ssh(CLAUDE_VERSION);
-    lines.push(line("claude", claude._tag === "Success" ? null : "install Claude Code on the host"));
+    lines.push(
+      line(
+        "claude",
+        claude._tag === "Success"
+          ? null
+          : missingOrFix(claude, "claude", "~/.local/bin", "install Claude Code on the host"),
+      ),
+    );
     return lines;
   });
+
+/** What a host's check prints: its name and ssh destination, then one indented `<check>: <text>` per line. */
+export const formatHostCheck = (
+  host: HostConfig,
+  lines: ReadonlyArray<CheckLine>,
+): ReadonlyArray<string> => [
+  `${host.name} (${host.ssh})`,
+  ...lines.map((entry) => `  ${entry.check}: ${entry.text}`),
+];
 
 /** `<check>: <text>` of the first failing line; null when every line is ok. */
 export const firstFailure = (lines: ReadonlyArray<CheckLine>): string | null => {
@@ -190,52 +250,20 @@ export const hostNotReadyItem = (host: HostConfig, failing: string): NewItem => 
   repo: null,
   issue: null,
   run: null,
-  message: `host ${host.name} is not ready: ${failing}; it takes no run until a config reload passes factory-runner hosts check ${host.name}`,
+  message: `host ${host.name} is not ready: ${failing}; it takes no run until its check passes (checked again every 5 minutes; factory-runner hosts check ${host.name} prints every line)`,
 });
 
-/**
- * Checks every configured host at once, at a config load. `notReady` is replaced by host id to
- * first failing line. A failing host has one `host-not-ready` item; a passing host's item and
- * that of a host no longer configured are cleared. An open item is not raised again, so one whose
- * first failing line changed is cleared first.
- */
-export const checkHostsAtReload = (
-  io: HostCheckIo,
-  machine: MachineConfig,
-  attention: Pick<Attention["Service"], "raise" | "clear">,
-  notReady: Map<string, string>,
-): Effect.Effect<void> =>
-  Effect.gen(function* () {
-    const results = yield* Effect.forEach(machine.hosts, (host) => checkHost(io, machine, host), {
-      concurrency: "unbounded",
-    });
-    const items = new Map<string, NewItem>();
-    notReady.clear();
-    for (const [index, host] of machine.hosts.entries()) {
-      const failing = firstFailure(results[index]!);
-      if (failing === null) continue;
-      notReady.set(host.id, failing);
-      const item = hostNotReadyItem(host, failing);
-      items.set(item.id, item);
-    }
-    yield* attention.clear((open) => {
-      if (!open.id.startsWith(HOST_NOT_READY_PREFIX)) return false;
-      return items.get(open.id)?.message !== open.message;
-    });
-    for (const item of items.values()) yield* attention.raise(item);
-  });
-
-/** The error text of a failed CLI call: its first `Error:` line, else why it did not run. */
-const cliErrorText = (done: CommandResult): string => {
-  const errorLine = done.stderr.split("\n").find((text) => text.startsWith("Error: "));
-  if (errorLine !== undefined) return errorLine.slice("Error: ".length).trim();
-  if (done.status === null) return done.stderr.trim().split("\n")[0] || "did not run";
-  return `exit ${done.status}`;
-};
+/** The error text of a failed CLI call: its `Error:` line, else the stderr's own text, else how it ended. */
+const cliErrorText = (done: SyncCommandResult): string =>
+  done.stderr.trim() === ""
+    ? done.status === null
+      ? "did not run"
+      : `exit ${done.status}`
+    : classify(done.stderr).text.split("\n")[0]!;
 
 /** The checks' io over a synchronous command runner: ssh by `ssh`, the CLI at `cli` with `--json`, 30 s each. */
 export const hostCheckIoFromCommands = (
-  run: (command: string, args: ReadonlyArray<string>, timeoutMs: number) => CommandResult,
+  run: (command: string, args: ReadonlyArray<string>, timeoutMs: number) => SyncCommandResult,
   cli: string,
 ): HostCheckIo => ({
   ssh: fromCommandRunner(run),

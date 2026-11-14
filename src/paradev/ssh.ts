@@ -24,6 +24,13 @@ export type SshRunner = (
   timeoutMs: number,
 ) => Effect.Effect<SshAnswer>;
 
+/** What a synchronous command runner answers: the CLI's and install's, each wrapping `spawnSync`. */
+export interface SyncCommandResult {
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
 /** How long one ssh call may take, connect included. */
 export const SSH_TIMEOUT_MS = 10_000;
 
@@ -63,7 +70,7 @@ export const sessionListing = (worktreePath: string): string =>
 export const remoteUrl = (path: string): string => `git -C ${shellQuote(path)} remote get-url origin`;
 
 /** Prints `yes` when `~/.claude.json` has the folder's trust dialog accepted, else `no`. */
-const TRUST_SCRIPT =
+export const TRUST_SCRIPT =
   'import json,os,sys;d=json.load(open(os.path.expanduser("~/.claude.json")));' +
   'p=d.get("projects",{}).get(sys.argv[1],{});' +
   'print("yes" if p.get("hasTrustDialogAccepted") is True else "no")';
@@ -72,7 +79,7 @@ const TRUST_SCRIPT =
 export const trustRead = (path: string): string => `python3 -c '${TRUST_SCRIPT}' ${shellQuote(path)}`;
 
 /** Prints, one per line, the proxy env names that are missing or empty in `~/.claude/settings.json`. Never a value. */
-const PROXY_ENV_SCRIPT =
+export const PROXY_ENV_SCRIPT =
   'import json,os;e=json.load(open(os.path.expanduser("~/.claude/settings.json"))).get("env",{});' +
   '[print(k) for k in ("ANTHROPIC_BASE_URL","ANTHROPIC_AUTH_TOKEN") if not e.get(k)]';
 
@@ -86,9 +93,14 @@ export const GH_AUTH_STATUS = "gh auth status";
 /** Whether Claude Code is installed on the host. */
 export const CLAUDE_VERSION = "claude --version";
 
-/** Fetches `ref` from `origin` in the worktree. One of the two commands that write (#53). */
-export const fetchBase = (worktree: string, ref: string): string =>
-  `git -C ${shellQuote(worktree)} fetch origin ${shellQuote(ref)}`;
+/** A ref git takes as a name: it cannot start with `-` (an option), hold `:` or `+` (a refspec), or have `..`. */
+const REF = "(?!.*\\.\\.)[A-Za-z0-9._][A-Za-z0-9._/-]*";
+
+/** Fetches `ref` from `origin` in the worktree. One of the two commands that write (#53). Throws on a ref that is not a plain name. */
+export const fetchBase = (worktree: string, ref: string): string => {
+  if (!new RegExp(`^${REF}$`).test(ref)) throw new Error(`not a plain ref: ${ref}`);
+  return `git -C ${shellQuote(worktree)} fetch origin ${shellQuote(ref)}`;
+};
 
 /** Resets the worktree to a full commit id. One of the two commands that write (#53). */
 export const resetToCommit = (worktree: string, commit: string): string => {
@@ -98,8 +110,8 @@ export const resetToCommit = (worktree: string, commit: string): string => {
 
 const escapeRegExp = (text: string): string => text.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** One shell word in single quotes, where `'\''` is a quote inside it. */
-const QUOTED = "'(?:[^']|'\\\\'')*'";
+/** One shell word in single quotes, where `'\''` is a quote inside it. A backslash anywhere else is refused. */
+const QUOTED = "'(?:[^'\\\\]|'\\\\'')*'";
 
 const CONSTANTS: ReadonlySet<string> = new Set([
   LOAD_COMMAND,
@@ -116,7 +128,7 @@ const SHAPES: ReadonlyArray<RegExp> = [
   /^ls -t ~\/\.claude\/projects\/[A-Za-z0-9-]+\/\*\.jsonl$/,
   new RegExp(`^git -C ${QUOTED} remote get-url origin$`),
   new RegExp(`^python3 -c '${escapeRegExp(TRUST_SCRIPT)}' ${QUOTED}$`),
-  new RegExp(`^git -C ${QUOTED} fetch origin ${QUOTED}$`),
+  new RegExp(`^git -C ${QUOTED} fetch origin '${REF}'$`),
   new RegExp(`^git -C ${QUOTED} reset --hard [0-9a-f]{40}$`),
 ];
 
@@ -142,7 +154,10 @@ export const runSsh = (
     }
     const done = yield* run(sshArgs(destination, command), SSH_TIMEOUT_MS);
     if (done.timedOut) {
-      return yield* Effect.fail<SshError>({ kind: "timeout", message: "no answer within 10 s" });
+      return yield* Effect.fail<SshError>({
+        kind: "timeout",
+        message: `no answer within ${SSH_TIMEOUT_MS / 1000} s`,
+      });
     }
     if (done.exitCode !== 0) {
       const why = firstLine(done.stderr);
@@ -150,7 +165,7 @@ export const runSsh = (
         kind: "failed",
         message:
           done.exitCode === null
-            ? `ended by a signal${why === "" ? "" : `: ${why}`}`
+            ? `did not finish${why === "" ? "" : `: ${why}`}`
             : `exit ${done.exitCode}${why === "" ? "" : `: ${why}`}`,
       });
     }
@@ -192,11 +207,7 @@ export const liveSshRunner =
 /** A synchronous command runner (the CLI's and install's) as an `SshRunner`; the command is always `ssh`. */
 export const fromCommandRunner =
   (
-    run: (
-      command: string,
-      args: ReadonlyArray<string>,
-      timeoutMs: number,
-    ) => { readonly status: number | null; readonly stdout: string; readonly stderr: string },
+    run: (command: string, args: ReadonlyArray<string>, timeoutMs: number) => SyncCommandResult,
   ): SshRunner =>
   (args, timeoutMs) =>
     Effect.sync(() => {

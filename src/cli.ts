@@ -15,7 +15,7 @@ import { readAttentionFile } from "./attention.ts";
 import { formatConfigError, parseMachineConfig } from "./config.ts";
 import { pauseClaimsNow, resumeClaimsNow, stopRun } from "./control.ts";
 import { install, uninstall, type CommandResult, type InstallEnv } from "./install.ts";
-import { checkHost, hostCheckIoFromCommands } from "./paradev/hostsCheck.ts";
+import { checkHost, formatHostCheck, hostCheckIoFromCommands } from "./paradev/hostsCheck.ts";
 import { packageVersion } from "./paths.ts";
 import { isRunner, lockHolder } from "./runnerLock.ts";
 import { retro, RETRO_USAGE } from "./retro.ts";
@@ -140,11 +140,9 @@ const hostsCheck = async (args: ReadonlyArray<string>, io: CliIo): Promise<numbe
   const checkIo = hostCheckIoFromCommands(io.run, config.paradev.cli);
   let failed = false;
   for (const host of chosen) {
-    io.out(`${host.name} (${host.ssh})`);
-    for (const entry of await Effect.runPromise(checkHost(checkIo, config, host))) {
-      io.out(`  ${entry.check}: ${entry.text}`);
-      if (!entry.ok) failed = true;
-    }
+    const lines = await Effect.runPromise(checkHost(checkIo, config, host));
+    for (const text of formatHostCheck(host, lines)) io.out(text);
+    if (lines.some((entry) => !entry.ok)) failed = true;
   }
   return failed ? 1 : 0;
 };

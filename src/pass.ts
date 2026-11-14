@@ -12,6 +12,7 @@ import type { HandPause } from "./claims.ts";
 import {
   ambiguousMessage,
   ambiguousRepos,
+  type HostConfig,
   type MachineConfig,
   type ProjectConfig,
   type WatchedListing,
@@ -29,6 +30,12 @@ import { GIB, isLowDisk, type FreeSpace } from "./disk.ts";
 import { stateLabel, type State } from "./domain/lifecycle.ts";
 import { overload, type Load, type Overload } from "./load.ts";
 import { readHostLoad } from "./paradev/hostLoad.ts";
+import {
+  firstFailure,
+  HOST_NOT_READY_PREFIX,
+  hostNotReadyItem,
+  type CheckLine,
+} from "./paradev/hostsCheck.ts";
 import type { SshRunner } from "./paradev/ssh.ts";
 import type { LedgerError } from "./ledger/errors.ts";
 import type { CauseStep, ErrorKind, MachineEvent } from "./ledger/events.ts";
@@ -396,10 +403,16 @@ export interface PassWorld {
    */
   readonly hostLoads: Map<string, Load | null>;
   /**
-   * The hosts that failed `hosts check` at the last config load, by host id, with the first
-   * failing line: none of them is a launch candidate. Placement (#55) reads it.
+   * The hosts that are not ready, by host id, with the first failing line of their last check:
+   * none of them is a launch candidate. A new world starts with every configured host here, as
+   * not checked yet; the pass's `hostChecks` takes a host out when its check passes. Per world,
+   * so a config load starts over. Placement (#55) reads it.
    */
-  readonly hostsNotReady: ReadonlyMap<string, string>;
+  readonly hostsNotReady: Map<string, string>;
+  /** When each host was last checked, in `nowMs` terms, by host id; per world. */
+  readonly hostCheckedAt: Map<string, number>;
+  /** Runs the host's ten checks of `hosts check`: the lines, `ok` or the fix each. Never fails. */
+  readonly checkHost: (host: HostConfig) => Effect.Effect<ReadonlyArray<CheckLine>>;
   /**
    * The free space of the fuller of the volumes that hold the sessions' worktrees and the gate's
    * checkouts; not read when `min_free_gib` is 0.
@@ -824,6 +837,7 @@ export const runPass = Effect.fn("Pass.runPass")(function* (
   pass.highLoad = yield* highLoad(world, machine, pass);
   pass.paradevOffline = yield* paradevOffline(world, pass);
   yield* hostLoads(world, machine, pass);
+  yield* hostChecks(world, machine, pass);
   yield* brokenWorktrees(world, pass);
   // Without the ledger there is no telling how many runs are active, so nothing is claimed.
   const infos = yield* runs(world, pass);
@@ -1130,6 +1144,68 @@ const hostLoads = Effect.fn("Pass.hostLoads")(function* (
       run: null,
       message: `host ${host.name} (${host.ssh}) has not answered over ssh for ${HOST_UNREACHABLE_PASSES} passes; it takes no run until it does`,
     });
+  }
+});
+
+/** How long after its last check a host that is not ready is checked again. */
+export const HOST_RECHECK_EVERY_MS = 5 * 60 * 1000;
+
+/** How long one host's whole check may take; past it the host fails with `check: no answer within 60 s`. */
+export const HOST_CHECK_TIMEOUT_MS = 60_000;
+
+/**
+ * Checks the hosts that are due, all at once, before any claim or launch: a host not checked
+ * since this world was built (a config load), or one that is not ready and was last checked at
+ * least `HOST_RECHECK_EVERY_MS` ago. A host that fails is in `hostsNotReady` with its first
+ * failing line and has one `host-not-ready` item (replaced when the line changed); one that
+ * passes is taken out and its item cleared. A host that has left the config is forgotten.
+ */
+const hostChecks = Effect.fn("Pass.hostChecks")(function* (
+  world: PassWorld,
+  machine: MachineConfig,
+  pass: Pass,
+) {
+  const ids = new Set(machine.hosts.map((host) => host.id));
+  for (const map of [world.hostsNotReady, world.hostCheckedAt]) {
+    for (const id of map.keys()) if (!ids.has(id)) map.delete(id);
+  }
+  yield* world.attention.clear(
+    (item) =>
+      item.id.startsWith(HOST_NOT_READY_PREFIX) &&
+      !ids.has(item.id.slice(HOST_NOT_READY_PREFIX.length)),
+  );
+  const now = world.nowMs();
+  const due = machine.hosts.filter((host) => {
+    const at = world.hostCheckedAt.get(host.id);
+    return at === undefined || (world.hostsNotReady.has(host.id) && now - at >= HOST_RECHECK_EVERY_MS);
+  });
+  const failing = yield* Effect.forEach(
+    due,
+    (host) =>
+      world.checkHost(host).pipe(
+        Effect.map(firstFailure),
+        Effect.timeoutOption(Duration.millis(HOST_CHECK_TIMEOUT_MS)),
+        Effect.map((answer) =>
+          answer._tag === "Some" ? answer.value : `check: no answer within ${HOST_CHECK_TIMEOUT_MS / 1000} s`,
+        ),
+      ),
+    { concurrency: "unbounded" },
+  );
+  for (const [index, host] of due.entries()) {
+    const line = failing[index] ?? null;
+    const itemId = `${HOST_NOT_READY_PREFIX}${host.id}`;
+    world.hostCheckedAt.set(host.id, now);
+    if (line === null) {
+      world.hostsNotReady.delete(host.id);
+      yield* world.attention.clear((item) => item.id === itemId);
+      continue;
+    }
+    world.hostsNotReady.set(host.id, line);
+    pass.report.attention += 1;
+    const item = hostNotReadyItem(host, line);
+    // An open item is not raised again, so one about another line is cleared first.
+    yield* world.attention.clear((open) => open.id === itemId && open.message !== item.message);
+    yield* world.attention.raise(item);
   }
 });
 

@@ -48,7 +48,7 @@ import {
 } from "./defaultProject.ts";
 import { readLowestFreeSpace, type FreeSpace } from "./disk.ts";
 import { overload, readLoad, type Load } from "./load.ts";
-import { checkHostsAtReload } from "./paradev/hostsCheck.ts";
+import { checkHost, type CliCall } from "./paradev/hostsCheck.ts";
 import { liveSshRunner, type SshRunner } from "./paradev/ssh.ts";
 import * as Gate from "./gate.ts";
 import { guardLogStreams } from "./logStreams.ts";
@@ -314,6 +314,8 @@ export interface LiveGate {
   readonly readLoad?: () => Load;
   /** How a host is read over ssh. Default the `ssh` binary; a test passes the answers it needs. */
   readonly ssh?: SshRunner;
+  /** Asks the Paradev CLI (with --json) for the host checks: the parsed answer, or the error text. */
+  readonly superset?: CliCall;
 }
 
 /** The run's line when its gate, started in the background, has ended. */
@@ -430,8 +432,6 @@ export interface LiveShared {
   readonly hostMisses: Map<string, number>;
   /** Each host's load reading this pass: see `PassWorld.hostLoads`. */
   readonly hostLoads: Map<string, Load | null>;
-  /** Host id to its first failing `hosts check` line, as of the last config load. */
-  readonly hostsNotReady: Map<string, string>;
 }
 
 /** A fresh `LiveShared`, made once per process. */
@@ -447,7 +447,6 @@ export const newShared = (): LiveShared => ({
   paradevHold: { passes: 0 },
   hostMisses: new Map(),
   hostLoads: new Map(),
-  hostsNotReady: new Map(),
 });
 
 /** What the pass's branch prune answers: P1 prunes no branch. */
@@ -484,10 +483,14 @@ export const liveWorld = (
     paradevHold,
     hostMisses,
     hostLoads,
-    hostsNotReady,
   }: LiveShared = newShared(),
 ): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown"> => {
   const load = live.readLoad ?? readLoad;
+  const ssh = live.ssh ?? liveSshRunner(process);
+  // Every host is not ready until the pass has checked it: a new world is a new config load.
+  const hostsNotReady = new Map(
+    machine.hosts.map((host) => [host.id, "not checked yet since the config load"] as const),
+  );
   const withProcess = <A, E>(effect: Effect.Effect<A, E, FactoryProcess>) =>
     Effect.provideService(effect, FactoryProcess, process);
   const githubFor = (watched: WatchedRepo) =>
@@ -794,10 +797,17 @@ export const liveWorld = (
     recordError,
     handPause: () => loadHandPause(dataDir),
     paradevHold,
-    ssh: live.ssh ?? liveSshRunner(process),
+    ssh,
     hostMisses,
     hostLoads,
     hostsNotReady,
+    hostCheckedAt: new Map(),
+    checkHost: (host) =>
+      checkHost(
+        { ssh, superset: live.superset ?? (() => Effect.fail("no Paradev CLI to ask")) },
+        machine,
+        host,
+      ),
     // Paradev removes a workspace's worktree when it archives it, so no thread is left on one.
     threadsOnBrokenWorktrees: () => Effect.succeed([]),
     sessionRuns: () =>
@@ -1125,6 +1135,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         scope,
         ...(options.readLoad !== undefined && { readLoad: options.readLoad }),
         ...(options.ssh !== undefined && { ssh: options.ssh }),
+        superset: (argv) => cli.run(argv, { timeoutMs: 30_000 }).pipe(Effect.mapError((e) => e.text)),
       },
       options.gateRemoteBase,
       undefined,
@@ -1232,16 +1243,6 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
           ),
         ),
     };
-    // A host that fails its check is no launch candidate until a reload passes it.
-    yield* checkHostsAtReload(
-      {
-        ssh: world.ssh,
-        superset: (argv) => cli.run(argv, { timeoutMs: 30_000 }).pipe(Effect.mapError((e) => e.text)),
-      },
-      machine,
-      attention,
-      shared.hostsNotReady,
-    );
     options.onWorld?.(world);
     state.current = { machine, world, afterPass };
     state.status = {
