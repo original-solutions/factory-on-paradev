@@ -3299,9 +3299,17 @@ describe("the orphan sweep", () => {
       { ...tagged, id: "../a6e2d3c4" }, // not a plain id: never a path or an argv word
     ];
   };
+  const NO_AGENT_LAUNCH = `${LAUNCH_ID}-no-agent`;
+  /** The core's records, each with the launch file that finds it again. */
   const seedSweep = (data: string) =>
     Effect.gen(function* () {
-      yield* seed(data, cloudRecord(), cloudRecord({ threadId: `cloud:${NO_AGENT}`, workspaceId: NO_AGENT, terminals: [], turns: [] }));
+      yield* seed(
+        data,
+        cloudRecord(),
+        cloudRecord({ threadId: `cloud:${NO_AGENT}`, workspaceId: NO_AGENT, launchCommandId: NO_AGENT_LAUNCH, terminals: [], turns: [] }),
+      );
+      yield* writeLaunch(data, LAUNCH_ID, `cloud:${C3_WS}`).pipe(Effect.provide(NodeServices.layer));
+      yield* writeLaunch(data, NO_AGENT_LAUNCH, `cloud:${NO_AGENT}`).pipe(Effect.provide(NodeServices.layer));
       NodeFS.writeFileSync(NodePath.join(data, "paradev", "threads", `${TORN}.json`), '{"v":2,"thre');
     });
 
@@ -3334,7 +3342,9 @@ describe("the orphan sweep", () => {
         { argv: ["workspaces", "archive", OBJECT_TAG, "--host", "cloud"], answer: { deleted: [OBJECT_TAG], notFound: [], failed: [], warnings: [] } },
       ]);
       yield* seedSweep(t.data);
-      const given = cloudRecord({ threadId: `cloud:${NO_AGENT}`, workspaceId: NO_AGENT, terminals: [], turns: [], pendingArchive: true });
+      const given = cloudRecord({
+        threadId: `cloud:${NO_AGENT}`, workspaceId: NO_AGENT, launchCommandId: NO_AGENT_LAUNCH, terminals: [], turns: [], pendingArchive: true,
+      });
       // Archived already, by the launch's own retry: not archived a second time.
       const done = cloudRecord({ terminals: [], turns: [], pendingArchive: true, archivedAt: NOW - MINUTE });
       yield* seed(t.data, given, done);
@@ -3348,6 +3358,29 @@ describe("the orphan sweep", () => {
       assert.strictEqual(after!.archivedAt, NOW);
       assert.strictEqual(t.calls.length, 4);
       assert.deepStrictEqual(yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer)), done);
+    }),
+  );
+
+  it.effect("a record no launch file names, left by a launch that died between the two, is archived, one line", () =>
+    Effect.gen(function* () {
+      const t = rig([
+        { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: rows },
+        recorded("ws-archive-cloud-6"),
+        { argv: ["workspaces", "archive", NO_AGENT, "--host", "cloud"], answer: { deleted: [NO_AGENT], notFound: [], failed: [], warnings: [] } },
+        { argv: ["workspaces", "archive", OBJECT_TAG, "--host", "cloud"], answer: { deleted: [OBJECT_TAG], notFound: [], failed: [], warnings: [] } },
+      ]);
+      yield* seedSweep(t.data);
+      // A launch file of the same command that names another record does not find this one.
+      yield* writeLaunch(t.data, NO_AGENT_LAUNCH, `cloud:${C6_WS}`).pipe(Effect.provide(NodeServices.layer));
+      yield* TestClock.setTime(NOW);
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(logs.length, 3, logs.join("\n"));
+      assert.include(logs[1], `archived cloud workspace ${NO_AGENT}`);
+      assert.include(logs[1], "no launch file names its record");
+      const after = yield* readThread(t.data, NO_AGENT).pipe(Effect.provide(NodeServices.layer));
+      assert.strictEqual(after!.archivedAt, NOW);
+      assert.isNull((yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer)))!.archivedAt);
     }),
   );
 
@@ -3493,6 +3526,37 @@ describe("cycle 1: liveness a send can trust, and what a failed cloud launch lea
       const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
       assert.isNull(saved!.archivedAt);
       assert.isTrue(saved!.pendingArchive);
+    }),
+  );
+
+  it.live("a mark for the sweep that cannot be saved is a warning that names the workspace", () =>
+    Effect.gen(function* () {
+      const threads = () => NodePath.join(t.data, "paradev", "threads");
+      const t: Rig = rig(
+        [
+          { argv: argvIs("workspaces", "create", "--host", "cloud"), fixture: "ws-create-cloud" },
+          // The records folder stops taking writes once the record is in it.
+          { argv: getC3, fixture: "ws-get-cloud-provisioning", edit: (answer) => (NodeFS.chmodSync(threads(), 0o555), answer) },
+          { argv: archiveC3, fail: "No active organization" },
+        ],
+        {
+          config: {
+            place: () => Effect.succeed({ kind: "cloud", environmentId: ENV, machineSize: "small" } as const),
+            cloudReadyPollMs: 1,
+            cloudReadyMaxMs: 0,
+          },
+        },
+      );
+      const { logs, result } = yield* logged(t.run((s) => s.launch(request())).pipe(Effect.flip));
+      NodeFS.chmodSync(threads(), 0o755);
+      assert.include(String(result.cause), "archiving the workspace failed too");
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isTrue(
+        logs.some((line) => line.startsWith(`Warn cloud workspace ${C3_WS} could not be marked for the orphan sweep`)),
+        logs.join("\n"),
+      );
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isUndefined(saved!.pendingArchive);
     }),
   );
 
@@ -3739,6 +3803,74 @@ describe("where a worktree is, read from the records once per path", () => {
       );
       assert.strictEqual(ssh.calls.filter(([, command]) => command.startsWith("test -e ")).length, 3);
       assert.deepStrictEqual(t.gitCalls, []);
+    }),
+  );
+});
+
+describe("a save keeps the current terminal's liveness and trust reads", () => {
+  const OTHER = "9a8b7c6d-0000-4000-8000-00000000000a";
+  const stale = { commandId: `${SEND_ID}-given-up`, before: null };
+  /** A snapshot of `ws` with a second agent of the preset, so the send stops after its save. */
+  const withOther = (ws: string, own: string) =>
+    snapshotOf(ws, [
+      { id: own, title: "◑ Claude Code", agent: { id: "claude", state: "working" } },
+      { id: OTHER, title: "◑ Claude Code", agent: { id: "claude", state: "working" } },
+    ]);
+
+  it.effect("a cloud record saved within 10 minutes of a liveness read is not read again", () =>
+    Effect.gen(function* () {
+      const workingAt = lastEventAt("agents-explain-cloud-working");
+      const t = rig([
+        recorded("agents-explain-cloud-working"),
+        ...helperSteps(C3_WS, "FACTORY-ALIVE-DONE", aliveScreen(1)),
+        { ...recorded("snapshot-cloud"), edit: withOther(C3_WS, C3_TERM) },
+        recorded("agents-explain-cloud-working"),
+      ]);
+      const before = cloudRecord({ pendingSend: stale });
+      yield* seed(t.data, before);
+      yield* TestClock.setTime(workingAt + 11 * MINUTE);
+      yield* t.run((s) =>
+        Effect.gen(function* () {
+          assert.strictEqual((yield* s.status(before.threadId)).run, "running");
+          yield* TestClock.adjust(2 * MINUTE);
+          // The send saves the record (its stale pendingSend cleared), then stops on the other agent.
+          yield* s.send(before.threadId, SEND_ID, "text").pipe(Effect.flip);
+          assert.strictEqual((yield* s.status(before.threadId)).run, "running");
+        }),
+      );
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.filter(argvIs("terminals", "create")).length, 1);
+      assert.isNull((yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer)))!.pendingSend);
+    }),
+  );
+
+  it.effect("a host record saved after its screen was read for the trust dialog is not read again", () =>
+    Effect.gen(function* () {
+      const attachedAt = lastEventAt("agents-explain-host-working");
+      const screenArgv = ["terminals", "read", "--host", HOST, "--workspace", HT_WS, "--terminal", HT_TERM, "--max-lines", "40"];
+      const ssh = fakeSsh(() => ({ tail: "" }));
+      const t = rig(
+        [
+          recorded("agents-explain-host-working"),
+          { argv: screenArgv, fixture: "terminals-read-host-starting", edit: (a) => ({ ...(a as object), text: "❯ " }) },
+          { argv: ["snapshot", "--host", HOST, "--workspace", HT_WS], fixture: "snapshot-host-after-restart", edit: withOther(HT_WS, HT_TERM) },
+          recorded("agents-explain-host-working"),
+        ],
+        { config: { ssh: ssh.runner, hosts: HOSTS } },
+      );
+      const before = hostRecord({ threadId: `host:${HOST}:${HT_WS}`, workspaceId: HT_WS, terminals: [HT_TERM], pendingSend: stale });
+      yield* seed(t.data, before);
+      yield* TestClock.setTime(attachedAt + 6 * MINUTE);
+      yield* t.run((s) =>
+        Effect.gen(function* () {
+          assert.strictEqual((yield* s.status(before.threadId)).run, "starting");
+          yield* s.send(before.threadId, SEND_ID, "text").pipe(Effect.flip);
+          assert.strictEqual((yield* s.status(before.threadId)).run, "starting");
+        }),
+      );
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.filter(argvIs("terminals", "read")).length, 1);
+      assert.isNull((yield* readThread(t.data, HT_WS).pipe(Effect.provide(NodeServices.layer)))!.pendingSend);
     }),
   );
 });

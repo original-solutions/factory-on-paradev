@@ -887,7 +887,15 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
           const now = (yield* local(readThread(dataDir, record.workspaceId))) ?? record;
           if (now.archivedAt !== null || now.terminals.length > 0) return yield* Effect.fail(error);
           const archived = yield* Effect.result(archiveRecord(now));
-          if (archived._tag === "Failure") yield* save({ ...now, pendingArchive: true }).pipe(Effect.ignore);
+          if (archived._tag === "Failure") {
+            yield* save({ ...now, pendingArchive: true }).pipe(
+              Effect.catch((saveError) =>
+                Effect.logWarning(
+                  `cloud workspace ${now.workspaceId} could not be marked for the orphan sweep (${saveError.message}); archive it by hand`,
+                ),
+              ),
+            );
+          }
           return yield* fail(
             `${error.message}; ${
               archived._tag === "Success"
@@ -1699,9 +1707,10 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * Archives, once per pass, every cloud workspace tagged `factory` with no thread record file,
    * whole or torn, created over 10 minutes ago: a launch that died between its create and its
    * record left it, and an idle box bills. A workspace with a record is the core's, whatever state
-   * the record is in, unless the record has `pendingArchive`: its launch failed and could not
-   * archive it, so the core holds no thread for it. One log line each; a workspace that fails to archive is one warning, and
-   * the rest go on. The tag is the only mark of whose a workspace is, so this assumes one runner
+   * the record is in, unless the core can never reach it: the record has `pendingArchive` (its
+   * launch failed and could not archive it), or no launch file names it (the launch died between
+   * its record and its launch file, so a repeat of it creates another workspace). One log line
+   * each; a workspace that fails to archive is one warning, and the rest go on. The tag is the only mark of whose a workspace is, so this assumes one runner
    * per Paradev organisation (P2's solo runner).
    */
   const sweepOrphans = Effect.gen(function* () {
@@ -1715,13 +1724,16 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       if (!(now - Date.parse(row.createdAt) > ORPHAN_AGE_MS)) continue;
       if (yield* local(threadFileExists(dataDir, row.id))) {
         const record = yield* local(readThread(dataDir, row.id));
-        if (record === null || record.archivedAt !== null || record.pendingArchive !== true) continue;
+        if (record === null || record.archivedAt !== null) continue;
+        const why =
+          record.pendingArchive === true
+            ? "its launch failed, and so did that launch's archive"
+            : (yield* local(readLaunch(dataDir, record.launchCommandId))) !== record.threadId
+              ? "no launch file names its record"
+              : null;
+        if (why === null) continue;
         yield* archiveRecord(record).pipe(
-          Effect.andThen(
-            Effect.logInfo(
-              `archived cloud workspace ${row.id} (${row.name ?? "no name"}): its launch failed, and so did that launch's archive`,
-            ),
-          ),
+          Effect.andThen(Effect.logInfo(`archived cloud workspace ${row.id} (${row.name ?? "no name"}): ${why}`)),
           Effect.catch((error) =>
             Effect.logWarning(`could not archive the cloud workspace ${row.id} of a failed launch: ${error.message}`),
           ),
