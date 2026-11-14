@@ -5,10 +5,8 @@
  */
 import type { MachineSize } from "../config.ts";
 import type { Load } from "../load.ts";
+import { NO_TARGET_HAS_ROOM } from "../sessions.ts";
 import type { LaunchTarget } from "./sessions.ts";
-
-/** The text of a launch that found no target with room; the core sends the launch again next pass. */
-export const NO_ROOM = "no target has room";
 
 /** A target's slots: `running` is null when its snapshot could not be read. */
 export interface Slots {
@@ -50,15 +48,20 @@ export type Candidate =
       readonly proxy: string | null;
     };
 
-/** A candidate placement did not use, and why. `target` is "local", the host's name, or "cloud". */
+/**
+ * A candidate placement did not use, and why. `id` is the candidate's identity (`local`,
+ * `host:<id>` or `cloud`); `target` is what the log and the belt call it: "local", the host's
+ * name, or "cloud".
+ */
 export interface Dropped {
+  readonly id: string;
   readonly target: string;
   readonly reason: string;
 }
 
 export type Placement =
   | { readonly kind: "placed"; readonly target: LaunchTarget; readonly dropped: ReadonlyArray<Dropped> }
-  | { readonly kind: "refused"; readonly reason: typeof NO_ROOM; readonly dropped: ReadonlyArray<Dropped> };
+  | { readonly kind: "refused"; readonly reason: typeof NO_TARGET_HAS_ROOM; readonly dropped: ReadonlyArray<Dropped> };
 
 const perCore = (load: Load): number => load.oneMinute / load.cores;
 
@@ -89,10 +92,11 @@ const dropReason = (candidate: Candidate): string | null => {
   }
 };
 
+const identityOf = (candidate: Candidate): string =>
+  candidate.kind === "host" ? `host:${candidate.id}` : candidate.kind;
+
 const nameOf = (candidate: Candidate): string =>
   candidate.kind === "local" ? "local" : candidate.kind === "host" ? candidate.name : "cloud";
-
-const loadOf = (candidate: Candidate): Load | null => (candidate.kind === "cloud" ? null : candidate.load);
 
 const targetOf = (candidate: Candidate): LaunchTarget =>
   candidate.kind === "local"
@@ -109,25 +113,21 @@ const targetOf = (candidate: Candidate): LaunchTarget =>
  */
 export const choosePlacement = (candidates: ReadonlyArray<Candidate>): Placement => {
   const dropped: Array<Dropped> = [];
-  const machines: Array<Candidate> = [];
+  /** The machines with room, each with the load that qualified it (a host with no load was dropped). */
+  const machines: Array<{ readonly candidate: Candidate; readonly load: Load }> = [];
   let cloud: Candidate | null = null;
   for (const candidate of candidates) {
     const reason = dropReason(candidate);
     if (reason !== null) {
-      dropped.push({ target: nameOf(candidate), reason });
+      dropped.push({ id: identityOf(candidate), target: nameOf(candidate), reason });
     } else if (candidate.kind === "cloud") cloud = candidate;
-    else machines.push(candidate);
+    else if (candidate.load !== null) machines.push({ candidate, load: candidate.load });
   }
-  let best: Candidate | null = null;
+  let best: (typeof machines)[number] | null = null;
   for (const machine of machines) {
-    const load = loadOf(machine);
-    const bestLoad = best === null ? null : loadOf(best);
-    if (load === null) continue;
-    if (best === null || bestLoad === null || perCore(load) < perCore(bestLoad)) best = machine;
+    if (best === null || perCore(machine.load) < perCore(best.load)) best = machine;
   }
-  if (best !== null) {
-    return { kind: "placed", target: targetOf(best), dropped };
-  }
+  if (best !== null) return { kind: "placed", target: targetOf(best.candidate), dropped };
   if (cloud !== null) return { kind: "placed", target: targetOf(cloud), dropped };
-  return { kind: "refused", reason: NO_ROOM, dropped };
+  return { kind: "refused", reason: NO_TARGET_HAS_ROOM, dropped };
 };

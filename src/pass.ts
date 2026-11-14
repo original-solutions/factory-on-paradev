@@ -64,7 +64,7 @@ import {
   type StartOutcome,
 } from "./runner/start.ts";
 import type { ProxyAnswer } from "./paradev/proxy.ts";
-import { isNoTargetHasRoom, type Model, type SessionsError } from "./sessions.ts";
+import { isNoTargetHasRoom, NO_TARGET_HAS_ROOM, type Model, type SessionsError } from "./sessions.ts";
 import type { StopRequestOutcome } from "./runner/stop.ts";
 import { sanitize } from "./text.ts";
 import {
@@ -536,7 +536,7 @@ interface Notes {
 }
 
 /** What the issue's line says of a launch that found no target with room. */
-const NO_ROOM_WAIT = "waits: no target has room";
+const NO_ROOM_WAIT = `waits: ${NO_TARGET_HAS_ROOM}`;
 
 /** An error, as printed and as recorded. */
 interface NoteError {

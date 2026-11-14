@@ -177,10 +177,13 @@ export class MessageRejectedError extends Schema.TaggedError<MessageRejectedErro
   }
 }
 
+/** The text of a launch that found no target with room. */
+export const NO_TARGET_HAS_ROOM = "no target has room";
+
 /** Placement found no target with room for a launch. The launch is sent again on a later pass. */
 export class NoTargetHasRoom extends Schema.TaggedError<NoTargetHasRoom>()("FactoryNoTargetHasRoom", {}) {
   override get message(): string {
-    return "no target has room";
+    return NO_TARGET_HAS_ROOM;
   }
 }
 

@@ -121,7 +121,7 @@ export const makePlacer = (deps: PlacerDeps) => {
         const running = yield* countsOf;
         const placement = choosePlacement(candidatesOf(repo, running));
         for (const dropped of placement.dropped) {
-          const key = `${repo.repo}\u0000${dropped.target}`;
+          const key = `${repo.repo}\u0000${dropped.id}`;
           if (recorded.has(key)) continue;
           recorded.add(key);
           yield* deps.record({

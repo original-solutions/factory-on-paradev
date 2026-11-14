@@ -31,7 +31,7 @@ export const checkProxy = (
     Effect.map(
       (answer): ProxyAnswer =>
         Option.isNone(answer)
-          ? { kind: "down", reason: "did not answer within 10 s" }
+          ? { kind: "down", reason: `did not answer within ${timeoutMs / 1000} s` }
           : answer.value === 401
             ? { kind: "guarded" }
             : answer.value === 200
