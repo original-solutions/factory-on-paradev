@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe } from "vitest";
 import { installPathsOf } from "./paths.ts";
 import { FactoryProcess, type RunInput, type RunResult } from "./process.ts";
 import { makeSelfUpdate } from "./selfUpdate.ts";
+import { CONFIG_NOT_LOADED_REASON } from "./status.ts";
 
 const EXEC_PATH = "/opt/node/bin/node";
 const GH_DIR = "/gh/factory";
@@ -314,6 +315,8 @@ describe("self-update", () => {
           env: { FACTORY_RUNNER_HOME: f.dataDir },
         });
         for (const step of [clone, npm, smoke]) expect(step!.timeoutMs).toBe(TEN_MINUTES);
+        // The whole report of a busy data dir, not the default 16 KiB tail.
+        expect(smoke!.tailBytes).toBe(16 * 1024 * 1024);
       }),
     );
   });
@@ -429,7 +432,7 @@ describe("self-update", () => {
         f.answers.refs = ["refs/tags/v0.2.0", "refs/tags/v0.3.0"];
         f.answers.smoke = "0.3.0";
         f.answers.smokeTruncated = false;
-        f.answers.smokeReason = "the machine config does not load";
+        f.answers.smokeReason = CONFIG_NOT_LOADED_REASON;
         yield* TestClock.adjust(TEN_MINUTES);
         expect(loud(f).map((log) => log.level)).toEqual(["Warn", "Warn"]);
         expect(loud(f)[1]!.text).toContain("the machine config does not load");

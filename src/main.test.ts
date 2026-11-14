@@ -57,6 +57,7 @@ import { readFixture } from "./paradev/fake-superset.ts";
 import { AgentProcess } from "./paradev/sessions.ts";
 import { writeThread } from "./paradev/state.ts";
 import * as Paths from "./paths.ts";
+import type { SelfUpdateOptions } from "./selfUpdate.ts";
 import { LOAD_COMMAND, PROXY_ENV_READ, type SshSpawn } from "./paradev/ssh.ts";
 import { PARADEV_HOLD_PASSES, PARADEV_OFFLINE_ITEM_ID, type PassWorld, type Repo } from "./pass.ts";
 import {
@@ -4238,16 +4239,21 @@ describe("self-update wiring", () => {
         const stop = yield* Deferred.make<void>();
         const runs: Array<boolean> = [];
         let afterPasses = 0;
-        const selfUpdate = {
-          run: (enabled: boolean) =>
-            Effect.sync(() => {
-              runs.push(enabled);
-            }),
-          afterPass: Effect.sync(() => {
-            afterPasses += 1;
-          }),
-          stopped: stop,
-        };
+        const made: Array<SelfUpdateOptions> = [];
+        const selfUpdate = (options: SelfUpdateOptions) =>
+          Effect.sync(() => {
+            made.push(options);
+            return {
+              run: (enabled: boolean) =>
+                Effect.sync(() => {
+                  runs.push(enabled);
+                }),
+              afterPass: Effect.sync(() => {
+                afterPasses += 1;
+              }),
+              stopped: stop,
+            };
+          });
         const { loop, factoryDir } = yield* started(`${VALID}self_update: false\n`, noGhProcess, {
           selfUpdate,
         });
@@ -4255,6 +4261,19 @@ describe("self-update wiring", () => {
         yield* onePassMore(loop, factoryDir);
         assert.deepStrictEqual(runs, [false]);
         assert.strictEqual(afterPasses, 2);
+        assert.strictEqual(made.length, 1);
+        const options = made[0]!;
+        assert.strictEqual(options.dataDir, factoryDir);
+        assert.strictEqual(options.ghConfigDir(), "/gh");
+        assert.strictEqual(options.gatesRunning(), 0);
+        assert.strictEqual(options.packageRoot, NodePath.resolve(import.meta.dirname, ".."));
+        assert.strictEqual(options.execPath, process.execPath);
+        // `stopped` waits on the updater's signal, not less.
+        const before = yield* Effect.raceFirst(
+          loop.stopped.pipe(Effect.as("stopped")),
+          realDelay(50).pipe(Effect.as("waiting")),
+        );
+        assert.strictEqual(before, "waiting");
         const waiting = yield* Effect.forkChild(loop.stopped, { startImmediately: true });
         yield* Deferred.succeed(stop, undefined);
         yield* Fiber.join(waiting);
