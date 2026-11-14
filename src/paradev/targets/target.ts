@@ -1,8 +1,9 @@
 /**
  * What differs between the places a Paradev thread runs, this Mac, a Paradev host and Paradev
  * Cloud, as one interface ({@link ParadevTarget}) with one module each: `local.ts`, `host.ts` and
- * `cloud.ts`. `sessions.ts` picks the module of a record's target in one place and never asks the
- * target's kind again. This file also holds what the modules share.
+ * `cloud.ts`. `sessions.ts` picks the module of a record's target in one place (`targetFor`, beside
+ * `at`, the location flag); only `launch` still branches on where it places a new thread. This
+ * file also holds what the modules share.
  */
 import * as Effect from "effect/Effect";
 import type { PlatformError } from "effect/PlatformError";
@@ -15,7 +16,7 @@ import type { AgentLookupError, Explanation } from "../sessions.ts";
 import type { SshError } from "../ssh.ts";
 import type { ThreadRecord } from "../state.ts";
 
-const MINUTE = 60_000;
+export const MINUTE = 60_000;
 /**
  * Right after `agents create`, explain says `none` until the agent's first hook. On a host, a
  * `starting` agent this long at `Attached` gets its screen read for Claude Code's trust dialog.
@@ -80,7 +81,7 @@ export type WorktreeRepo = GitRepo & {
 export type TargetError = ParadevAdapterError | AgentLookupError | SshError | CliError | PlatformError;
 
 export interface ParadevTarget {
-  /** The location flag of every call against this target: the one place `--local` is written. */
+  /** The location flag of every call against this target, as `sessions.ts`'s `at` writes it. */
   readonly at: ReadonlyArray<string>;
   /** `snapshot`'s flag: none on this Mac, as P1 recorded it; elsewhere `at`. */
   readonly snapshotAt: ReadonlyArray<string>;

@@ -64,12 +64,12 @@ export interface CloudDeps {
 }
 
 export const makeCloudTarget = (deps: CloudDeps): ParadevTarget => {
-  const { cli, at: AT, commandOf, aliveReads } = deps;
+  const { cli, at, commandOf, aliveReads } = deps;
 
   /** The helper command's output: the end mark, echoed so the echoed command line does not match it. */
   const helperRead = (record: ThreadRecord, command: string, mark: string) =>
     Effect.gen(function* () {
-      const where = [...AT, "--workspace", record.workspaceId];
+      const where = [...at, "--workspace", record.workspaceId];
       const createArgv = ["terminals", "create", ...where, "--command", `${command}; echo ${echoed(mark)}`];
       const created = yield* decodeAnswer(TerminalCreated, yield* call(cli, createArgv, 30_000), createArgv);
       const terminal = ["--terminal", created.terminalId];
@@ -124,8 +124,8 @@ export const makeCloudTarget = (deps: CloudDeps): ParadevTarget => {
     });
 
   return {
-    at: AT,
-    snapshotAt: AT,
+    at: at,
+    snapshotAt: at,
     onThisMac: false,
     label: "cloud",
     worktreeRepo: () => fail("a cloud worktree is not on this Mac"),
@@ -135,17 +135,17 @@ export const makeCloudTarget = (deps: CloudDeps): ParadevTarget => {
     newestSession: (record) => newestCloudSession(record),
     // A cloud workspace has no worktree here, and reads `deleted` once it is archived.
     readWorkspace: (record) =>
-      getCloudWorkspace(cli, AT, record.workspaceId).pipe(
+      getCloudWorkspace(cli, at, record.workspaceId).pipe(
         Effect.map((got) =>
           got.status === "deleted" ? null : { worktreePath: record.worktreePath, branch: got.branch },
         ),
       ),
     archiveWorkspace: (workspaceId) =>
       Effect.gen(function* () {
-        const gone = yield* archiveCall(cli, AT, workspaceId);
+        const gone = yield* archiveCall(cli, at, workspaceId);
         // A cloud workspace that `workspaces get` reads as `deleted` is archived, whatever archive said.
         if (gone !== null) {
-          const got = yield* getCloudWorkspace(cli, AT, workspaceId).pipe(
+          const got = yield* getCloudWorkspace(cli, at, workspaceId).pipe(
             Effect.catchIf(isNotFound, () => Effect.succeed(null)),
           );
           if (got === null || got.status === "deleted") return;

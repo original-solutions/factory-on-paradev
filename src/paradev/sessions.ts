@@ -77,6 +77,7 @@ import {
   gitOkOf,
   type GitRepo,
   isNotFound,
+  MINUTE,
   ParadevAdapterError,
   type ParadevTarget,
   SILENT_WORKING_MS,
@@ -86,7 +87,6 @@ import { lastAssistantMessage } from "./transcript.ts";
 
 export { ParadevAdapterError } from "./targets/target.ts";
 
-const MINUTE = 60_000;
 /** A tagged cloud workspace with no thread record this old is an orphan: its launch died before the record. */
 const ORPHAN_AGE_MS = 10 * MINUTE;
 const NAME_MAX = 80;
@@ -648,7 +648,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * adapter tells this Mac, a host and cloud apart; each module takes its flag from here.
    */
   const at = (target: Target | ThreadTarget): ReadonlyArray<string> =>
-    target.kind === "local" ? ["--local"] : ["--host", "machineId" in target ? target.machineId : "cloud"];
+    target.kind === "local" ? ["--local"] : ["--host", target.kind === "host" ? target.machineId : "cloud"];
   const localTarget = makeLocalTarget({ cli, at: at({ kind: "local" }), fs, processes, commandOf, claudeProjectsDir, sessionRepo, git, gitOk });
   const cloudTarget = makeCloudTarget({ cli, at: at({ kind: "cloud" }), commandOf, aliveReads: cloudAliveReads });
   const hostDeps = { cli, at: (machineId: string) => at({ kind: "host", machineId }), ssh, hostOf, commandOf, trustReads };
@@ -918,13 +918,13 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const launchWorktree = (request: LaunchRequest, placed: Exclude<LaunchTarget, { readonly kind: "cloud" }>) =>
     Effect.gen(function* () {
       const target: Target =
-        placed.kind === "host"
-          ? { kind: "host", machineId: placed.machineId, name: (yield* hostOf(placed.machineId)).name }
-          : placed;
+        placed.kind === "local"
+          ? placed
+          : { kind: "host", machineId: placed.machineId, name: (yield* hostOf(placed.machineId)).name };
       // 2. The base into this Mac's repo clone: the source of truth for the base commit.
       const base = yield* fetchBase(yield* projectOf(request.projectId), request.baseRef);
       const projectId =
-        placed.kind === "host" ? (yield* hostProject(placed.machineId, placed.path)).id : request.projectId;
+        placed.kind === "local" ? request.projectId : (yield* hostProject(placed.machineId, placed.path)).id;
 
       // 3. The workspace, with no agent: a repeat create with `--agent` starts a second one (X7).
       const argv = [
@@ -1128,7 +1128,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         let running = 0;
         for (const record of records) {
           const terminal = record.terminals.at(-1);
-          const there = record.threadId === threadIdOf(target, record.workspaceId);
+          const there = threadIdOf(record.target, record.workspaceId) === threadIdOf(target, record.workspaceId);
           if (!there || record.archivedAt !== null || terminal === undefined) continue;
           const state = answer.workspaces
             .find((ws) => ws.id === record.workspaceId)

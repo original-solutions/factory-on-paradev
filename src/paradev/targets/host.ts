@@ -160,6 +160,7 @@ export const makeHostTarget = (deps: HostDeps, machineId: string): ParadevTarget
     startingHeld: (record, terminal, explained, now) =>
       Effect.gen(function* () {
         // Held at `Attached` this long on a host: Claude Code's trust dialog may hold the prompt.
+        // `targetFor` hands this module only host records; the kind test narrows the type for `name`.
         if (
           record.target.kind === "host" &&
           explained.lastEventType === "Attached" &&
