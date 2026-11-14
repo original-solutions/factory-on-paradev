@@ -1,16 +1,16 @@
 /**
  * `factory-runner hosts check`: the ten checks a host must pass before it gets runs, read over SSH
  * and through the Superset CLI, each with the fix the person runs when it fails. It writes nothing
- * on the host (decision U4). The same checks run at `install`, and in the pass: the first pass
- * after each config load checks every host, and a host that is not ready is checked again every 5
- * minutes. A host that fails raises one `host-not-ready` attention item and is not a launch
+ * on the host (decision U4). The same checks run at `install`, and beside the pass: every host
+ * right after each config load, then a host that is not ready every 5 minutes and a ready one
+ * every hour. A host that fails raises one `host-not-ready` attention item and is not a launch
  * candidate until a check passes.
  */
 import * as Effect from "effect/Effect";
 
 import type { NewItem } from "../attention.ts";
 import type { HostConfig, MachineConfig } from "../config.ts";
-import { classify } from "./cli.ts";
+import { CLI_ENV, classify } from "./cli.ts";
 import {
   CLAUDE_VERSION,
   fromCommandRunner,
@@ -25,6 +25,7 @@ import {
   type SshReadError,
   type SshSpawn,
   type SyncCommandResult,
+  type SyncCommandRun,
 } from "./ssh.ts";
 
 /** What the checks read from: a host over ssh, and the Superset CLI. */
@@ -280,15 +281,16 @@ const cliErrorText = (done: SyncCommandResult): string =>
       : `exit ${done.status}`
     : classify(done.stderr).text.split("\n")[0]!;
 
-/** The checks' io over a synchronous command runner: ssh by `ssh`, the CLI at `cli` with `--json`, 30 s each. */
-export const hostCheckIoFromCommands = (
-  run: (command: string, args: ReadonlyArray<string>, timeoutMs: number) => SyncCommandResult,
-  cli: string,
-): HostCheckIo => ({
+/**
+ * The checks' io over a synchronous command runner: ssh by `ssh`, the CLI at `cli` with `--json`
+ * for 30 s. Each gets only its own environment names (`SSH_ENV`, and the CLI's `CLI_ENV`), so a
+ * token exported in the shell reaches neither.
+ */
+export const hostCheckIoFromCommands = (run: SyncCommandRun, cli: string): HostCheckIo => ({
   ssh: fromCommandRunner(run),
   superset: (argv) =>
     Effect.suspend(() => {
-      const done = run(cli, [...argv, "--json"], 30_000);
+      const done = run(cli, [...argv, "--json"], 30_000, CLI_ENV);
       if (done.status !== 0) return Effect.fail(cliErrorText(done));
       return Effect.try({
         try: (): unknown => JSON.parse(done.stdout),
@@ -296,3 +298,26 @@ export const hostCheckIoFromCommands = (
       });
     }),
 });
+
+/**
+ * Runs and prints `hosts check` for each of `hosts`, one after another, as the CLI and install do:
+ * each host's lines, then for a host that fails, that it gets no run. True when every line is ok.
+ */
+export const printHostChecks = async (
+  run: SyncCommandRun,
+  config: MachineConfig,
+  hosts: ReadonlyArray<HostConfig>,
+  out: (line: string) => void,
+): Promise<boolean> => {
+  const io = hostCheckIoFromCommands(run, config.paradev.cli);
+  let ok = true;
+  for (const host of hosts) {
+    const lines = await Effect.runPromise(checkHost(io, config, host));
+    for (const text of formatHostCheck(host, lines)) out(text);
+    if (firstFailure(lines) !== null) {
+      ok = false;
+      out(`host ${host.name} is not ready; the runner gives it no run until its check passes`);
+    }
+  }
+  return ok;
+};

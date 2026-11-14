@@ -13,22 +13,17 @@ import { FactoryProcess, type RunInput, type RunResult } from "../process.ts";
 
 import {
   CLAUDE_VERSION,
-  fetchBase,
   fromCommandRunner,
   GH_AUTH_STATUS,
   GIT_EMAIL,
   isAllowed,
   liveSshSpawn,
   LOAD_COMMAND,
-  lsofCwd,
-  PGREP_CLAUDE,
   PROXY_ENV_READ,
   PROXY_ENV_SCRIPT,
   remoteUrl,
-  resetToCommit,
   runSsh,
   SSH_TIMEOUT_MS,
-  sessionListing,
   shellQuote,
   sshArgs,
   SshError,
@@ -78,17 +73,12 @@ describe("sshArgs", () => {
 const ALLOWED: ReadonlyArray<string> = [
   LOAD_COMMAND,
   TRUE_COMMAND,
-  PGREP_CLAUDE,
-  lsofCwd(4242),
-  sessionListing("/Users/me/.paradev/worktrees/proj/fac/1-1"),
   remoteUrl("/Users/me/code/repo"),
   trustRead("/Users/me/code/repo"),
   PROXY_ENV_READ,
   GIT_EMAIL,
   GH_AUTH_STATUS,
   CLAUDE_VERSION,
-  fetchBase("/Users/me/wt", "main"),
-  resetToCommit("/Users/me/wt", SHA),
 ];
 
 describe("isAllowed", () => {
@@ -106,39 +96,19 @@ describe("isAllowed", () => {
 
   it("refuses the unquoted and quote-breaking forms of each shape that takes a word", () => {
     const refused = [
-      "git -C /wt fetch origin main",
-      "git -C '/wt' fetch origin main",
-      "git -C '/wt' fetch origin 'ma'in'",
-      "git -C 'a'b' fetch origin 'main'",
       "git -C /wt remote get-url origin",
       "git -C 'a'b' remote get-url origin",
       `python3 -c '${TRUST_SCRIPT}' /Users/me/repo`,
       `python3 -c '${TRUST_SCRIPT}' 'a'b'`,
       `python3 -c '${TRUST_SCRIPT}' 'a' 'b'`,
-      "ls -t ~/.claude/projects/a/b/*.jsonl",
-      "ls -t ~/.claude/projects/a;id/*.jsonl",
-      "ls -t ~/.claude/projects/$HOME/*.jsonl",
-      "ls -t ~/.claude/projects//*.jsonl",
     ];
     for (const command of refused) assert.isFalse(isAllowed(command), command);
-  });
-
-  it("refuses a fetch ref that is a git option or not a plain ref", () => {
-    for (const ref of ["--prune", "--upload-pack=x", "a:b", "+main", "-f", "a..b", "", "a b", "a\\b"]) {
-      assert.throws(() => fetchBase("/wt", ref), undefined, undefined, ref);
-      assert.isFalse(isAllowed(`git -C '/wt' fetch origin ${shellQuote(ref)}`), ref);
-      assert.isFalse(isAllowed(`git -C '/wt' fetch origin ${ref}`), ref);
-    }
-    for (const ref of ["main", "release/1.2", "feature_x-1", ".hidden", "v1.0.0"]) {
-      assert.isTrue(isAllowed(fetchBase("/wt", ref)), ref);
-    }
   });
 
   it("refuses a path with a backslash, which the allowlist cannot tell from an escape", () => {
     const path = "/Users/me/a\\b";
     assert.isFalse(isAllowed(remoteUrl(path)));
     assert.isFalse(isAllowed(trustRead(path)));
-    assert.isFalse(isAllowed(fetchBase(path, "main")));
   });
 
   it("the load command is the spec's text", () => {
@@ -155,12 +125,11 @@ describe("isAllowed", () => {
       "git -C 'a' remote get-url origin; rm x",
       "git -C a remote get-url origin",
       "git -C 'a' remote get-url origin && true",
-      `git -C 'a' reset --hard ${SHA.slice(0, 7)}`,
-      `git -C 'a' reset --hard ${SHA} --force`,
-      "lsof -a -d cwd -p 0",
-      "lsof -a -d cwd -p 12; id",
-      "ls -t ~/.claude/projects/a b/*.jsonl",
-      "ls -t ~/.claude/projects/../../*.jsonl",
+      `git -C '/wt' fetch origin 'main'`,
+      `git -C '/wt' reset --hard ${SHA}`,
+      "pgrep -x claude",
+      "lsof -a -d cwd -p 12",
+      "ls -t ~/.claude/projects/a/*.jsonl",
       `${TRUE_COMMAND} `,
       `${GIT_EMAIL} foo`,
       "",
@@ -180,19 +149,8 @@ describe("isAllowed", () => {
 });
 
 describe("builders", () => {
-  it("the session folder is the worktree path with every non-alphanumeric turned into -", () => {
-    assert.strictEqual(
-      sessionListing("/Users/me/.paradev/worktrees/p/fac/1-1"),
-      "ls -t ~/.claude/projects/-Users-me--paradev-worktrees-p-fac-1-1/*.jsonl",
-    );
-  });
-
-  it("quotes each path, and the commit must be 40 hex", () => {
+  it("quotes each path", () => {
     assert.strictEqual(remoteUrl("/a b"), "git -C '/a b' remote get-url origin");
-    assert.strictEqual(fetchBase("/wt", "main"), "git -C '/wt' fetch origin 'main'");
-    assert.strictEqual(resetToCommit("/wt", SHA), `git -C '/wt' reset --hard ${SHA}`);
-    assert.throws(() => resetToCommit("/wt", "abc123"));
-    assert.throws(() => resetToCommit("/wt", `${SHA}; id`));
   });
 
   it("the trust read passes the quoted path as its argument and names ~/.claude.json", () => {
@@ -276,16 +234,28 @@ describe("runSsh", () => {
 });
 
 describe("fromCommandRunner", () => {
-  it.effect("maps a status, and a null status to a null exit code", () =>
+  it.effect("maps a status, and a null status to a null exit code; ssh gets only its env names", () =>
     Effect.gen(function* () {
-      const seen: Array<{ command: string; args: ReadonlyArray<string>; timeoutMs: number }> = [];
-      const run = fromCommandRunner((command, args, timeoutMs) => {
-        seen.push({ command, args, timeoutMs });
+      const seen: Array<{
+        command: string;
+        args: ReadonlyArray<string>;
+        timeoutMs: number;
+        inheritEnv: ReadonlyArray<string> | undefined;
+      }> = [];
+      const run = fromCommandRunner((command, args, timeoutMs, inheritEnv) => {
+        seen.push({ command, args, timeoutMs, inheritEnv });
         return { status: 0, stdout: "x", stderr: "" };
       });
       const ok = yield* run(["a"], 5);
       assert.deepStrictEqual(ok, { exitCode: 0, timedOut: false, stdout: "x", stderr: "" });
-      assert.deepStrictEqual(seen, [{ command: "ssh", args: ["a"], timeoutMs: 5 }]);
+      assert.deepStrictEqual(seen, [
+        {
+          command: "ssh",
+          args: ["a"],
+          timeoutMs: 5,
+          inheritEnv: ["PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "SSH_AUTH_SOCK"],
+        },
+      ]);
       const none = yield* fromCommandRunner(() => ({ status: null, stdout: "", stderr: "boom" }))([], 1);
       assert.strictEqual(none.exitCode, null);
       assert.isFalse(none.timedOut);

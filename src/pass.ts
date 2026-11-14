@@ -405,7 +405,7 @@ export interface PassWorld {
   /**
    * The hosts that are not ready, by host id, with the first failing line of their last check:
    * none of them is a launch candidate. A new world starts with every configured host here, as
-   * not checked yet; the pass's `hostChecks` takes a host out when its check passes. Per world,
+   * not checked yet; `checkHosts`, beside the pass, takes a host out when its check passes. Per world,
    * so a config load starts over. Placement (#55) reads it.
    */
   readonly hostsNotReady: Map<string, string>;
@@ -837,7 +837,6 @@ export const runPass = Effect.fn("Pass.runPass")(function* (
   pass.highLoad = yield* highLoad(world, machine, pass);
   pass.paradevOffline = yield* paradevOffline(world, pass);
   yield* hostLoads(world, machine, pass);
-  yield* hostChecks(world, machine, pass);
   yield* brokenWorktrees(world, pass);
   // Without the ledger there is no telling how many runs are active, so nothing is claimed.
   const infos = yield* runs(world, pass);
@@ -1150,20 +1149,28 @@ const hostLoads = Effect.fn("Pass.hostLoads")(function* (
 /** How long after its last check a host that is not ready is checked again. */
 export const HOST_RECHECK_EVERY_MS = 5 * 60 * 1000;
 
-/** How long one host's whole check may take; past it the host fails with `check: no answer within 60 s`. */
-export const HOST_CHECK_TIMEOUT_MS = 60_000;
+/** How long after its last check a ready host is checked again, so a host that breaks stops getting runs. */
+export const HOST_READY_RECHECK_EVERY_MS = 60 * 60 * 1000;
+
+/** What the host checks read and write: the not-ready map, the check times, attention and the clock. */
+export type HostCheckWorld = Pick<
+  PassWorld,
+  "hostsNotReady" | "hostCheckedAt" | "attention" | "nowMs" | "checkHost"
+>;
 
 /**
- * Checks the hosts that are due, all at once, before any claim or launch: a host not checked
- * since this world was built (a config load), or one that is not ready and was last checked at
- * least `HOST_RECHECK_EVERY_MS` ago. A host that fails is in `hostsNotReady` with its first
- * failing line and has one `host-not-ready` item (replaced when the line changed); one that
- * passes is taken out and its item cleared. A host that has left the config is forgotten.
+ * Checks the hosts that are due, all at once. The runner runs it beside the pass, as it does the
+ * orphan sweep, so a slow host holds up no claim; each call in a check has its own timeout, so a
+ * check always ends with its real first failing line. Due: a host not checked since this world
+ * was built (a config load), a host that is not ready and was last checked at least
+ * `HOST_RECHECK_EVERY_MS` ago, or a ready one last checked at least `HOST_READY_RECHECK_EVERY_MS`
+ * ago. A host that fails is in `hostsNotReady` with its first failing line and has one
+ * `host-not-ready` item (replaced when the line changed); one that passes is taken out and its
+ * item cleared. A host that has left the config is forgotten.
  */
-const hostChecks = Effect.fn("Pass.hostChecks")(function* (
-  world: PassWorld,
+export const checkHosts = Effect.fn("Pass.checkHosts")(function* (
+  world: HostCheckWorld,
   machine: MachineConfig,
-  pass: Pass,
 ) {
   const ids = new Set(machine.hosts.map((host) => host.id));
   for (const map of [world.hostsNotReady, world.hostCheckedAt]) {
@@ -1177,18 +1184,13 @@ const hostChecks = Effect.fn("Pass.hostChecks")(function* (
   const now = world.nowMs();
   const due = machine.hosts.filter((host) => {
     const at = world.hostCheckedAt.get(host.id);
-    return at === undefined || (world.hostsNotReady.has(host.id) && now - at >= HOST_RECHECK_EVERY_MS);
+    if (at === undefined) return true;
+    const every = world.hostsNotReady.has(host.id) ? HOST_RECHECK_EVERY_MS : HOST_READY_RECHECK_EVERY_MS;
+    return now - at >= every;
   });
   const failing = yield* Effect.forEach(
     due,
-    (host) =>
-      world.checkHost(host).pipe(
-        Effect.map(firstFailure),
-        Effect.timeoutOption(Duration.millis(HOST_CHECK_TIMEOUT_MS)),
-        Effect.map((answer) =>
-          answer._tag === "Some" ? answer.value : `check: no answer within ${HOST_CHECK_TIMEOUT_MS / 1000} s`,
-        ),
-      ),
+    (host) => world.checkHost(host).pipe(Effect.map(firstFailure)),
     { concurrency: "unbounded" },
   );
   for (const [index, host] of due.entries()) {
@@ -1201,7 +1203,6 @@ const hostChecks = Effect.fn("Pass.hostChecks")(function* (
       continue;
     }
     world.hostsNotReady.set(host.id, line);
-    pass.report.attention += 1;
     const item = hostNotReadyItem(host, line);
     // An open item is not raised again, so one about another line is cleared first.
     yield* world.attention.clear((open) => open.id === itemId && open.message !== item.message);

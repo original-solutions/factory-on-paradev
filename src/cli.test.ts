@@ -360,6 +360,8 @@ ${PARADEV}`;
     seedConfig(s);
     expect(await runCli(["hosts", "check"], s.io)).toBe(1);
     expect(s.outs).toContain("  gh: gh auth login on the host");
+    // The same lines install prints: one function runs and prints the checks for both.
+    expect(s.outs).toContain("host mini is not ready; the runner gives it no run until its check passes");
   });
 
   it("checks only the host a name picks", async () => {

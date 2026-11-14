@@ -7,7 +7,6 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 
 import {
@@ -16,7 +15,7 @@ import {
   parseMachineConfig,
   type MachineConfig,
 } from "./config.ts";
-import { checkHost, firstFailure, formatHostCheck, hostCheckIoFromCommands } from "./paradev/hostsCheck.ts";
+import { printHostChecks } from "./paradev/hostsCheck.ts";
 import { lstatOrNull, readTextOrNull, writeFileWhole } from "./syncFiles.ts";
 import { installPathsOf, LABEL, LOGROTATE_LABEL, packageVersion } from "./paths.ts";
 
@@ -59,8 +58,16 @@ export interface InstallEnv {
   readonly pathEnv: string;
   /** The folder holding this package's `package.json`. */
   readonly packageRoot: string;
-  /** Runs a command to the end or `timeoutMs` (default 30 s); the host checks give ssh 10 s. */
-  readonly run: (command: string, args: ReadonlyArray<string>, timeoutMs?: number) => CommandResult;
+  /**
+   * Runs a command to the end or `timeoutMs` (default 30 s), with only the `inheritEnv` names of
+   * the environment when given; the host checks give ssh 10 s and its own names.
+   */
+  readonly run: (
+    command: string,
+    args: ReadonlyArray<string>,
+    timeoutMs?: number,
+    inheritEnv?: ReadonlyArray<string>,
+  ) => CommandResult;
   readonly sleep: (ms: number) => Promise<void>;
   readonly now: () => number;
   readonly out: (line: string) => void;
@@ -243,23 +250,6 @@ const waitFor = async (env: InstallEnv, done: () => boolean): Promise<boolean> =
 const WAIT_TEXT = `${WAIT_MS / 1000} s`;
 
 /**
- * Prints `hosts check` for every configured host. A host that fails does not stop the install:
- * the runner starts either way and gives that host no run until a check passes. The first pass
- * after a config load checks every host, and a host that is not ready is checked again every 5
- * minutes.
- */
-const checkHosts = async (env: InstallEnv, config: MachineConfig, cli: string): Promise<void> => {
-  const io = hostCheckIoFromCommands(env.run, cli);
-  for (const host of config.hosts) {
-    const lines = await Effect.runPromise(checkHost(io, config, host));
-    for (const text of formatHostCheck(host, lines)) env.out(text);
-    if (firstFailure(lines) !== null) {
-      env.out(`host ${host.name} is not ready; the runner gives it no run until its check passes`);
-    }
-  }
-};
-
-/**
  * Installs the runner as a LaunchAgent and returns the exit code. It checks the machine config and
  * the Superset login first (a LaunchAgent has no Paradev host login of its own) and writes nothing
  * when either fails. Then it copies this package beside `versions/<version>`, writes both agent
@@ -294,7 +284,11 @@ export const install = async (env: InstallEnv): Promise<number> => {
     return 1;
   }
 
-  if (config.config !== null) await checkHosts(env, config.config, cli);
+  // A host that fails does not stop the install: the runner starts either way and gives that
+  // host no run until a check passes.
+  if (config.config !== null) {
+    await printHostChecks(env.run, config.config, config.config.hosts, env.out);
+  }
 
   const version = packageVersion(env.packageRoot);
   const staged = stage(env, version);

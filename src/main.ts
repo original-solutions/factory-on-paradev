@@ -67,6 +67,7 @@ import {
   abandonedItem,
   errorKind,
   gateQueued,
+  checkHosts,
   lastGoodCopy,
   plain,
   runPass,
@@ -487,7 +488,7 @@ export const liveWorld = (
 ): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown"> => {
   const load = live.readLoad ?? readLoad;
   const ssh = live.ssh ?? liveSshSpawn(process);
-  // Every host is not ready until the pass has checked it: a new world is a new config load.
+  // Every host is not ready until its check has passed: a new world is a new config load.
   const hostsNotReady = new Map(
     machine.hosts.map((host) => [host.id, "not checked yet since the config load"] as const),
   );
@@ -1003,6 +1004,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
   const beltRuns: RunReadCache = new Map();
   let beltWriting = false;
   let sweeping = false;
+  let checkingHosts = false;
 
   const onePass = Effect.gen(function* () {
     const current = state.current;
@@ -1022,6 +1024,20 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         Effect.ensuring(
           Effect.sync(() => {
             sweeping = false;
+          }),
+        ),
+        Effect.interruptible,
+        Effect.forkIn(scope),
+      );
+    }
+    // The host checks go beside the pass the same way: a host that is slow to answer holds up no
+    // claim, and a check runs to its real first failing line however long its calls take.
+    if (!checkingHosts) {
+      checkingHosts = true;
+      yield* checkHosts(current.world, current.machine).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            checkingHosts = false;
           }),
         ),
         Effect.interruptible,

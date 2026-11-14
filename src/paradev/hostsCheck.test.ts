@@ -335,15 +335,25 @@ describe("formatHostCheck", () => {
 });
 
 describe("hostCheckIoFromCommands", () => {
-  it("runs the superset CLI with --json and answers the parsed output", async () => {
-    const calls: Array<{ command: string; args: ReadonlyArray<string>; timeoutMs: number }> = [];
-    const io = hostCheckIoFromCommands((command, args, timeoutMs) => {
-      calls.push({ command, args, timeoutMs });
+  it("runs the superset CLI with --json and the CLI's five env names, and answers the parsed output", async () => {
+    const calls: Array<{
+      command: string;
+      args: ReadonlyArray<string>;
+      timeoutMs: number;
+      inheritEnv: ReadonlyArray<string> | undefined;
+    }> = [];
+    const io = hostCheckIoFromCommands((command, args, timeoutMs, inheritEnv) => {
+      calls.push({ command, args, timeoutMs, inheritEnv });
       return { status: 0, stdout: '[{"id":"h1"}]', stderr: "" };
     }, "/opt/superset");
     assert.deepStrictEqual(await Effect.runPromise(io.superset(["hosts", "list"])), [{ id: "h1" }]);
     assert.deepStrictEqual(calls, [
-      { command: "/opt/superset", args: ["hosts", "list", "--json"], timeoutMs: 30_000 },
+      {
+        command: "/opt/superset",
+        args: ["hosts", "list", "--json"],
+        timeoutMs: 30_000,
+        inheritEnv: ["HOME", "PATH", "USER", "LANG", "TMPDIR"],
+      },
     ]);
   });
 

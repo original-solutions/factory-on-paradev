@@ -2,10 +2,10 @@
  * The runner's way onto a Paradev host: `ssh` with `BatchMode=yes` and `ConnectTimeout=10`, so a
  * host that wants a password or does not answer fails at once instead of hanging a pass.
  *
- * Two callers. The adapter (#53) runs its calls through `sshRunner`. The host readings and
- * `hosts check` (#54) go through `runSsh`, which refuses any text that is not one of the shapes
- * below: the read-only commands of the readings and the check, and the fetch and reset of a
- * worktree. The runner writes nothing in a host's dotfiles (decision U4).
+ * Two callers. The adapter (#53) runs its calls through `sshRunner`, which has no allowlist: it
+ * sends whatever text the adapter builds (#67 gives it one). The host readings and `hosts check`
+ * (#54) go through `runSsh`, which refuses any text that is not one of the read-only shapes below.
+ * The runner writes nothing on a host (decision U4).
  */
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -96,6 +96,17 @@ export interface SyncCommandResult {
   readonly stderr: string;
 }
 
+/** A synchronous command runner; with `inheritEnv` the command gets only those names of the environment. */
+export type SyncCommandRun = (
+  command: string,
+  args: ReadonlyArray<string>,
+  timeoutMs: number,
+  inheritEnv?: ReadonlyArray<string>,
+) => SyncCommandResult;
+
+/** The environment names `ssh` gets: enough to find the key, the agent socket included, and nothing else. */
+export const SSH_ENV: ReadonlyArray<string> = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "SSH_AUTH_SOCK"];
+
 /** Why a call gave no answer: the command was refused, ssh did not answer in time, or it failed. */
 export interface SshReadError {
   readonly kind: "refused" | "timeout" | "failed";
@@ -106,15 +117,6 @@ export interface SshReadError {
 export const LOAD_COMMAND = "sysctl -n vm.loadavg hw.ncpu 2>/dev/null || (cat /proc/loadavg; nproc)";
 /** Whether the host answers over ssh at all. */
 export const TRUE_COMMAND = "true";
-/** The pids of the host's running Claude processes. */
-export const PGREP_CLAUDE = "pgrep -x claude";
-/** The working directory of one process. */
-export const lsofCwd = (pid: number): string => `lsof -a -d cwd -p ${pid}`;
-
-/** The session files Claude Code keeps for a worktree, newest first. */
-export const sessionListing = (worktreePath: string): string =>
-  `ls -t ~/.claude/projects/${worktreePath.replaceAll(/[^A-Za-z0-9]/g, "-")}/*.jsonl`;
-
 /** The `origin` URL of the clone at `path`. */
 export const remoteUrl = (path: string): string => `git -C ${shellQuote(path)} remote get-url origin`;
 
@@ -142,21 +144,6 @@ export const GH_AUTH_STATUS = "gh auth status";
 /** Whether Claude Code is installed on the host. */
 export const CLAUDE_VERSION = "claude --version";
 
-/** A ref git takes as a name: it cannot start with `-` (an option), hold `:` or `+` (a refspec), or have `..`. */
-const REF = "(?!.*\\.\\.)[A-Za-z0-9._][A-Za-z0-9._/-]*";
-
-/** Fetches `ref` from `origin` in the worktree. One of the two commands that write (#53). Throws on a ref that is not a plain name. */
-export const fetchBase = (worktree: string, ref: string): string => {
-  if (!new RegExp(`^${REF}$`).test(ref)) throw new Error(`not a plain ref: ${ref}`);
-  return `git -C ${shellQuote(worktree)} fetch origin ${shellQuote(ref)}`;
-};
-
-/** Resets the worktree to a full commit id. One of the two commands that write (#53). */
-export const resetToCommit = (worktree: string, commit: string): string => {
-  if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`not a full commit id: ${commit}`);
-  return `git -C ${shellQuote(worktree)} reset --hard ${commit}`;
-};
-
 const escapeRegExp = (text: string): string => text.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** One shell word in single quotes, where `'\''` is a quote inside it. A backslash anywhere else is refused. */
@@ -165,7 +152,6 @@ const QUOTED = "'(?:[^'\\\\]|'\\\\'')*'";
 const CONSTANTS: ReadonlySet<string> = new Set([
   LOAD_COMMAND,
   TRUE_COMMAND,
-  PGREP_CLAUDE,
   PROXY_ENV_READ,
   GIT_EMAIL,
   GH_AUTH_STATUS,
@@ -173,12 +159,8 @@ const CONSTANTS: ReadonlySet<string> = new Set([
 ]);
 
 const SHAPES: ReadonlyArray<RegExp> = [
-  /^lsof -a -d cwd -p [1-9][0-9]*$/,
-  /^ls -t ~\/\.claude\/projects\/[A-Za-z0-9-]+\/\*\.jsonl$/,
   new RegExp(`^git -C ${QUOTED} remote get-url origin$`),
   new RegExp(`^python3 -c '${escapeRegExp(TRUST_SCRIPT)}' ${QUOTED}$`),
-  new RegExp(`^git -C ${QUOTED} fetch origin '${REF}'$`),
-  new RegExp(`^git -C ${QUOTED} reset --hard [0-9a-f]{40}$`),
 ];
 
 /** Whether `command` is one of the shapes the runner may send to a host. */
@@ -232,7 +214,7 @@ export const liveSshSpawn =
         timeoutMs,
         separateStderr: true,
         termGraceMs: 2_000,
-        inheritEnv: ["PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "SSH_AUTH_SOCK"],
+        inheritEnv: SSH_ENV,
       })
       .pipe(
         Effect.map(
@@ -253,14 +235,12 @@ export const liveSshSpawn =
         ),
       );
 
-/** A synchronous command runner (the CLI's and install's) as an `SshSpawn`; the command is always `ssh`. */
+/** A synchronous command runner (the CLI's and install's) as an `SshSpawn`: always `ssh`, with `SSH_ENV` only. */
 export const fromCommandRunner =
-  (
-    run: (command: string, args: ReadonlyArray<string>, timeoutMs: number) => SyncCommandResult,
-  ): SshSpawn =>
+  (run: SyncCommandRun): SshSpawn =>
   (args, timeoutMs) =>
     Effect.sync(() => {
-      const done = run("ssh", args, timeoutMs);
+      const done = run("ssh", args, timeoutMs, SSH_ENV);
       return {
         exitCode: done.status,
         timedOut: done.status === null && done.stderr.includes("ETIMEDOUT"),

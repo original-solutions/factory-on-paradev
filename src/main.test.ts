@@ -57,7 +57,7 @@ import { readFixture } from "./paradev/fake-superset.ts";
 import { AgentProcess } from "./paradev/sessions.ts";
 import { writeThread } from "./paradev/state.ts";
 import * as Paths from "./paths.ts";
-import type { SshSpawn } from "./paradev/ssh.ts";
+import { LOAD_COMMAND, PROXY_ENV_READ, type SshSpawn } from "./paradev/ssh.ts";
 import { PARADEV_HOLD_PASSES, PARADEV_OFFLINE_ITEM_ID, type PassWorld, type Repo } from "./pass.ts";
 import {
   FactoryProcess,
@@ -3985,8 +3985,18 @@ describe("liveWorld: the hosts", () => {
   const HOSTS = "hosts:\n  - id: h1\n    name: mini\n    ssh: me@mini\n    max_runs: 2\n";
   const refused: SshSpawn = () =>
     Effect.succeed({ exitCode: 255, timedOut: false, stdout: "", stderr: "Connection refused\n" });
+  /** A host whose every ssh read passes: no proxy name missing, an email, gh and claude there. */
+  const healthy: SshSpawn = (args) =>
+    Effect.succeed({
+      exitCode: 0,
+      timedOut: false,
+      stdout: args.at(-1) === PROXY_ENV_READ ? "" : "me@example.com\n",
+      stderr: "",
+    });
+  const hostsListed = (paradev: FakeParadev) =>
+    paradev.calls.filter((argv) => argv.join(" ") === "hosts list").length;
 
-  it.effect("the first pass checks each host, and a host that fails is not ready with one attention item", () =>
+  it.effect("the first pass's checks find a failing host not ready, with one attention item", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { loop, factoryDir, attention, paradev } = yield* started(
@@ -3996,10 +4006,43 @@ describe("liveWorld: the hosts", () => {
           newParadev(),
         );
         yield* idleAfter(loop, factoryDir, 1);
-        const items = (yield* attention.list()).filter((item) => item.id === "host-not-ready:h1");
+        const notReady = () =>
+          Effect.map(attention.list(), (items) => items.filter((item) => item.id === "host-not-ready:h1"));
+        // The checks run beside the pass, so they can end after it.
+        let items = yield* notReady();
+        for (const until = Date.now() + 30_000; items.length === 0 && Date.now() < until; ) {
+          yield* realDelay(5);
+          items = yield* notReady();
+        }
         assert.strictEqual(items.length, 1);
         assert.include(items[0]!.message, "host mini is not ready: online: add it with superset hosts add me@mini --name mini");
-        assert.isTrue(paradev.calls.some((argv) => argv.join(" ") === "hosts list"));
+        assert.isTrue(hostsListed(paradev) > 0);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a host check that never answers holds up no pass, and the host stays not ready", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const worlds: Array<PassWorld> = [];
+        const { loop, factoryDir, paradev } = yield* started(
+          configFor([["a/b", "/b"]], "/gh", HOSTS),
+          noGhProcess,
+          {
+            // The pass's load read answers; every read of the check hangs.
+            ssh: (args) =>
+              args.at(-1) === LOAD_COMMAND
+                ? Effect.succeed({ exitCode: 0, timedOut: false, stdout: "{ 2.11 1.87 1.72 }\n12\n", stderr: "" })
+                : Effect.never,
+            onWorld: (world) => worlds.push(world),
+          },
+          newParadev(),
+        );
+        yield* idleAfter(loop, factoryDir, 1);
+        // The check got as far as ssh, which never answers, and the pass ended anyway.
+        assert.isTrue(hostsListed(paradev) > 0);
+        assert.deepStrictEqual(worlds[0]!.hostLoads.get("h1"), { oneMinute: 2.11, cores: 12 });
+        assert.strictEqual(worlds[0]!.hostsNotReady.get("h1"), "not checked yet since the config load");
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -4016,6 +4059,31 @@ describe("liveWorld: the hosts", () => {
         );
         yield* idleAfter(loop, factoryDir, 1);
         assert.deepStrictEqual(seen, [[["h1", "not checked yet since the config load"]]]);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a reload checks a host that passed again, and it is not ready until that check passes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const worlds: Array<PassWorld> = [];
+        const paradev = newParadev();
+        paradev.hostsList = [{ id: "h1", name: "mini", online: "yes" }];
+        const { loop, factoryDir } = yield* started(
+          configFor([["a/b", "/b"]], "/gh", HOSTS),
+          noGhProcess,
+          { ssh: healthy, onWorld: (world) => worlds.push(world) },
+          paradev,
+        );
+        yield* idleAfter(loop, factoryDir, 1);
+        yield* waitUntil("the first check to pass", () => worlds[0]!.hostsNotReady.size === 0);
+        assert.strictEqual(hostsListed(paradev), 1);
+        yield* loop.reload;
+        assert.strictEqual(worlds.length, 2);
+        assert.strictEqual(worlds[1]!.hostsNotReady.get("h1"), "not checked yet since the config load");
+        yield* waitUntil("the check after the reload to pass", () => worlds[1]!.hostsNotReady.size === 0);
+        assert.strictEqual(hostsListed(paradev), 2);
+        assert.isTrue(worlds[1]!.hostCheckedAt.has("h1"));
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
