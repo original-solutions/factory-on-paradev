@@ -2,6 +2,7 @@
 // @effect-diagnostics globalDate:off - the waits for a pass use the wall clock, as the loop does.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -4254,8 +4255,10 @@ describe("self-update wiring", () => {
               stopped: stop,
             };
           });
+        const shared = newShared();
         const { loop, factoryDir } = yield* started(`${VALID}self_update: false\n`, noGhProcess, {
           selfUpdate,
+          shared,
         });
         yield* idleAfter(loop, factoryDir, 1);
         yield* onePassMore(loop, factoryDir);
@@ -4265,7 +4268,12 @@ describe("self-update wiring", () => {
         const options = made[0]!;
         assert.strictEqual(options.dataDir, factoryDir);
         assert.strictEqual(options.ghConfigDir(), "/gh");
+        assert.strictEqual(options.home, NodeOS.homedir());
         assert.strictEqual(options.gatesRunning(), 0);
+        // A gate call in flight counts before its attempt takes a lock file.
+        shared.gating.add("a~b~1~run");
+        assert.strictEqual(options.gatesRunning(), 1);
+        shared.gating.clear();
         assert.strictEqual(options.packageRoot, NodePath.resolve(import.meta.dirname, ".."));
         assert.strictEqual(options.execPath, process.execPath);
         // `stopped` waits on the updater's signal, not less.
