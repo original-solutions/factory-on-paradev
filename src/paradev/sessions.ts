@@ -284,13 +284,16 @@ export interface ParadevSessionsConfig {
   /** The machine config's `hosts`: every host a thread may run on. Default none. */
   readonly hosts?: ReadonlyArray<ParadevHost>;
   /**
-   * Where a new launch runs, asked once per launch command id: a retry finds its launch file
-   * first and never asks again. Placement's answer; fails with `NoTargetHasRoom` when nothing has
-   * room. Default this Mac.
+   * Where a launch runs: a retry that finds its launch file never asks. Placement's answer; fails
+   * with `NoTargetHasRoom` when nothing has room. `kept` is the this-Mac or host target an earlier
+   * send of this command id was placed on, which the answer must check again. Default this Mac.
    */
-  readonly place?: (request: LaunchRequest) => Effect.Effect<LaunchTarget, ParadevAdapterError | NoTargetHasRoom>;
+  readonly place?: (
+    request: LaunchRequest,
+    kept?: Exclude<LaunchTarget, { readonly kind: "cloud" }>,
+  ) => Effect.Effect<LaunchTarget, ParadevAdapterError | NoTargetHasRoom>;
   /**
-   * Told the launch's command id when a launch that was placed now ends, however it ends: the
+   * Told the launch's command id when a launch that was placed ends, however it ends: the
    * agent is in the snapshot by then, or the launch failed. Until then the placement counts as
    * a running agent. Default nothing.
    */
@@ -969,9 +972,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     });
 
   /**
-   * Runs `launchOn` on the target `request`'s command id was placed on: the kept one, or one
-   * placed now and kept. A fresh placement is in flight until `launchOn` ends, however it ends,
-   * and `launchEnded` is told then; a kept one was told about by the launch that placed it.
+   * Places `request` and runs `launchOn` on the answer, which is kept under the command id. A send
+   * cut off after that goes back to its kept target, and placement checks that target again; a
+   * kept cloud target is not reused: no launch file was written, so the workspace it made is an
+   * orphan the sweep archives. The placement is in flight until `launchOn` ends, however it ends,
+   * and `launchEnded` is told then.
    */
   const placement = <A, E, R>(
     request: LaunchRequest,
@@ -979,8 +984,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   ) =>
     Effect.gen(function* () {
       const kept = yield* local(readPlacement(dataDir, request.commandId));
-      if (kept !== null) return yield* launchOn(kept);
-      const placed = yield* place(request);
+      const placed = yield* kept === null || kept.kind === "cloud" ? place(request) : place(request, kept);
       return yield* local(writePlacement(dataDir, request.commandId, placed)).pipe(
         Effect.andThen(launchOn(placed)),
         Effect.ensuring(launchEnded(request.commandId)),

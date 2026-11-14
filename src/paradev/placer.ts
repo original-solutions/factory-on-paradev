@@ -37,6 +37,9 @@ const keyOf = (
   target: { readonly kind: "local" | "cloud" } | { readonly kind: "host"; readonly machineId: string },
 ): string => (target.kind === "host" ? `host:${target.machineId}` : target.kind);
 
+const candidateKey = (candidate: Candidate): string =>
+  candidate.kind === "host" ? `host:${candidate.id}` : candidate.kind;
+
 export const makePlacer = (deps: PlacerDeps) => {
   let localHeld: string | null = null;
   /** Running agents per target this pass; null when its snapshot could not be read. Null here: not read yet. */
@@ -147,7 +150,15 @@ export const makePlacer = (deps: PlacerDeps) => {
       counts = null;
       recorded = new Set();
     },
-    place: (request: LaunchRequest): Effect.Effect<LaunchTarget, NoTargetHasRoom> =>
+    /**
+     * Where `request` runs. `kept` is the target an earlier send of it was placed on, when this Mac
+     * or a host: it is checked as the only candidate (the others' slots still count), and a launch
+     * that fails the check waits for it. A kept target the repo no longer lists is placed afresh.
+     */
+    place: (
+      request: LaunchRequest,
+      kept?: Exclude<LaunchTarget, { readonly kind: "cloud" }>,
+    ): Effect.Effect<LaunchTarget, NoTargetHasRoom> =>
       Effect.gen(function* () {
         const repo = deps.repoOfProject(request.projectId);
         // A repo with no hosts and no cloud runs as in P1: on this Mac, with no load or claims check.
@@ -164,7 +175,10 @@ export const makePlacer = (deps: PlacerDeps) => {
           return yield* settle(repo?.repo ?? request.projectId, [localOf(running, null)], running, request);
         }
         const running = yield* countsOf;
-        return yield* settle(repo.repo, candidatesOf(repo, running), running, request);
+        const candidates = candidatesOf(repo, running);
+        const keptCandidate =
+          kept === undefined ? undefined : candidates.find((candidate) => candidateKey(candidate) === keyOf(kept));
+        return yield* settle(repo.repo, keptCandidate === undefined ? candidates : [keptCandidate], running, request);
       }).pipe(exclusive.withPermits(1)),
   };
 };
