@@ -12,6 +12,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import {
@@ -281,6 +282,8 @@ export interface ParadevSessionsConfig {
    * first and never asks again. Default this Mac.
    */
   readonly place?: (request: LaunchRequest) => Effect.Effect<LaunchTarget, ParadevAdapterError>;
+  /** Whether the machine config has a cloud block, so `snapshot --host cloud` is read for the counts. Default false. */
+  readonly cloud?: boolean;
   /** How the adapter reaches a host. Default `ssh` through the runner's process service. */
   readonly ssh?: SshRunner;
   /** How often a cloud launch reads its provisioning workspace, and for how long. Default 5 s and 300 s. */
@@ -304,11 +307,23 @@ const UNTYPED: ReadonlyArray<CliError["kind"]> = [
   "TOO_LARGE",
 ];
 
+/** The factory's agents starting or working on one target, as `runningByTarget` counts them. */
+export interface TargetCount {
+  readonly target: ThreadTarget;
+  readonly running: number | null;
+}
+
 export type ParadevSessions = FactorySessions["Service"] & {
   /** `findProject` for each of `workspaceRoots`, in order, from one `projects list`. */
   readonly findProjects: (
     workspaceRoots: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<FactoryProject | null>, SessionsError>;
+  /**
+   * The agents running on each target, from one snapshot of it (this Mac, each configured host in
+   * order, then cloud when configured): what placement checks against each target's `max_runs`.
+   * `running` is null for a target whose snapshot could not be read. Never fails.
+   */
+  readonly runningByTarget: Effect.Effect<ReadonlyArray<TargetCount>>;
   /** Archives the orphaned cloud workspaces; the runner calls it once per pass while a repo names a cloud environment. */
   readonly sweepOrphans: Effect.Effect<void, SessionsError>;
 };
@@ -1300,20 +1315,67 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     );
   });
 
-  const runningThreads = Effect.gen(function* () {
-    const answer = yield* snapshot({ kind: "local" });
+  /**
+   * The factory's agents that are starting or working on `target`: the unarchived records of that
+   * target whose newest terminal the snapshot shows in either state. One snapshot, no `--workspace`.
+   */
+  const runningAt = (target: ThreadTarget, records: ReadonlyArray<ThreadRecord>) =>
+    snapshot(target).pipe(
+      Effect.map((answer) => {
+        let running = 0;
+        for (const record of records) {
+          const terminal = record.terminals.at(-1);
+          const there =
+            target.kind === "host"
+              ? record.target.kind === "host" && record.target.machineId === target.machineId
+              : record.target.kind === target.kind;
+          if (!there || record.archivedAt !== null || terminal === undefined) continue;
+          const state = answer.workspaces
+            .find((ws) => ws.id === record.workspaceId)
+            ?.terminals.find((t) => t.id === terminal)?.agent?.state;
+          if (state === "starting" || state === "working") running += 1;
+        }
+        return running;
+      }),
+    );
+
+  /** The targets whose agents are counted: this Mac, each configured host, and cloud when configured. */
+  const countedTargets: ReadonlyArray<ThreadTarget> = [
+    { kind: "local" },
+    ...hosts.map((host): ThreadTarget => ({ kind: "host", machineId: host.id })),
+    ...(config.cloud === true ? [{ kind: "cloud" } as const] : []),
+  ];
+
+  /** Every counted target read once, all at the same time; a read that failed is its error. */
+  const readTargets = Effect.gen(function* () {
     const records = yield* local(listThreads(dataDir));
-    let running = 0;
-    for (const record of records) {
-      const terminal = record.terminals.at(-1);
-      if (record.archivedAt !== null || terminal === undefined) continue;
-      const state = answer.workspaces
-        .find((ws) => ws.id === record.workspaceId)
-        ?.terminals.find((t) => t.id === terminal)?.agent?.state;
-      if (state === "starting" || state === "working") running += 1;
-    }
-    return running;
-  }).pipe(Effect.mapError(failWith("running-threads")));
+    return yield* Effect.forEach(
+      countedTargets,
+      (target) => Effect.result(runningAt(target, records)).pipe(Effect.map((result) => ({ target, result }))),
+      { concurrency: "unbounded" },
+    );
+  });
+
+  const runningByTarget = readTargets.pipe(
+    Effect.map((read) =>
+      read.map(({ target, result }) => ({ target, running: Result.isSuccess(result) ? result.success : null })),
+    ),
+    // The records could not be read: no count can be trusted, so none is given.
+    Effect.catch(() => Effect.succeed(countedTargets.map((target) => ({ target, running: null })))),
+  );
+
+  const runningThreads = readTargets.pipe(
+    Effect.flatMap((read) => {
+      let running = 0;
+      for (const { target, result } of read) {
+        if (Result.isSuccess(result)) running += result.success;
+        // This Mac is the one count the pass cannot do without; a host or cloud that cannot be read waits.
+        else if (target.kind === "local") return Effect.fail(result.failure);
+      }
+      return Effect.succeed(running);
+    }),
+    Effect.mapError(failWith("running-threads")),
+  );
 
   /**
    * Where the worktree at `path` is: the target of the thread whose worktree it is, else this Mac.
@@ -1799,6 +1861,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     archive,
     removeWorktree,
     runningThreads,
+    runningByTarget,
     worktreeCheckout,
     lastActivity,
     showGateLog,
