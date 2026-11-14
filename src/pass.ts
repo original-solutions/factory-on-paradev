@@ -64,7 +64,7 @@ import {
   type StartOutcome,
 } from "./runner/start.ts";
 import type { ProxyAnswer } from "./paradev/proxy.ts";
-import { isNoTargetHasRoom, NO_TARGET_HAS_ROOM, type Model, type SessionsError } from "./sessions.ts";
+import { isNoTargetHasRoom, isPinnedNoTargetHasRoom, NO_TARGET_HAS_ROOM, type Model, type SessionsError } from "./sessions.ts";
 import type { StopRequestOutcome } from "./runner/stop.ts";
 import { sanitize } from "./text.ts";
 import {
@@ -779,7 +779,8 @@ class Pass {
     // A launch that found no room is a wait: the issue's line says so, and nothing is an error.
     if (isNoTargetHasRoom(error)) {
       notes.parts.push(NO_ROOM_WAIT);
-      this.noRoomRepos.add(asciiLower(notes.repo));
+      // A refusal on a run's one kept target says nothing about the repo's other issues.
+      if (!isPinnedNoTargetHasRoom(error)) this.noRoomRepos.add(asciiLower(notes.repo));
       return;
     }
     notes.errors.push({

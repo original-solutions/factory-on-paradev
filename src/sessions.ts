@@ -180,8 +180,14 @@ export class MessageRejectedError extends Schema.TaggedError<MessageRejectedErro
 /** The text of a launch that found no target with room. */
 export const NO_TARGET_HAS_ROOM = "no target has room";
 
-/** Placement found no target with room for a launch. The launch is sent again on a later pass. */
-export class NoTargetHasRoom extends Schema.TaggedError<NoTargetHasRoom>()("FactoryNoTargetHasRoom", {}) {
+/**
+ * Placement found no target with room for a launch. The launch is sent again on a later pass.
+ * `pinned` is set when the launch was checked on its one kept target alone ("<target>: <why>"):
+ * the other targets may have room, so the refusal says nothing about the repo as a whole.
+ */
+export class NoTargetHasRoom extends Schema.TaggedError<NoTargetHasRoom>()("FactoryNoTargetHasRoom", {
+  pinned: Schema.optional(Schema.String),
+}) {
   override get message(): string {
     return NO_TARGET_HAS_ROOM;
   }
@@ -217,6 +223,13 @@ export class SessionsError extends Schema.TaggedError<SessionsError>()("FactoryS
  */
 export const isNoTargetHasRoom = (error: unknown): boolean =>
   error instanceof SessionsError && error.operation === "launch" && error.cause instanceof NoTargetHasRoom;
+
+/** Whether `error` is a no-room refusal of a launch checked on its one kept target alone. */
+export const isPinnedNoTargetHasRoom = (error: unknown): boolean =>
+  error instanceof SessionsError &&
+  error.operation === "launch" &&
+  error.cause instanceof NoTargetHasRoom &&
+  error.cause.pinned !== undefined;
 
 export class FactorySessions extends Context.Service<
   FactorySessions,

@@ -108,6 +108,7 @@ export const makePlacer = (deps: PlacerDeps) => {
     candidates: ReadonlyArray<Candidate>,
     running: Map<string, number | null>,
     request: LaunchRequest,
+    pinned = false,
   ): Effect.Effect<LaunchTarget, NoTargetHasRoom> =>
     Effect.gen(function* () {
       const placement = choosePlacement(candidates);
@@ -120,7 +121,13 @@ export const makePlacer = (deps: PlacerDeps) => {
           data: { repo: repoName, target: dropped.target, reason: dropped.reason },
         });
       }
-      if (placement.kind === "refused") return yield* Effect.fail(new NoTargetHasRoom());
+      if (placement.kind === "refused") {
+        // A pinned check has the one candidate, so the first drop is why it was refused.
+        const why = pinned ? placement.dropped[0] : undefined;
+        return yield* Effect.fail(
+          new NoTargetHasRoom(why === undefined ? {} : { pinned: `${why.target}: ${why.reason}` }),
+        );
+      }
       // The slot is taken for the rest of the pass: the next launch counts it.
       bump(running, targetKey(placement.target));
       inFlight.set(request.commandId, targetKey(placement.target));
@@ -170,7 +177,13 @@ export const makePlacer = (deps: PlacerDeps) => {
         const candidates = candidatesOf(repo, running);
         const keptCandidate =
           kept === undefined ? undefined : candidates.find((candidate) => targetKey(candidate) === targetKey(kept));
-        return yield* settle(repo.repo, keptCandidate === undefined ? candidates : [keptCandidate], running, request);
+        return yield* settle(
+          repo.repo,
+          keptCandidate === undefined ? candidates : [keptCandidate],
+          running,
+          request,
+          keptCandidate !== undefined,
+        );
       }).pipe(exclusive.withPermits(1)),
   };
 };
