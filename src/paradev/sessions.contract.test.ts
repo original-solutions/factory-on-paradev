@@ -2898,9 +2898,9 @@ describe("launch in the cloud", () => {
     }),
   );
 
-  /** Every file under the data dir, relative to it: what a refused launch must not have written. */
+  /** Every file under the data dir but the placement files, relative to it: what a refused launch must not have written. */
   const written = (data: string): ReadonlyArray<string> =>
-    NodeFS.existsSync(data) ? NodeFS.readdirSync(data, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => NodePath.relative(data, NodePath.join(e.parentPath, e.name))) : [];
+    NodeFS.existsSync(data) ? NodeFS.readdirSync(data, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => NodePath.relative(data, NodePath.join(e.parentPath, e.name))).filter((file) => !file.startsWith(NodePath.join("paradev", "placements"))) : [];
 
   it.live("a created workspace id that is not plain fails the launch, with no record, no launch file and no further call", () =>
     Effect.gen(function* () {
@@ -3916,7 +3916,7 @@ describe("placement is durable under the command id (#55)", () => {
         [
           { argv: ["projects", "list", "--local"], fixture: "projects-list-local", edit: withProjectPath(r.clone) },
           { argv: ["projects", "list", "--host", HOST], answer: [{ id: HOST_PROJECT, name: "factory-paradev-spike", path: `${HOST_CLONE}/`, repo: "https://github.com/original-solutions/factory-paradev-spike" }] },
-          { argv: argvIs("workspaces", "create"), fail: "Could not connect to API" },
+          { argv: argvIs("workspaces", "create"), fail: "create refused" },
         ],
         {
           config: {

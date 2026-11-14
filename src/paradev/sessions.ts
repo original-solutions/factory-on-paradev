@@ -54,6 +54,7 @@ import { shellQuote, type SshError, type SshRunner, sshRunner } from "./ssh.ts";
 import {
   listThreads,
   readLaunch,
+  readPlacement,
   readThread,
   type Target,
   type ThreadRecord,
@@ -62,6 +63,7 @@ import {
   threadFileExists,
   threadIdOf,
   writeLaunch,
+  writePlacement,
   writeThread,
 } from "./state.ts";
 import { lastAssistantMessage } from "./transcript.ts";
@@ -943,6 +945,16 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       return project ?? (yield* fail(`no Paradev project at ${path} on host ${machineId}`));
     });
 
+  /** The target `request`'s command id was placed on; placed now, and kept, when it never was. */
+  const placement = (request: LaunchRequest) =>
+    Effect.gen(function* () {
+      const kept = yield* local(readPlacement(dataDir, request.commandId));
+      if (kept !== null) return kept;
+      const placed = yield* place(request);
+      yield* local(writePlacement(dataDir, request.commandId, placed));
+      return placed;
+    });
+
   const launch = Effect.fn("ParadevSessions.launch")(function* (request: LaunchRequest) {
     // 1. A launch already recorded under this command id: it is never placed again.
     const known = yield* local(readLaunch(dataDir, request.commandId));
@@ -960,7 +972,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const base = yield* fetchBase(yield* projectOf(project), request.baseRef);
       return launched(yield* startAgent(earlier, request, base, true));
     }
-    const placed = yield* place(request);
+    // Placed once per command id, and before anything is fetched or created: a send cut off after
+    // this point is sent again to the same target.
+    const placed = yield* placement(request);
     return launched(
       yield* (placed.kind === "cloud" ? launchCloud(request, placed) : launchWorktree(request, placed)),
     );

@@ -155,6 +155,22 @@ const launchFile = (path: Path.Path, dataDir: string, commandId: string) =>
     `${sha256(commandId)}.json`,
   );
 
+/** Where a launch was placed: the file `placements/` keeps under its command id (#55). */
+const PlacedSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("local") }),
+  Schema.Struct({ kind: Schema.Literal("host"), machineId: Schema.String, path: Schema.String }),
+  Schema.Struct({
+    kind: Schema.Literal("cloud"),
+    environmentId: Schema.String,
+    machineSize: Schema.Literals(["small", "medium", "large"]),
+  }),
+]);
+export type Placed = typeof PlacedSchema.Type;
+const decodePlaced = Schema.decodeUnknownOption(Schema.fromJsonString(PlacedSchema));
+
+const placementFile = (path: Path.Path, dataDir: string, commandId: string) =>
+  path.join(dataDir, "paradev", "placements", `${sha256(commandId)}.json`);
+
 /** The file's text; null when it does not exist. */
 const readText = (file: string) =>
   Effect.gen(function* () {
@@ -234,4 +250,39 @@ export const writeLaunch = Effect.fn("ParadevState.writeLaunch")(function* (
 ) {
   const path = yield* Path.Path;
   yield* writeFileAtomically(launchFile(path, dataDir, commandId), `${JSON.stringify({ threadId })}\n`);
+});
+
+/** A placement file that is there but does not read back as a target. */
+export class PlacementUnreadable extends Schema.TaggedError<PlacementUnreadable>()(
+  "ParadevPlacementUnreadable",
+  { file: Schema.String },
+) {
+  override get message(): string {
+    return `the placement file ${this.file} does not read back as a target`;
+  }
+}
+
+/**
+ * Where a launch command id was placed; null when it was never placed. A file that is there and
+ * does not read back is a failure: placing again could move the launch to another target.
+ */
+export const readPlacement = Effect.fn("ParadevState.readPlacement")(function* (
+  dataDir: string,
+  commandId: string,
+) {
+  const path = yield* Path.Path;
+  const file = placementFile(path, dataDir, commandId);
+  const text = yield* readText(file);
+  if (text === null) return null;
+  const decoded = decodePlaced(text);
+  return Option.isSome(decoded) ? decoded.value : yield* Effect.fail(new PlacementUnreadable({ file }));
+});
+
+export const writePlacement = Effect.fn("ParadevState.writePlacement")(function* (
+  dataDir: string,
+  commandId: string,
+  target: Placed,
+) {
+  const path = yield* Path.Path;
+  yield* writeFileAtomically(placementFile(path, dataDir, commandId), `${JSON.stringify(target)}\n`);
 });
