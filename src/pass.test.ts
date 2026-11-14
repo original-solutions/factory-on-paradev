@@ -79,6 +79,7 @@ import {
 import type { StopRequestOutcome } from "./runner/stop.ts";
 import {
   MessageRejectedError,
+  NoTargetHasRoom,
   SessionsError,
   type Model,
 } from "./sessions.ts";
