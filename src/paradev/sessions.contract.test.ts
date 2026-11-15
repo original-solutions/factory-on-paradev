@@ -2313,6 +2313,25 @@ describe("send to a dead agent resumes it", () => {
     }),
   );
 
+  it.effect("a dead agent whose resume closed its terminal and did not land still reads as died", () =>
+    Effect.gen(function* () {
+      const closed = [
+        { argv: argvIs("agents", "explain"), fail: `No agent is running in terminal ${L5_DEAD}` },
+        { argv: argvIs("agents", "read"), fixture: "agents-read-local-killed" },
+      ];
+      const pending = rig(closed);
+      yield* seed(pending.data, deadRecord({ pendingResume: SEND_ID }));
+      const status = yield* pending.run((s) => s.status(`local:${L5_WS}`));
+      assert.strictEqual(status.run, "interrupted");
+      // The core sends its resume again, which the adapter starts or adopts.
+      assert.isTrue(status.agentDied);
+      // The same reading with no resume pending is a person's stop.
+      const stopped = rig(closed);
+      yield* seed(stopped.data, deadRecord());
+      assert.isUndefined((yield* stopped.run((s) => s.status(`local:${L5_WS}`))).agentDied);
+    }),
+  );
+
   it.live("no session file is ThreadNotFoundError, and nothing is created", () =>
     Effect.gen(function* () {
       const t = rig(

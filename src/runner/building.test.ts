@@ -1611,6 +1611,15 @@ describe("advance: a run whose agent process died", () => {
     }),
   );
 
+  it.effect("is paused as before when its run has no ordinal to wait for", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      setStatus(rig, "interrupted", "I was about to", { runOrdinal: null, agentDied: true });
+      assert.deepStrictEqual(yield* advanceIn(rig), { kind: "paused" });
+      assert.deepStrictEqual(sends(rig), []);
+    }),
+  );
+
   it.effect("is read as done when its last message says so", () =>
     Effect.gen(function* () {
       const rig = rigFor();

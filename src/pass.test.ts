@@ -4411,7 +4411,7 @@ describe("following a building run", () => {
 
   it.effect("a pending gate send starts the gate while the session still runs or is paused", () =>
     Effect.gen(function* () {
-      for (const kind of ["running", "reminded", "paused"] as const) {
+      for (const kind of ["running", "reminded", "agent-resumed", "paused"] as const) {
         for (const pending of [true, false]) {
           const fake = building();
           if (pending) fake.pendingSends = [runIdToString(fake.runs[0]!.id)];
