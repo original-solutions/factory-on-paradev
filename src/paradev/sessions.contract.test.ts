@@ -4571,15 +4571,16 @@ describe("the cloud count, one workspace at a time (#85)", () => {
     }),
   );
 
-  it.effect("an empty listing: the count is 0", () =>
+  it.effect("an empty listing: only the live record's workspace is read, and an agent gone from it counts 0", () =>
     Effect.gen(function* () {
-      const t = rig([localStep, bareCloud, listOf()], { config: { cloud: true } });
+      const t = rig([localStep, bareCloud, listOf(), snapshotAt(C3_WS, [])], { config: { cloud: true } });
       yield* seedCloud(t.data);
       assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
         { target: { kind: "local" }, running: 1 },
         { target: { kind: "cloud" }, running: 0 },
       ]);
       assert.deepStrictEqual(bare(t.calls), []);
+      assert.deepStrictEqual(t.unused(), [bareCloud]);
     }),
   );
 
@@ -4688,7 +4689,10 @@ describe("the cloud count, one workspace at a time (#85)", () => {
 
   it.effect("with the count at 0 and cloud.max_runs 1, placement picks the cloud for a repo with an environment when no machine has room", () =>
     Effect.gen(function* () {
-      const t = rig([localStep, bareCloud, listOf()], { config: { cloud: true } });
+      // The one cloud run's agent has ended: its workspace shows no terminal, and cloud counts 0.
+      const t = rig([localStep, bareCloud, listOf({ id: C3_WS, tags: ["factory", MINE] }), snapshotAt(C3_WS, [])], {
+        config: { cloud: true },
+      });
       yield* seedCloud(t.data);
       const repo: WatchedRepo = { repo: "acme/cloudy", path: "/Users/tom/cloudy", cloud: ENV };
       const machine: MachineConfig = {

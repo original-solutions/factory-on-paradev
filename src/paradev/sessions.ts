@@ -1151,18 +1151,24 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   /**
    * The workspaces `target`'s snapshots show. This Mac and a host: one snapshot, no `--workspace`.
-   * Cloud is not one host, so each workspace this runner tagged (`factory-<runner id>`) and not
-   * deleted is read on its own with `--workspace`; none tagged reads no snapshot. With no record
-   * that could count there (`counted` false), cloud is not read at all: nothing in it would count.
+   * Cloud is not one host, so each workspace is read on its own with `--workspace`: each one this
+   * runner tagged (`factory-<runner id>`), and each of `counted`'s, whatever tag the listing shows
+   * for it, so a listing that drops a tag never drops a running agent. A workspace the listing
+   * shows `deleted` is not read. With no record in `counted`, cloud is not read at all: nothing in
+   * it would count.
    */
-  const snapshotWorkspaces = (target: ThreadTarget, counted: boolean) =>
+  const snapshotWorkspaces = (target: ThreadTarget, counted: ReadonlyArray<ThreadRecord>) =>
     Effect.gen(function* () {
       if (target.kind !== "cloud") return (yield* snapshot(target)).workspaces;
-      if (!counted) return [];
+      if (counted.length === 0) return [];
       const tag = yield* mine;
-      const ids = (yield* listCloud)
-        .filter((row) => row.status !== "deleted" && hasTag(row.tags, tag) && isPlainId(row.id))
-        .map((row) => row.id);
+      const rows = yield* listCloud;
+      const deleted = new Set(rows.filter((row) => row.status === "deleted").map((row) => row.id));
+      const ids = new Set(
+        [...rows.filter((row) => hasTag(row.tags, tag)).map((row) => row.id), ...counted.map((r) => r.workspaceId)].filter(
+          (id) => !deleted.has(id) && isPlainId(id),
+        ),
+      );
       const answers = yield* Effect.forEach(ids, (id) => snapshot(target, id), { concurrency: "unbounded" });
       return answers.flatMap((answer) => answer.workspaces);
     });
@@ -1178,7 +1184,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         record.archivedAt === null &&
         record.terminals.length > 0,
     );
-    return snapshotWorkspaces(target, counted.length > 0).pipe(
+    return snapshotWorkspaces(target, counted).pipe(
       Effect.map((workspaces) => {
         let running = 0;
         for (const record of counted) {
