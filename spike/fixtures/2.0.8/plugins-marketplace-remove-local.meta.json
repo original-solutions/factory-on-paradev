@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "plugins",
+    "marketplace",
+    "remove",
+    "p3-probe-mp",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794737603358,
+  "durationMs": 432,
+  "stderr": ""
+}

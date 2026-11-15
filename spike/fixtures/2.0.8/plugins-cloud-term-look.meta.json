@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "terminals",
+    "create",
+    "--host",
+    "cloud",
+    "--workspace",
+    "82101064-2c41-4684-9f78-812606d78b34",
+    "--command",
+    "echo HOME=$HOME; ls ~/.agents/skills 2>&1 | head -40; echo --CLAUDE; ls ~/.claude/skills 2>&1 | head -20; echo --CLI; which superset paradev; superset --version; echo --INSTALLED; cat ~/.paradev/plugins/installed_plugins.json 2>&1 | head -30; echo --REPO; ls -a /workspace | head -20; echo P3-LOOK-DONE",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794737875347,
+  "durationMs": 892,
+  "stderr": ""
+}

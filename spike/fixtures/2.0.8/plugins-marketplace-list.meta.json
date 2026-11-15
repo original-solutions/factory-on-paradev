@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "plugins",
+    "marketplace",
+    "list",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794737377157,
+  "durationMs": 433,
+  "stderr": ""
+}

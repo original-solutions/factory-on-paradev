@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "plugins",
+    "marketplace",
+    "add",
+    "/tmp/p3-spike.4TWZ/probe-mp",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794737439121,
+  "durationMs": 781,
+  "stderr": ""
+}

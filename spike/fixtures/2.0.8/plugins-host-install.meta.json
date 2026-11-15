@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "plugins",
+    "install",
+    "factory@factory-on-paradev",
+    "--json"
+  ],
+  "exit": 0,
+  "over": "ssh to the Trilogy Mac, ~/superset/bin/superset",
+  "stderr": "[agent-setup] Bundled plugin missing at /$bunfs/templates/plugin; skipping managed skills\n"
+}

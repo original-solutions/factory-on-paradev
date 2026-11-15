@@ -1,0 +1,86 @@
+[
+  {
+    "name": "factory",
+    "version": "0.1.1",
+    "marketplace": "organization-fef625a4-1dbc-451b-b0e1-1c285c61a68e",
+    "status": "installed",
+    "connections": [],
+    "description": "One GitHub issue in, one draft pull request out: the /factory skill the runner's agents build with",
+    "connectionId": "",
+    "account": null
+  },
+  {
+    "name": "github",
+    "version": "1.0.4",
+    "marketplace": "superset",
+    "status": "connected: tomkaczocha, rawphp",
+    "connections": [
+      {
+        "id": "378a6672-055f-4ca3-b06f-ae73df3572c0",
+        "account": "tomkaczocha",
+        "user": "tomkaczocha"
+      },
+      {
+        "id": "45e9c5b4-636e-49e8-b91e-e025af108fc1",
+        "account": "rawphp",
+        "user": "rawphp"
+      }
+    ],
+    "description": "Work with issues, pull requests, and CI across your repositories.",
+    "connectionId": "378a6672-055f-4ca3-b06f-ae73df3572c0",
+    "account": "tomkaczocha"
+  },
+  {
+    "name": "github",
+    "version": "1.0.4",
+    "marketplace": "superset",
+    "status": "connected: tomkaczocha, rawphp",
+    "connections": [
+      {
+        "id": "378a6672-055f-4ca3-b06f-ae73df3572c0",
+        "account": "tomkaczocha",
+        "user": "tomkaczocha"
+      },
+      {
+        "id": "45e9c5b4-636e-49e8-b91e-e025af108fc1",
+        "account": "rawphp",
+        "user": "rawphp"
+      }
+    ],
+    "description": "Work with issues, pull requests, and CI across your repositories.",
+    "connectionId": "45e9c5b4-636e-49e8-b91e-e025af108fc1",
+    "account": "rawphp"
+  },
+  {
+    "name": "posthog",
+    "version": "1.0.2",
+    "marketplace": "superset",
+    "status": "connected: user@example.com",
+    "connections": [
+      {
+        "id": "0a804e70-ad29-49c0-a0a2-3a0c8821adf5",
+        "account": "user@example.com",
+        "user": "user@example.com"
+      }
+    ],
+    "description": "Ask PostHog about your product: query events and insights, look up people, and check feature flags.",
+    "connectionId": "0a804e70-ad29-49c0-a0a2-3a0c8821adf5",
+    "account": "user@example.com"
+  },
+  {
+    "name": "slack",
+    "version": "1.2.5",
+    "marketplace": "superset",
+    "status": "connected: Original Solutions",
+    "connections": [
+      {
+        "id": "b70c8915-33fe-48ab-9cf4-0eb5e8646a78",
+        "account": "Original Solutions",
+        "user": null
+      }
+    ],
+    "description": "Search, read, and post across your Slack workspace: channels, DMs, and threads.",
+    "connectionId": "b70c8915-33fe-48ab-9cf4-0eb5e8646a78",
+    "account": "Original Solutions"
+  }
+]

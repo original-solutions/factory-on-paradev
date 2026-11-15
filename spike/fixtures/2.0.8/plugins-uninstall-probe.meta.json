@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "plugins",
+    "uninstall",
+    "p3probe@p3-probe-mp",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794737602713,
+  "durationMs": 580,
+  "stderr": "[agent-setup] Bundled plugin missing at /$bunfs/templates/plugin; skipping managed skills\n"
+}

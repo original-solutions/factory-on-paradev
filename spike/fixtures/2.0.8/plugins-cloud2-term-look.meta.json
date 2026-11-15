@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "terminals",
+    "create",
+    "--host",
+    "cloud",
+    "--workspace",
+    "33811b30-508f-45d5-934e-6d55c792da32",
+    "--command",
+    "ls ~/.agents/skills | grep -v \"^superset-\"; echo --DIR; ls -la ~/.agents/skills/factory-factory | head -12; echo --HEAD; head -8 ~/.agents/skills/factory-factory/SKILL.md | cut -c1-150; echo --REFS; ls ~/.agents/skills/factory-factory/references | head -5; echo --CLAUDE; ls ~/.claude/skills/superset/skills 2>&1 | grep -i factory; ls -la ~/.claude/skills | head -5; echo --INSTALLED; grep -A4 \"\\\"factory\\\"\" ~/.paradev/plugins/installed_plugins.json; grep -B2 -A3 \"factory\\\"\" ~/.paradev/plugins/installed_plugins.json | head -12; echo --SKILLSLIST; superset skills list --json | grep -B2 -A6 \"factory\" | cut -c1-200 | head -14; echo P3\"\"-LOOK2-DONE",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794738282413,
+  "durationMs": 973,
+  "stderr": ""
+}

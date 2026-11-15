@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "plugins",
+    "organization",
+    "sources",
+    "add",
+    "original-solutions/factory-on-paradev",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794738231667,
+  "durationMs": 1058,
+  "stderr": ""
+}
