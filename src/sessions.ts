@@ -66,6 +66,8 @@ export interface LaunchRequest {
   readonly message: string;
   /** The first message when the launch is placed on host `machineId`. Absent: `message` on every target. */
   readonly hostMessage?: (machineId: string) => string;
+  /** The first message when the launch is placed in Paradev Cloud. Absent: `message` there. */
+  readonly cloudMessage?: string;
   readonly model: Model;
   /**
    * The pull request the thread continues, linked to the thread at launch. Absent for a plain

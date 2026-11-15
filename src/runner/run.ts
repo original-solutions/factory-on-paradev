@@ -32,6 +32,8 @@ export interface RunContext {
   readonly trackerUser: string;
   /** Machine id to the GitHub login a run of this repo acts as on that host, for each host the repo lists. */
   readonly hostLogins: ReadonlyMap<string, string>;
+  /** Whether the repo's `repos[]` entry names a cloud environment. */
+  readonly cloud: boolean;
   readonly machine: string;
   /** The base branch: the work a stop leaves is counted against it. */
   readonly project: { readonly base: string };

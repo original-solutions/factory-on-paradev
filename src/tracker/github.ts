@@ -102,7 +102,7 @@ export const CLOSED_BY_QUERY =
  * still returns merged ones, so `state` is read and only `OPEN` is kept.
  */
 export const CLOSING_PRS_QUERY =
-  "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { closedByPullRequestsReferences(first: 50, includeClosedPrs: false) { nodes { number url state headRefName baseRefName isCrossRepository author { login } } } } } }";
+  "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { closedByPullRequestsReferences(first: 50, includeClosedPrs: false) { nodes { number url state headRefName baseRefName isCrossRepository author { __typename login } } } } } }";
 
 /** One pull request as GitHub lists it, in the GraphQL answer and in `gh pr list --json`. */
 const ListedPullRequest = Schema.Struct({
@@ -111,7 +111,10 @@ const ListedPullRequest = Schema.Struct({
   headRefName: Schema.String,
   baseRefName: Schema.String,
   isCrossRepository: Schema.Boolean,
-  author: Schema.optional(Schema.NullOr(Schema.Struct({ login: Schema.String }))),
+  /** `__typename` comes from GraphQL alone: `gh pr list` already writes a bot as `app/<slug>`. */
+  author: Schema.optional(
+    Schema.NullOr(Schema.Struct({ login: Schema.String, __typename: Schema.optional(Schema.String) })),
+  ),
 });
 
 const ClosingAnswer = Schema.Struct({
@@ -184,7 +187,11 @@ const listedPullRequest = (node: typeof ListedPullRequest.Type): OpenPullRequest
   headRef: node.headRefName,
   baseRef: node.baseRefName,
   crossRepository: node.isCrossRepository,
-  author: node.author?.login ? node.author.login : null,
+  author: !node.author?.login
+    ? null
+    : node.author.__typename === "Bot"
+      ? `app/${node.author.login}`
+      : node.author.login,
 });
 
 const ReadyByAnswer = Schema.Struct({

@@ -526,7 +526,8 @@ describe("start: a fresh ready issue", () => {
       });
       const request = t3.launchRequests[0]!;
       assert.strictEqual(request.cloudMessage, cloudLaunchMessage(REPO, 7));
-      assert.ok(!request.cloudMessage!.includes(USER), request.cloudMessage);
+      // The repo is rawphp/softfac, so the runner's login shows only in the repo's name.
+      assert.ok(!request.cloudMessage!.includes(`act on GitHub as ${USER}`), request.cloudMessage);
       assert.ok(!request.cloudMessage!.includes("tomkaczocha"), request.cloudMessage);
       assert.strictEqual(request.message, launchMessage(REPO, 7, USER));
       assert.strictEqual(request.hostMessage!("h1"), hostLaunchMessage(REPO, 7, "tomkaczocha"));
