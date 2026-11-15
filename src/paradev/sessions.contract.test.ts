@@ -1400,6 +1400,8 @@ describe("status: the rest of the mapping table", () => {
     Effect.gen(function* () {
       const status = yield* statusWith([explained("exited", "Stop"), read]);
       assert.deepInclude(status, { run: "interrupted", runCompletedAt: IDLE_AT });
+      // Not the liveness check's verdict: the core pauses it as a person's stop.
+      assert.isUndefined(status.agentDied);
     }),
   );
 
@@ -1464,6 +1466,8 @@ describe("status of a dead agent (the liveness check)", () => {
     Effect.gen(function* () {
       const { status, lookups, worktreePath } = yield* dead(false);
       assert.strictEqual(status.run, "interrupted");
+      // The core resumes a dead agent: no person stopped it.
+      assert.isTrue(status.agentDied);
       assert.deepStrictEqual(lookups, [["claude-bin", worktreePath]]);
     }),
   );
@@ -1472,6 +1476,7 @@ describe("status of a dead agent (the liveness check)", () => {
     Effect.gen(function* () {
       const { status, lookups } = yield* dead(true);
       assert.strictEqual(status.run, "running");
+      assert.isUndefined(status.agentDied);
       assert.strictEqual(lookups.length, 1);
     }),
   );
@@ -2308,6 +2313,51 @@ describe("send to a dead agent resumes it", () => {
     }),
   );
 
+  it.effect("a dead agent whose resume closed its terminal and did not land still reads as died", () =>
+    Effect.gen(function* () {
+      const closed = [
+        { argv: argvIs("agents", "explain"), fail: `No agent is running in terminal ${L5_DEAD}` },
+        { argv: argvIs("agents", "read"), fixture: "agents-read-local-killed" },
+      ];
+      const pending = rig(closed);
+      yield* seed(pending.data, deadRecord({ pendingResume: SEND_ID }));
+      const status = yield* pending.run((s) => s.status(`local:${L5_WS}`));
+      assert.strictEqual(status.run, "interrupted");
+      // The core sends its resume again, which the adapter starts or adopts.
+      assert.isTrue(status.agentDied);
+      // The same reading with no resume pending is a person's stop.
+      const stopped = rig(closed);
+      yield* seed(stopped.data, deadRecord());
+      assert.isUndefined((yield* stopped.run((s) => s.status(`local:${L5_WS}`))).agentDied);
+    }),
+  );
+
+  it.live("a session lookup that fails after the close leaves the resume pending, so the closed terminal reads as died", () =>
+    Effect.gen(function* () {
+      // The worktree's project folder is a file: reading it fails, which is not "no session".
+      const projects = tempDir("claude-projects");
+      NodeFS.writeFileSync(NodePath.join(projects, CLAUDE_FOLDER), "not a folder\n");
+      const t = rig(
+        [
+          snap("snapshot-local-killed"),
+          killed,
+          { argv: closeArgv, fixture: "terminals-close-local-killed" },
+          { argv: argvIs("agents", "explain"), fail: `No agent is running in terminal ${L5_DEAD}` },
+          { argv: argvIs("agents", "read"), fixture: "agents-read-local-killed" },
+        ],
+        { agentRunning: false, config: { claudeProjectsDir: projects } },
+      );
+      yield* seed(t.data, deadRecord());
+      yield* Effect.flip(t.run((s) => s.send(`local:${L5_WS}`, SEND_ID, RESUME_TEXT)));
+      assert.isFalse(t.calls.some(argvIs("agents", "create")));
+      assert.strictEqual((yield* saved(t.data))!.pendingResume, SEND_ID);
+      const status = yield* t.run((s) => s.status(`local:${L5_WS}`));
+      assert.strictEqual(status.run, "interrupted");
+      assert.isTrue(status.agentDied);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
   it.live("no session file is ThreadNotFoundError, and nothing is created", () =>
     Effect.gen(function* () {
       const t = rig(
@@ -2319,6 +2369,9 @@ describe("send to a dead agent resumes it", () => {
       assert.instanceOf(error, ThreadNotFoundError);
       assert.deepStrictEqual(t.unused(), []);
       assert.deepStrictEqual((yield* saved(t.data))!.terminals, [L5_DEAD]);
+      // The resume stays pending, so a later status still reads agentDied and the core's next
+      // pass comes to the same decision when this one did not finish it.
+      assert.strictEqual((yield* saved(t.data))!.pendingResume, SEND_ID);
     }),
   );
 

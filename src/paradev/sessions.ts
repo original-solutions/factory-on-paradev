@@ -1087,7 +1087,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     if (terminal === undefined) return { ...place, archived: false, ...noRun } satisfies ThreadStatus;
 
     const notFound = () => new ThreadNotFoundError({ threadId });
-    const { run, completedAt } = yield* explainRun(record, terminal);
+    const { run, completedAt, alive } = yield* explainRun(record, terminal);
     const message = ENDED.has(run)
       ? yield* readMessage(record, terminal).pipe(Effect.catchIf(isNotFound, () => Effect.fail(notFound())))
       : null;
@@ -1099,6 +1099,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       runStartedAt: record.turns.at(-1)?.at ?? null,
       runCompletedAt: completedAt,
       lastAssistantMessage: message,
+      // A resume this adapter began has not landed: the terminal it closed reads `exited`, and
+      // the run waits for that resume, not for a person.
+      ...((alive === false || (run === "interrupted" && record.pendingResume != null)) && {
+        agentDied: true as const,
+      }),
     } satisfies ThreadStatus;
   }, (effect) =>
     effect.pipe(
@@ -1289,19 +1294,21 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   /**
    * Starts the dead agent's Claude session again in a new terminal, with `text` as its prompt.
    * The dead terminal is closed first when the snapshot still lists it, since its agent reads
-   * `working` for ever. The resume is recorded as pending before `agents create`, which is not
-   * retried: an agent it started before failing is adopted by the next send.
+   * `working` for ever. The resume is recorded as pending before that close, so a failure after
+   * it still reads as a dead agent (`status`); `agents create` is not retried: an agent it started
+   * before failing is adopted by the next send. No session to resume stays pending too, so the
+   * run reads as a dead agent until the core has decided it.
    */
   const resume = (record: ThreadRecord, listed: boolean, worktreePath: string, commandId: string, text: string) =>
     Effect.gen(function* () {
+      const pending: ThreadRecord = { ...record, pendingResume: commandId };
+      yield* save(pending);
       if (listed) {
         const dead = record.terminals.at(-1)!;
         yield* call(cli, ["terminals", "close", ...inWorkspace(record), "--terminal", dead], 30_000);
       }
       const session = yield* targetFor(record.target).newestSession(record, worktreePath);
       if (session === null) return yield* new ThreadNotFoundError({ threadId: record.threadId });
-      const pending: ThreadRecord = { ...record, pendingResume: commandId };
-      yield* save(pending);
       const argv = [
         "agents", "create", ...inWorkspace(record), "--agent", record.agent,
         "--resume-session", session, "--prompt", text,

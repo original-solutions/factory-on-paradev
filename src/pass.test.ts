@@ -4411,7 +4411,7 @@ describe("following a building run", () => {
 
   it.effect("a pending gate send starts the gate while the session still runs or is paused", () =>
     Effect.gen(function* () {
-      for (const kind of ["running", "reminded", "paused"] as const) {
+      for (const kind of ["running", "reminded", "agent-resumed", "paused"] as const) {
         for (const pending of [true, false]) {
           const fake = building();
           if (pending) fake.pendingSends = [runIdToString(fake.runs[0]!.id)];
@@ -4562,6 +4562,7 @@ describe("following a building run", () => {
   const advanceLines: ReadonlyArray<readonly [AdvanceOutcome, string]> = [
     [{ kind: "running" }, "session still running"],
     [{ kind: "reminded" }, "session ended without a result line, sent it a reminder"],
+    [{ kind: "agent-resumed" }, "the session's agent process was gone, sent it the resume message"],
     [
       { kind: "paused" },
       "session stopped by hand, waiting for an instructor's comment on the pull request or the issue",

@@ -2116,6 +2116,9 @@ const advanceRun = Effect.fn("Pass.advanceRun")(function* (
     case "reminded":
       notes.parts.push("session ended without a result line, sent it a reminder");
       break;
+    case "agent-resumed":
+      notes.parts.push("the session's agent process was gone, sent it the resume message");
+      break;
     case "paused":
       notes.parts.push(
         "session stopped by hand, waiting for an instructor's comment on the pull request or the issue",
@@ -2163,7 +2166,11 @@ const advanceRun = Effect.fn("Pass.advanceRun")(function* (
   }
   const kind = advanced.success.kind;
   const mayGatePending =
-    kind === "running" || kind === "reminded" || kind === "paused" || kind === "ready-for-gate";
+    kind === "running" ||
+    kind === "reminded" ||
+    kind === "agent-resumed" ||
+    kind === "paused" ||
+    kind === "ready-for-gate";
   let pending = false;
   if (mayGatePending) {
     const read = yield* Effect.result(world.hasPendingGateSend(info.id));

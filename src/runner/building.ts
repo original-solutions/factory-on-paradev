@@ -49,6 +49,8 @@ import {
   type ThreadStatus,
 } from "../sessions.ts";
 import {
+  AGENT_DIED_NO_SESSION,
+  AGENT_DIED_REFUSED,
   CANNOT_CONFIRM,
   CANNOT_VERIFY_DURING_BUILD,
   CHANGED_DURING_BUILD,
@@ -68,6 +70,7 @@ import {
   prepareSessionText,
 } from "./messages.ts";
 import {
+  AGENT_DIED_RESUMED,
   BODY_EDIT_DROPPED,
   BODY_EDIT_FORWARDED,
   BODY_EDIT_REFUSED,
@@ -208,6 +211,8 @@ export type AdvanceOutcome =
   | { readonly kind: "reminded" }
   /** A person stopped the session's run in T3: nothing is sent and the issue is not touched. */
   | { readonly kind: "paused" }
+  /** The session's agent process died mid-run: it was sent the resume message, once for that run. */
+  | { readonly kind: "agent-resumed" }
   /**
    * The session's draft pull request is bound to the run and waits for the gate. Also what
    * `advance` says when the ledger already records that the gate passed and the move to
@@ -895,6 +900,51 @@ export const advance = (
         status.run !== null &&
         isTerminal(status.run);
       if (sessionBusy(seen, status)) return { kind: "running" } as const;
+      // A run whose agent process died is resumed, once for each run: the step waits for the
+      // newer run the resume starts (`sessionBusy`). A send cut short before the step is made
+      // again under the same command id, which the session takes once.
+      // A run with no ordinal cannot be waited for, so it is paused as it always was.
+      if (
+        status.run === "interrupted" &&
+        status.agentDied === true &&
+        status.runOrdinal !== null &&
+        result.kind !== "done"
+      ) {
+        const sent = yield* sendAgentDied(ctx, run, threadId, status.runOrdinal);
+        if (sent === "gone") {
+          // The adapter answers a missing Claude session as it answers a gone workspace. A
+          // workspace that is still there has an agent nothing can resume: waiting would not help.
+          // The adapter keeps that resume pending, so when this read fails the next pass reads
+          // `agentDied` again and comes back here.
+          const there = yield* ctx.sessions.thread(threadId).pipe(
+            Effect.map((thread) => !thread.archived),
+            Effect.catchIf(isThreadNotFound, () => Effect.succeed(false)),
+          );
+          if (!there) return { kind: "ended-badly", what: "thread-gone" } as const;
+          return yield* stuck(
+            "agent-died-no-session",
+            stopOf(AGENT_DIED_NO_SESSION, null),
+            status,
+          );
+        }
+        // A refusal ends the run, as a refused reminder does: sending again would be refused again.
+        if (sent !== "sent") {
+          return yield* stuck(
+            "agent-died-refused",
+            stopOf(AGENT_DIED_REFUSED, null, {
+              detail: `${AGENT_DIED_REFUSED}: ${describe(sent)}`,
+            }),
+            status,
+          );
+        }
+        yield* append(
+          out,
+          { event: "step_changed", data: { step: `${AGENT_DIED_RESUMED} ${status.runOrdinal}` } },
+          "advance",
+          "agent-died-resumed",
+        );
+        return { kind: "agent-resumed" } as const;
+      }
       // A run a person stopped in T3 is paused, on purpose: nothing is sent to resume it and the
       // issue is not touched.
       if (status.run === "interrupted" && result.kind !== "done") {
@@ -1680,6 +1730,26 @@ const sendInterruption = (
     .pipe(
       Effect.as("sent" as const),
       Effect.catchIf(isThreadNotFound, () => Effect.succeed("gone" as const)),
+    );
+
+/**
+ * Sends a run whose agent process died its resume message under `softfac:<run>:agent-died:<k>`,
+ * `k` the ordinal of that run: a send repeated after a crash is the same command. The caller
+ * writes the `agent-died-resumed <k>` step after. T3 not having the thread, or the session, is
+ * `"gone"`; a refusal is returned; any other failure is an error, and the next call sends again.
+ */
+const sendAgentDied = (
+  ctx: BuildingContext,
+  run: RunId,
+  threadId: string,
+  k: number,
+): Effect.Effect<"sent" | "gone" | MessageRejectedError, BuildingError> =>
+  ctx.sessions
+    .send(threadId, `softfac:${runIdToString(run)}:agent-died:${k}`, INTERRUPTION_MESSAGE)
+    .pipe(
+      Effect.as("sent" as const),
+      Effect.catchIf(isThreadNotFound, () => Effect.succeed("gone" as const)),
+      Effect.catchIf(isMessageRejected, (refused) => Effect.succeed(refused)),
     );
 
 /**
