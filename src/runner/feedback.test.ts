@@ -1443,7 +1443,7 @@ describe("feedback: the step", () => {
       const tail = `${END_WITH_DONE}\n\n${reviewBlock()}`;
       assert.ok(cloud.endsWith(tail), cloud);
       assert.ok(cloud.includes("waits for review, and an instructor left feedback"), cloud);
-      assert.ok(cloud.includes("You act on GitHub as the Paradev GitHub App (superset-app[bot])"), cloud);
+      assert.ok(cloud.includes("You act on GitHub through the GH_TOKEN the sandbox already has."), cloud);
       assert.ok(!cloud.includes("gh api user --jq"), cloud);
       assert.ok(!cloud.includes("rawphp."), cloud);
       // The local and host texts are their own.

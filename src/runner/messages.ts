@@ -7,7 +7,6 @@
 import type { State } from "../domain/lifecycle.ts";
 import type { CommandResult } from "../gate.ts";
 import { runIdToString, type RunId } from "../ledger/runId.ts";
-import { CLOUD_APP_SLUG } from "../sessions.ts";
 import { commandLine, sanitize, shortSha } from "../text.ts";
 import type { CheckStatus, DropReason, Feedback, FeedbackKind } from "../tracker/github.ts";
 
@@ -246,11 +245,11 @@ export const hostLaunchMessage = (
   `${launchBody(repo, issue, resumed, base)}\n\nYou act on GitHub as ${login}. This login is fixed for the run and overrides the factory skill's own account pick: act as ${login} and choose no other login, even if another one can push. Paradev started this session on a host whose terminal's active gh login may be another one. Before anything else run gh api user --jq .login exactly as written, in the environment you were started with. If it prints ${login}, carry on. If it prints another login, take only the prefix form from the factory skill's GitHub account rule: prefix every gh and git call that reaches GitHub with GH_TOKEN=$(gh auth token --user ${login}) inline, and give each such git call -c credential.helper= -c 'credential.helper=!gh auth git-credential' as well. Then prove the selection once: run GH_TOKEN=$(gh auth token --user ${login}) gh api user --jq .login, and carry on only when it prints ${login}. Never print, echo or export the token or write it anywhere, never set GH_CONFIG_DIR or GH_HOST, and never use gh auth switch. If that proof prints anything else, or gh auth token --user ${login} finds no token, end with FACTORY-STOP: stuck and make the first line of your message "${WRONG_ACCOUNT_PREFIX}<x>, not ${login}".`;
 
 /**
- * `launchMessage` for a session placed in Paradev Cloud. The sandbox acts on GitHub as the Paradev
- * GitHub App through its own `GH_TOKEN`, where `gh api user` answers 403 and the repo's
- * `permissions` object reads all false, so the message has no login check and names no login of the
- * runner or of a host: the
- * session proves it can push with the factory skill's push dry run instead.
+ * `launchMessage` for a session placed in Paradev Cloud. The sandbox acts on GitHub through its own
+ * `GH_TOKEN`, which has been the Paradev GitHub App's and the launching user's own login, and the
+ * runner has not read it when it sends this message. So the message says neither, has no login
+ * check and names no login of the runner or of a host: the session proves it can push with the
+ * factory skill's push dry run, which both pass.
  */
 export const cloudLaunchMessage = (
   repo: string,
@@ -258,7 +257,7 @@ export const cloudLaunchMessage = (
   resumed?: ResumeFrom,
   base?: string,
 ): string =>
-  `${launchBody(repo, issue, resumed, base)}\n\nYou act on GitHub as the Paradev GitHub App (${CLOUD_APP_SLUG}[bot]), through the GH_TOKEN the sandbox already has. Do not run gh api user: it answers 403 there. Never set, unset or replace GH_TOKEN, GH_CONFIG_DIR or GH_HOST, and never run gh auth login, gh auth switch or gh auth token, on any command. The repo's permissions object reads all false there, so prove you can push with the factory skill's push dry run, and end with FACTORY-STOP: stuck only when that dry run fails.`;
+  `${launchBody(repo, issue, resumed, base)}\n\nYou act on GitHub through the GH_TOKEN the sandbox already has. Never set, unset or replace GH_TOKEN, GH_CONFIG_DIR or GH_HOST, and never run gh auth login, gh auth switch or gh auth token, on any command. Prove you can push with the factory skill's push dry run, and end with FACTORY-STOP: stuck only when that dry run fails.`;
 
 /** The issue's single status comment. */
 export const statusBody = (
