@@ -771,13 +771,58 @@ describe("self-update", () => {
         yield* TestClock.adjust(TEN_MINUTES);
         expect(commands(f)).toEqual([...REFUSED, "gh", "gh", "gh"]);
         expect(loud(f).at(-1)!.text).toContain("HTTP 404: Not Found");
-        // Still held: the item stays, and the next period tries the tag again.
+        // Still held: the item stays, and the next period tries the tag again with no new line.
         expect(updateItems(f)).toHaveLength(1);
+        const lines = loud(f).length;
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual([...REFUSED, "gh", "gh", "gh", "gh", "gh", "gh"]);
+        expect(loud(f)).toHaveLength(lines);
         f.answers.compare = "ahead";
         landPlugin(f, "0.2.0");
         yield* TestClock.adjust(TEN_MINUTES);
-        expect(commands(f)).toEqual([...REFUSED, "gh", "gh", "gh", ...STAGING]);
+        expect(commands(f)).toEqual([...REFUSED, "gh", "gh", "gh", "gh", "gh", "gh", ...STAGING]);
         expect(versionDirs(f)).toEqual(["0.1.0", "0.2.0"]);
+        expect(updateItems(f)).toEqual([]);
+      }),
+    );
+  });
+
+  it.effect("a held tag found not on the default branch is marked like any other, and its item goes", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.minPlugin = "0.2.0";
+    landPlugin(f, "0.1.0");
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(updateItems(f)).toHaveLength(1);
+        f.answers.compare = "diverged";
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(loud(f).at(-1)!.text).toContain("is not on main");
+        expect(updateItems(f)).toEqual([]);
+        // Marked: not tried again until a restart.
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual([...REFUSED, "gh", "gh", "gh", "gh"]);
+      }),
+    );
+  });
+
+  it.effect("a newer tag that fails before its plugin step takes the held tag's item with it", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.minPlugin = "0.2.0";
+    landPlugin(f, "0.1.0");
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(updateItems(f)).toHaveLength(1);
+        // v0.3.0 is now the highest tag, and its compare fails: it is marked, and v0.2.0 is no longer tried.
+        f.answers.refs = ["refs/tags/v0.2.0", "refs/tags/v0.3.0"];
+        f.answers.compare = "fail";
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(updateItems(f)).toEqual([]);
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual([...REFUSED, "gh", "gh", "gh", "gh"]);
         expect(updateItems(f)).toEqual([]);
       }),
     );

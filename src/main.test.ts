@@ -1807,6 +1807,29 @@ describe("liveWorld", () => {
     }),
   );
 
+  it.effect("this Mac's plugin check reads the VERSION under HOME unless one is injected", () =>
+    Effect.gen(function* () {
+      const home = tempDir();
+      const file = landedPluginPath(home);
+      NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
+      NodeFS.writeFileSync(file, "0.0.0\n");
+      const before = process.env["HOME"];
+      process.env["HOME"] = home;
+      try {
+        const world = liveWorld(baseMachine, tempDir(), {} as never, NodeServices.layer, {} as never, () => NOW, "mac-mini", noAttention, {
+          gate: { run: () => Effect.die("no gate") },
+          wake: Effect.void,
+          scope: yield* Scope.make(),
+        });
+        assert.strictEqual(world.checkLocalPlugin(), localPluginCheck(home));
+        assert.include(world.checkLocalPlugin() ?? "", "the factory plugin on this Mac is 0.0.0, older than the");
+      } finally {
+        if (before === undefined) delete process.env["HOME"];
+        else process.env["HOME"] = before;
+      }
+    }),
+  );
+
   it.effect("a finished pass removes the self-update's pending start count of this version, and only that", () =>
     Effect.gen(function* () {
       const scope = yield* Scope.make();
