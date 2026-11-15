@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "plugins",
+    "marketplace",
+    "add",
+    "original-solutions/factory-on-paradev",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794737374182,
+  "durationMs": 2920,
+  "stderr": ""
+}

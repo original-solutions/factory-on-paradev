@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "plugins",
+    "marketplace",
+    "add",
+    "original-solutions/factory-on-paradev",
+    "--json"
+  ],
+  "exit": 0,
+  "over": "ssh to the Trilogy Mac, ~/superset/bin/superset",
+  "stderr": ""
+}

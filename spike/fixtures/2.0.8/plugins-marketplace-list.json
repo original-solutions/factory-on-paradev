@@ -1,0 +1,12 @@
+[
+  {
+    "name": "superset",
+    "source": "built in",
+    "builtin": true
+  },
+  {
+    "name": "factory-on-paradev",
+    "source": "github:original-solutions/factory-on-paradev",
+    "builtin": false
+  }
+]

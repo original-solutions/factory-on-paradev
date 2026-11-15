@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "terminals",
+    "create",
+    "--host",
+    "cloud",
+    "--workspace",
+    "82101064-2c41-4684-9f78-812606d78b34",
+    "--command",
+    "superset plugins marketplace add original-solutions/factory-on-paradev --json; superset plugins install factory@factory-on-paradev --json; echo --AFTER; ls -d ~/.agents/skills/factory* 2>&1; ls ~/.claude/skills/superset/skills 2>&1 | grep -i factory; superset skills list --json | head -c 400; echo; superset plugins list --json | grep -E \"\\\"(name|marketplace|version)\\\"\" | paste - - - | sort -u; echo P3-INST-DONE",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794737887614,
+  "durationMs": 355,
+  "stderr": ""
+}

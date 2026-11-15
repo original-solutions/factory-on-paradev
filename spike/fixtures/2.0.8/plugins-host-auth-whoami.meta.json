@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "auth",
+    "whoami",
+    "--json"
+  ],
+  "exit": 0,
+  "over": "ssh to the Trilogy Mac, ~/superset/bin/superset",
+  "stderr": ""
+}
