@@ -406,6 +406,43 @@ describe("install", () => {
     );
   });
 
+  it("removes the self-update's pending count and refused tag only once current points at the version it placed", async () => {
+    const f = makeFixture();
+    const files = ["update-pending.json", "update-refused.json"].map((file) => NodePath.join(f.dataDir, file));
+    const current = NodePath.join(f.home, ".local", "share", "factory-runner", "current");
+    const seenAtRunnerBootstrap: Array<{ current: string; files: Array<boolean> }> = [];
+    const env: InstallEnv = {
+      ...f.env,
+      run: (command, args) => {
+        if (args[0] === "bootstrap" && (args[2] ?? "").endsWith(`${LABEL}.plist`)) {
+          seenAtRunnerBootstrap.push({
+            current: NodeFS.readlinkSync(current),
+            files: files.map((file) => NodeFS.existsSync(file)),
+          });
+        }
+        return f.env.run(command, args);
+      },
+    };
+    // An install that stops before current moves leaves both.
+    for (const file of files) write(file, "{}\n");
+    const rotateFails: InstallEnv = {
+      ...env,
+      run: (command, args) =>
+        args[0] === "bootstrap" && (args[2] ?? "").endsWith(`${LOGROTATE_LABEL}.plist`)
+          ? { status: 1, stdout: "", stderr: "boom\n" }
+          : env.run(command, args),
+    };
+    expect(await install(rotateFails)).toBe(1);
+    expect(files.map((file) => NodeFS.existsSync(file))).toEqual([true, true]);
+    expect(NodeFS.existsSync(current)).toBe(false);
+
+    expect(await install(env)).toBe(0);
+    expect(files.map((file) => NodeFS.existsSync(file))).toEqual([false, false]);
+    expect(seenAtRunnerBootstrap).toEqual([
+      { current: NodePath.join(f.home, ".local", "share", "factory-runner", "versions", "1.2.3"), files: [false, false] },
+    ]);
+  });
+
   it("does not count a `runner started` the old runner logs while the agents are reloaded", async () => {
     const f = makeFixture({ bootoutLingers: 2 });
     expect(await install(f.env)).toBe(0);

@@ -192,6 +192,32 @@ describe("status", () => {
     expect(s.outs.join("\n")).not.toContain("an old thing someone dismissed");
   });
 
+  it("adds a row for a refused update tag from its own file, and none when that file cannot be read", async () => {
+    const s = setup();
+    const file = NodePath.join(s.dataDir, "update-refused.json");
+    NodeFS.writeFileSync(file, JSON.stringify({ tag: "v0.4.0", from: "0.3.4", at: "2026-11-15T09:30:00.000Z" }));
+    const message = "v0.4.0 could not complete a pass after its restart; running v0.3.4. A newer tag installs as usual.";
+    expect(await runCli(["status", "--json"], s.io)).toBe(0);
+    expect(JSON.parse(s.outs.join("\n")).attention).toEqual([
+      {
+        id: "update-refused",
+        kind: "update-refused",
+        repo: null,
+        issue: null,
+        run: null,
+        message,
+        first_seen: "2026-11-15T09:30:00.000Z",
+      },
+    ]);
+    s.outs.length = 0;
+    expect(await runCli(["status"], s.io)).toBe(0);
+    expect(s.outs).toContain(`attention: ${message}`);
+    s.outs.length = 0;
+    NodeFS.writeFileSync(file, "{not json");
+    expect(await runCli(["status", "--json"], s.io)).toBe(0);
+    expect(JSON.parse(s.outs.join("\n")).attention).toEqual([]);
+  });
+
   it("warns on stderr when attention.json cannot be read, so no items is not read as nothing to do", async () => {
     const s = setup();
     const file = NodePath.join(s.dataDir, "attention.json");
