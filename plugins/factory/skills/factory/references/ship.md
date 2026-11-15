@@ -13,14 +13,16 @@ Never squash Make or Check commits. Never `git add -A` or `git add .`. Never co-
 Every commit was pushed as it was made (`references/commits.md`). Check that the branch is up to date before opening the PR:
 
 ```bash
-git status --porcelain                # prints nothing, and nothing from .factory/
-git fetch origin <branch>
-git rev-parse HEAD origin/<branch>    # prints the same sha twice
+git status --porcelain                     # prints nothing, and nothing from .factory/
+git rev-parse HEAD
+git ls-remote origin refs/heads/<branch>   # prints the same sha as HEAD
 ```
+
+`ls-remote` asks `origin` itself, so it works where a fetch makes no remote-tracking ref for the branch, as in a cloud worktree whose `remote.origin.fetch` covers only the base.
 
 When Read picked a login other than the active one, or picked its account by a push dry run, every `gh` and `git` command in this file runs as `SKILL.md` § GitHub account says.
 
-Anything uncommitted, a tip that `origin/<branch>` does not have, or no such branch on `origin` at all → commit and push it first (`references/commits.md`), then check again.
+Anything uncommitted, a sha from `ls-remote` that is not `HEAD`, or no line from `ls-remote` at all → commit and push it first (`references/commits.md`), then check again.
 
 ```bash
 gh pr create --draft --base <base> --title "<pr title>" --body-file .factory/receipt.md
