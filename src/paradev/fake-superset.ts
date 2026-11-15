@@ -38,6 +38,8 @@ export interface Step {
    * test's own repo, say, or to empty a list. Only for a fixture recorded with stdout.
    */
   readonly edit?: (answer: unknown) => unknown;
+  /** Wraps the step's answer, so a test can see how many calls are in flight at once. */
+  readonly around?: (answer: Effect.Effect<RunResult>) => Effect.Effect<RunResult>;
 }
 
 export interface Answer {
@@ -83,44 +85,48 @@ export const fakeSuperset = (script: ReadonlyArray<Step>) => {
         return Effect.die(new Error(`fake superset: unexpected argv ${JSON.stringify(argv)}`));
       }
       const [step] = left.splice(at, 1);
-      if (step!.fail !== undefined) {
+      return step!.around === undefined ? answerOf(step!) : step!.around(answerOf(step!));
+    });
+  const answerOf = (step: Step): Effect.Effect<RunResult> =>
+    Effect.suspend(() => {
+      if (step.fail !== undefined) {
         return Effect.succeed({
           exitCode: 1,
           timedOut: false,
           tail: "",
-          stderrTail: `Error: ${step!.fail}\n`,
+          stderrTail: `Error: ${step.fail}\n`,
           truncated: false,
           tailTruncated: false,
         } satisfies RunResult);
       }
-      if (step!.stdout !== undefined) {
+      if (step.stdout !== undefined) {
         return Effect.succeed({
           exitCode: 0,
           timedOut: false,
-          tail: step!.stdout,
+          tail: step.stdout,
           stderrTail: "",
           truncated: false,
           tailTruncated: false,
         } satisfies RunResult);
       }
-      if (step!.answer !== undefined) {
+      if (step.answer !== undefined) {
         return Effect.succeed({
           exitCode: 0,
           timedOut: false,
-          tail: `${JSON.stringify(step!.answer)}\n`,
+          tail: `${JSON.stringify(step.answer)}\n`,
           stderrTail: "",
           truncated: false,
           tailTruncated: false,
         } satisfies RunResult);
       }
-      if (step!.fixture === undefined) {
+      if (step.fixture === undefined) {
         return Effect.die(new Error("fake superset: a step needs a fixture, an answer or a fail"));
       }
-      const answer = readFixture(step!.fixture);
+      const answer = readFixture(step.fixture);
       const stdout =
-        step!.edit === undefined
+        step.edit === undefined
           ? answer.stdout
-          : `${JSON.stringify(step!.edit(JSON.parse(answer.stdout) as unknown))}\n`;
+          : `${JSON.stringify(step.edit(JSON.parse(answer.stdout) as unknown))}\n`;
       return Effect.succeed({
         exitCode: answer.exit,
         timedOut: false,

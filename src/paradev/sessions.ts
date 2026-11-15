@@ -272,7 +272,7 @@ export interface ParadevSessionsConfig {
    * a running agent. Default nothing.
    */
   readonly launchEnded?: (commandId: string) => Effect.Effect<void>;
-  /** Whether the machine config has a cloud block, so `snapshot --host cloud` is read for the counts. Default false. */
+  /** Whether the machine config has a cloud block, so this runner's cloud workspaces are read for the counts. Default false. */
   readonly cloud?: boolean;
   /** How the adapter reaches a host. Default `ssh` through the runner's process service. */
   readonly ssh?: SshRunner;
@@ -309,9 +309,10 @@ export type ParadevSessions = FactorySessions["Service"] & {
     workspaceRoots: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<FactoryProject | null>, SessionsError>;
   /**
-   * The agents running on each target, from one snapshot of it (this Mac, each configured host in
-   * order, then cloud when configured): what placement checks against each target's `max_runs`.
-   * `running` is null for a target whose snapshot could not be read. Never fails.
+   * The agents running on each target (this Mac, each configured host in order, then cloud when
+   * configured): one snapshot of this Mac or a host, and for cloud one per workspace of this
+   * runner's. What placement checks against each target's `max_runs`. `running` is null for a
+   * target whose snapshot or listing could not be read. Never fails.
    */
   readonly runningByTarget: Effect.Effect<ReadonlyArray<TargetCount>>;
   /** Archives the orphaned cloud workspaces; the runner calls it once per pass while a repo names a cloud environment. */
@@ -331,6 +332,21 @@ const runnerTag = (id: string): string => `factory-${id}`;
 /** Whether a listed workspace carries `name` as a tag. */
 const hasTag = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined, name: string): boolean =>
   (tags ?? []).some((tag) => (typeof tag === "string" ? tag : tag.name) === name);
+
+/**
+ * The argv of a `snapshot` of `target` at `snapshotAt`, its location flag, reading `workspaceId`
+ * alone when given. `--host cloud` is not one host: each cloud workspace runs its own, and the CLI
+ * refuses a cloud snapshot with no `--workspace` (#85). So a cloud target with no workspace id is
+ * refused here, before any CLI call.
+ */
+export const snapshotArgv = (
+  target: Target | ThreadTarget,
+  snapshotAt: ReadonlyArray<string>,
+  workspaceId?: string,
+): Effect.Effect<ReadonlyArray<string>, ParadevAdapterError> =>
+  target.kind === "cloud" && workspaceId === undefined
+    ? fail("a cloud snapshot needs a workspace id: `--host cloud` is not one host, and no workspace was named")
+    : Effect.succeed(["snapshot", ...snapshotAt, ...(workspaceId === undefined ? [] : ["--workspace", workspaceId])]);
 
 export const make = Effect.fn("ParadevSessions.make")(function* (config: ParadevSessionsConfig) {
   const cli = yield* SupersetCli;
@@ -430,16 +446,15 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   // ---- CLI calls ----------------------------------------------------------------------------
 
-  const snapshot = (target: Target | ThreadTarget, workspaceId?: string): Effect.Effect<SnapshotAnswer, CliError> => {
-    const argv = [
-      "snapshot",
-      ...targetFor(target).snapshotAt,
-      ...(workspaceId === undefined ? [] : ["--workspace", workspaceId]),
-    ];
-    return callWithRetry(cli, argv, 30_000).pipe(
-      Effect.flatMap((answer) => decodeAnswer(Snapshot, answer, argv)),
+  const snapshot = (
+    target: Target | ThreadTarget,
+    workspaceId?: string,
+  ): Effect.Effect<SnapshotAnswer, CliError | ParadevAdapterError> =>
+    snapshotArgv(target, targetFor(target).snapshotAt, workspaceId).pipe(
+      Effect.flatMap((argv) =>
+        callWithRetry(cli, argv, 30_000).pipe(Effect.flatMap((answer) => decodeAnswer(Snapshot, answer, argv))),
+      ),
     );
-  };
 
   /** `--host <id>` or `--host cloud` (or `--local`) and `--workspace`: where a record's terminal calls go. */
   const inWorkspace = (record: ThreadRecord) => [...targetFor(record.target).at, "--workspace", record.workspaceId];
@@ -1128,19 +1143,60 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     );
   });
 
+  /** Every cloud workspace Paradev lists: what the orphan sweep and the cloud count read. */
+  const listCloud = Effect.suspend(() => {
+    const argv = ["workspaces", "list", ...cloudTarget.at];
+    return callWithRetry(cli, argv, 30_000).pipe(Effect.flatMap((answer) => decodeAnswer(CloudRows, answer, argv)));
+  });
+
+  /**
+   * The workspaces `target`'s snapshots show. This Mac and a host: one snapshot, no `--workspace`.
+   * Cloud is not one host, so each workspace of `counted` that the listing shows with this runner's
+   * tag (`factory-<runner id>`) and not deleted is read on its own with `--workspace`, two at a
+   * time; none such reads no snapshot. A tagged workspace with no record in `counted` (an archived
+   * run's, an orphan's) is not read: nothing in it would count, and its failed snapshot would lose
+   * the count. A workspace of `counted` the listing shows neither tagged nor `deleted` fails the
+   * read: its agent would count nothing, and a count that misses a running agent lets cloud take
+   * more runs than it has room for. With no record in `counted`, cloud is not read at all.
+   */
+  const snapshotWorkspaces = (target: ThreadTarget, counted: ReadonlyArray<ThreadRecord>) =>
+    Effect.gen(function* () {
+      if (target.kind !== "cloud") return (yield* snapshot(target)).workspaces;
+      if (counted.length === 0) return [];
+      const tag = yield* mine;
+      const rows = yield* listCloud;
+      const tagged = new Set(
+        rows
+          .filter((row) => row.status !== "deleted" && hasTag(row.tags, tag) && isPlainId(row.id))
+          .map((row) => row.id),
+      );
+      const deleted = new Set(rows.filter((row) => row.status === "deleted").map((row) => row.id));
+      const unlisted = counted.find((record) => !tagged.has(record.workspaceId) && !deleted.has(record.workspaceId));
+      if (unlisted !== undefined) {
+        return yield* fail(`cloud workspace ${unlisted.workspaceId} of ${unlisted.threadId} is not listed with the tag ${tag}`);
+      }
+      const ids = counted.map((record) => record.workspaceId).filter((id) => tagged.has(id));
+      const answers = yield* Effect.forEach(ids, (id) => snapshot(target, id), { concurrency: 2 });
+      return answers.flatMap((answer) => answer.workspaces);
+    });
+
   /**
    * The factory's agents that are starting or working on `target`: the unarchived records of that
-   * target whose newest terminal the snapshot shows in either state. One snapshot, no `--workspace`.
+   * target whose newest terminal the snapshots show in either state.
    */
-  const runningAt = (target: ThreadTarget, records: ReadonlyArray<ThreadRecord>) =>
-    snapshot(target).pipe(
-      Effect.map((answer) => {
+  const runningAt = (target: ThreadTarget, records: ReadonlyArray<ThreadRecord>) => {
+    const counted = records.filter(
+      (record) =>
+        threadIdOf(record.target, record.workspaceId) === threadIdOf(target, record.workspaceId) &&
+        record.archivedAt === null &&
+        record.terminals.length > 0,
+    );
+    return snapshotWorkspaces(target, counted).pipe(
+      Effect.map((workspaces) => {
         let running = 0;
-        for (const record of records) {
+        for (const record of counted) {
           const terminal = record.terminals.at(-1);
-          const there = threadIdOf(record.target, record.workspaceId) === threadIdOf(target, record.workspaceId);
-          if (!there || record.archivedAt !== null || terminal === undefined) continue;
-          const state = answer.workspaces
+          const state = workspaces
             .find((ws) => ws.id === record.workspaceId)
             ?.terminals.find((t) => t.id === terminal)?.agent?.state;
           if (state === "starting" || state === "working") running += 1;
@@ -1148,6 +1204,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         return running;
       }),
     );
+  };
 
   /** The targets whose agents are counted: this Mac, each configured host, and cloud when configured. */
   const countedTargets: ReadonlyArray<ThreadTarget> = [
@@ -1370,7 +1427,10 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       if (worktreePath === null) return yield* fail(`thread ${threadId} has no worktree to look for its agent in`);
 
       const answer = yield* snapshot(record.target, record.workspaceId).pipe(
-        Effect.catchIf(isNotFound, () => Effect.fail(new ThreadNotFoundError({ threadId }))),
+        Effect.catchIf(
+          (error) => error._tag === "ParadevCliError" && isNotFound(error),
+          () => Effect.fail(new ThreadNotFoundError({ threadId })),
+        ),
       );
       const other = agentIn(answer, record.workspaceId, record.agent, record.terminals);
       const pending = record.pendingResume ?? null;
@@ -1501,10 +1561,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    */
   const sweepOrphans = Effect.gen(function* () {
     const tag = yield* mine;
-    const argv = ["workspaces", "list", ...cloudTarget.at];
-    const rows = yield* callWithRetry(cli, argv, 30_000).pipe(
-      Effect.flatMap((answer) => decodeAnswer(CloudRows, answer, argv)),
-    );
+    const rows = yield* listCloud;
     const now = yield* Clock.currentTimeMillis;
     for (const row of rows) {
       if (row.status === "deleted" || !hasTag(row.tags, tag) || !isPlainId(row.id)) continue;

@@ -291,6 +291,12 @@ const makeParadev = (input: {
     }
     if (a === "snapshot") {
       const only = after(args, "--workspace");
+      // CLI 2.0.8 refuses a cloud snapshot that names no workspace.
+      if (after(args, "--host") === "cloud" && only === undefined) {
+        return failed(
+          "Error: `--host cloud` is not one host: each cloud workspace runs its own\nHint: Name the workspace: `superset snapshot --host cloud --workspace <id>`, or a workspace command such as `superset sessions list --workspace <id>`\n",
+        );
+      }
       return ok(
         `${json({
           workspaces: [...workspaces.values()]
@@ -1310,7 +1316,8 @@ it.live("cloud takes no run while the proxy answers 200, and the issue waits for
       done: ({ logs }) => waitsNoRoom(logs),
     });
     assert.isUndefined(run.created(), run.diagnosis);
-    assert.isAbove(run.snapshots().length, 0, run.diagnosis);
+    // No cloud run has an agent: cloud counts 0 with no snapshot, and never a bare `snapshot --host cloud`.
+    assert.deepStrictEqual(run.snapshots(), [], run.diagnosis);
   }),
 );
 
@@ -1326,7 +1333,7 @@ it.live("with the proxy answering 401 and this Mac full, a cloud workspace is as
       done: ({ paradev }) => paradev.calls.some((call) => call[0] === "workspaces" && call[1] === "create"),
     });
     assert.deepStrictEqual(run.created()!.slice(0, 4), ["workspaces", "create", "--host", "cloud"], run.diagnosis);
-    assert.isAbove(run.snapshots().length, 0, run.diagnosis);
-    assert.strictEqual(run.snapshots()[0]![2], "cloud");
+    // No cloud run has an agent: cloud counts 0 with no snapshot, and never a bare `snapshot --host cloud`.
+    assert.deepStrictEqual(run.snapshots(), [], run.diagnosis);
   }),
 );

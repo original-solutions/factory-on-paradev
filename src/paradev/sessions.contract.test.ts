@@ -11,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as TestClock from "effect/testing/TestClock";
 
+import type { MachineConfig, WatchedRepo } from "../config.ts";
 import { useTempDirs } from "../ledger/testSupport.ts";
 import { FactoryPaths } from "../paths.ts";
 import { FactoryProcess, layer as processLayer, type RunResult } from "../process.ts";
@@ -18,10 +19,12 @@ import { isNoTargetHasRoom, MessageRejectedError, NoTargetHasRoom, SessionsError
 import { sha256 } from "../text.ts";
 import { layer as cliLayer } from "./cli.ts";
 import { fakeSuperset, readFixture, type Step } from "./fake-superset.ts";
+import { makePlacer } from "./placer.ts";
 import {
   AgentProcess,
   agentProcessLayer,
   make,
+  snapshotArgv,
   type LaunchTarget,
   type ParadevSessions,
   type ParadevSessionsConfig,
@@ -4392,7 +4395,14 @@ describe("runningByTarget and runningThreads, per target (#55)", () => {
   /** The L5b local snapshot: its first terminal reads `working`, its second `idle`. */
   const localStep: Step = { argv: ["snapshot"], fixture: "snapshot-local-after-resume" };
   const hostStep: Step = { argv: ["snapshot", "--host", HOST], fixture: "snapshot-host-after-restart" };
-  const cloudStep: Step = { argv: ["snapshot", "--host", "cloud"], fixture: "snapshot-cloud" };
+  /** Cloud is read one workspace at a time: the listing, then a snapshot of each live record's tagged workspace. */
+  const cloudList: Step = {
+    argv: ["workspaces", "list", "--host", "cloud"],
+    fixture: "ws-list-noflag-after-cloud",
+    edit: (answer) => [{ ...(answer as ReadonlyArray<object>)[0], id: C3_WS, tags: ["factory", `factory-${RUNNER}`] }],
+  };
+  const cloudSnapshot: Step = { argv: ["snapshot", "--host", "cloud", "--workspace", C3_WS], fixture: "snapshot-cloud" };
+  const cloudStep = [cloudList, cloudSnapshot] as const;
   const seedAll = (data: string) =>
     seed(
       data,
@@ -4403,7 +4413,7 @@ describe("runningByTarget and runningThreads, per target (#55)", () => {
 
   it.effect("counts this Mac, each host and cloud from one snapshot each, and sums them", () =>
     Effect.gen(function* () {
-      const t = rig([localStep, hostStep, cloudStep, localStep, hostStep, cloudStep], { config: withAll });
+      const t = rig([localStep, hostStep, ...cloudStep, localStep, hostStep, ...cloudStep], { config: withAll });
       yield* seedAll(t.data);
       assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
         { target: { kind: "local" }, running: 1 },
@@ -4411,11 +4421,12 @@ describe("runningByTarget and runningThreads, per target (#55)", () => {
         { target: { kind: "cloud" }, running: 1 },
       ]);
       assert.strictEqual(yield* t.run((s) => s.runningThreads), 3);
-      // Each target read once per call, with no --workspace.
-      assert.deepStrictEqual(t.calls.slice(0, 3).map((argv) => argv.join(" ")).sort(), [
+      // This Mac and each host read once per call with no --workspace; cloud one workspace at a time.
+      assert.deepStrictEqual(t.calls.slice(0, 4).map((argv) => argv.join(" ")).sort(), [
         "snapshot",
         "snapshot --host c9c39956e0c1756e30d6bb9f4f907ff1",
-        "snapshot --host cloud",
+        `snapshot --host cloud --workspace ${C3_WS}`,
+        "workspaces list --host cloud",
       ]);
       assert.deepStrictEqual(t.unused(), []);
     }),
@@ -4440,7 +4451,7 @@ describe("runningByTarget and runningThreads, per target (#55)", () => {
   it.effect("a host that cannot be read is null and left out of the sum", () =>
     Effect.gen(function* () {
       const offline: Step = { argv: ["snapshot", "--host", HOST], fixture: "snapshot-host-offline" };
-      const t = rig([localStep, offline, cloudStep, localStep, offline, cloudStep], { config: withAll });
+      const t = rig([localStep, offline, ...cloudStep, localStep, offline, ...cloudStep], { config: withAll });
       yield* seedAll(t.data);
       assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
         { target: { kind: "local" }, running: 1 },
@@ -4484,6 +4495,290 @@ describe("runningByTarget and runningThreads, per target (#55)", () => {
       const error = yield* t.run((s) => s.runningThreads).pipe(Effect.flip);
       assert.strictEqual(error.operation, "running-threads");
       assert.deepStrictEqual(t.calls, []);
+    }),
+  );
+});
+
+describe("the cloud count, one workspace at a time (#85)", () => {
+  const localStep: Step = { argv: ["snapshot"], fixture: "snapshot-local-after-resume" };
+  /** What CLI 2.0.8 answers a `snapshot --host cloud` with no `--workspace`: exit 1. */
+  const bareCloud: Step = {
+    argv: ["snapshot", "--host", "cloud"],
+    fail: "`--host cloud` is not one host: each cloud workspace runs its own\nHint: Name the workspace: `superset snapshot --host cloud --workspace <id>`, or a workspace command such as `superset sessions list --workspace <id>`",
+  };
+  const MINE = `factory-${RUNNER}`;
+  const OTHER_WS = "f2e2d3c4-0000-4000-8000-000000000020";
+  const THIRD_WS = "f3e2d3c4-0000-4000-8000-000000000030";
+  const OTHER_TERM = "f2e2d3c4-0000-4000-8000-0000000000aa";
+  const FOURTH_WS = "f4e2d3c4-0000-4000-8000-000000000040";
+  const listArgv = ["workspaces", "list", "--host", "cloud"];
+  /** The listing, as the recorded row with each of `rows` laid over it. */
+  const listOf = (...rows: ReadonlyArray<Record<string, unknown>>): Step => ({
+    argv: listArgv,
+    fixture: "ws-list-noflag-after-cloud",
+    edit: (answer) => rows.map((row) => ({ ...(answer as ReadonlyArray<object>)[0], ...row })),
+  });
+  const snapshotAt = (ws: string, terminals?: ReadonlyArray<unknown>): Step => ({
+    argv: ["snapshot", "--host", "cloud", "--workspace", ws],
+    fixture: "snapshot-cloud",
+    edit: snapshotOf(ws, terminals),
+  });
+  const bare = (calls: ReadonlyArray<ReadonlyArray<string>>) =>
+    calls.filter((argv) => argv[0] === "snapshot" && argv.includes("cloud") && !argv.includes("--workspace"));
+  const seedCloud = (data: string) =>
+    seed(data, record({ threadId: `local:${L5_WS}`, workspaceId: L5_WS, terminals: [L5_DEAD] }), cloudRecord());
+
+  it.effect("no tagged workspace: the count is 0 and no snapshot is read", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          localStep,
+          bareCloud,
+          // Another runner's, one with no runner's mark, one of this runner's that is gone, one whose
+          // id is not plain, and the live record's own, gone and listed with no tag.
+          listOf(
+            { id: THIRD_WS, tags: ["factory", "factory-ffffffff-0000-4000-8000-00000000ffff"] },
+            { id: OTHER_WS, tags: ["factory"] },
+            { id: FOURTH_WS, tags: ["factory", MINE], status: "deleted" },
+            { id: "--json", tags: ["factory", MINE] },
+            { id: C3_WS, tags: [], status: "deleted" },
+          ),
+        ],
+        { config: { cloud: true } },
+      );
+      yield* seedCloud(t.data);
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 1 },
+        { target: { kind: "cloud" }, running: 0 },
+      ]);
+      assert.deepStrictEqual(t.calls.filter((argv) => argv[0] === "snapshot" && argv.includes("cloud")), []);
+    }),
+  );
+
+  it.effect("no cloud record that could count: the count is 0, and cloud is neither listed nor read", () =>
+    Effect.gen(function* () {
+      const t = rig([localStep, bareCloud, listOf({ id: C3_WS, tags: ["factory", MINE] }), snapshotAt(C3_WS)], {
+        config: { cloud: true },
+      });
+      // An archived cloud run, and one whose agent never started: neither can be running.
+      yield* seed(
+        t.data,
+        record({ threadId: `local:${L5_WS}`, workspaceId: L5_WS, terminals: [L5_DEAD] }),
+        cloudRecord({ archivedAt: 1794329708000 }),
+        cloudRecord({ threadId: `cloud:${OTHER_WS}`, workspaceId: OTHER_WS, terminals: [] }),
+      );
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 1 },
+        { target: { kind: "cloud" }, running: 0 },
+      ]);
+      assert.deepStrictEqual(t.calls, [["snapshot"]]);
+    }),
+  );
+
+  it.effect("one working agent in a tagged workspace: the count is 1, from that workspace's snapshot, and a tagged workspace with no record is not read", () =>
+    Effect.gen(function* () {
+      const orphanSnapshot: Step = { argv: ["snapshot", "--host", "cloud", "--workspace", OTHER_WS], fail: "boom" };
+      const t = rig(
+        [
+          localStep,
+          bareCloud,
+          listOf({ id: C3_WS, tags: ["factory", MINE] }, { id: OTHER_WS, tags: [{ name: "factory" }, { name: MINE }] }),
+          snapshotAt(C3_WS),
+          // A tagged workspace with no record (an orphan the sweep has not archived): nothing in it
+          // could count, so it is not read, and a snapshot of it that would fail fails nothing.
+          orphanSnapshot,
+        ],
+        { config: { cloud: true } },
+      );
+      yield* seedCloud(t.data);
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 1 },
+        { target: { kind: "cloud" }, running: 1 },
+      ]);
+      assert.deepStrictEqual(bare(t.calls), []);
+      assert.deepStrictEqual(t.unused(), [bareCloud, orphanSnapshot]);
+    }),
+  );
+
+  it.effect("two working agents in two tagged workspaces: the count is 2, whichever is listed first", () =>
+    Effect.gen(function* () {
+      for (const order of [[C3_WS, OTHER_WS], [OTHER_WS, C3_WS]] as const) {
+        const t = rig(
+          [
+            localStep,
+            bareCloud,
+            listOf(...order.map((id) => ({ id, tags: ["factory", MINE] }))),
+            snapshotAt(C3_WS),
+            snapshotAt(OTHER_WS, [{ id: OTHER_TERM, title: "Claude Code", agent: { id: "claude", state: "working" } }]),
+          ],
+          { config: { cloud: true } },
+        );
+        yield* seedCloud(t.data);
+        yield* seed(t.data, cloudRecord({ threadId: `cloud:${OTHER_WS}`, workspaceId: OTHER_WS, terminals: [OTHER_TERM] }));
+        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "cloud" }, running: 2 },
+        ]);
+      }
+    }),
+  );
+
+  it.effect("a live record's workspace the listing shows without this runner's tag, or leaves out: the count is null, never 0", () =>
+    Effect.gen(function* () {
+      // Untagged in the listing; an empty listing.
+      for (const listing of [listOf({ id: C3_WS, tags: [] }), listOf()]) {
+        const t = rig([localStep, bareCloud, listing], { config: { cloud: true } });
+        yield* seedCloud(t.data);
+        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "cloud" }, running: null },
+        ]);
+        // Only tagged workspaces are read: no snapshot of the untagged one.
+        assert.deepStrictEqual(t.calls.filter((argv) => argv[0] === "snapshot" && argv.includes("cloud")), []);
+      }
+      // Two live records, the tagged one and an untagged one, in either order of the records: null, not 1.
+      for (const [first, second] of [[C3_WS, OTHER_WS], [OTHER_WS, C3_WS]] as const) {
+        const t = rig(
+          [localStep, bareCloud, listOf({ id: C3_WS, tags: ["factory", MINE] }, { id: OTHER_WS, tags: [] }), snapshotAt(C3_WS)],
+          { config: { cloud: true } },
+        );
+        yield* seed(t.data, record({ threadId: `local:${L5_WS}`, workspaceId: L5_WS, terminals: [L5_DEAD] }));
+        for (const ws of [first, second]) {
+          yield* seed(
+            t.data,
+            ws === C3_WS ? cloudRecord() : cloudRecord({ threadId: `cloud:${OTHER_WS}`, workspaceId: OTHER_WS, terminals: [OTHER_TERM] }),
+          );
+        }
+        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "cloud" }, running: null },
+        ]);
+      }
+    }),
+  );
+
+  it.effect("one workspace's snapshot that fails: the count is null for the pass, and the pass carries on", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          localStep,
+          bareCloud,
+          listOf({ id: C3_WS, tags: ["factory", MINE] }, { id: OTHER_WS, tags: ["factory", MINE] }),
+          snapshotAt(C3_WS),
+          { argv: ["snapshot", "--host", "cloud", "--workspace", OTHER_WS], fail: "boom" },
+        ],
+        { config: { cloud: true } },
+      );
+      yield* seedCloud(t.data);
+      // The workspace whose snapshot fails holds a live record: its agent could be running.
+      yield* seed(t.data, cloudRecord({ threadId: `cloud:${OTHER_WS}`, workspaceId: OTHER_WS, terminals: [OTHER_TERM] }));
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 1 },
+        { target: { kind: "cloud" }, running: null },
+      ]);
+      assert.deepStrictEqual(bare(t.calls), []);
+    }),
+  );
+
+  it.effect("three live records in three tagged workspaces: each is read, two snapshots at a time", () =>
+    Effect.gen(function* () {
+      let inFlight = 0;
+      let most = 0;
+      const around: Step["around"] = (answer) =>
+        Effect.gen(function* () {
+          inFlight += 1;
+          most = Math.max(most, inFlight);
+          yield* Effect.yieldNow;
+          const result = yield* answer;
+          inFlight -= 1;
+          return result;
+        });
+      const working = (id: string) => [{ id, title: "Claude Code", agent: { id: "claude", state: "working" } }];
+      const THIRD_TERM = "f3e2d3c4-0000-4000-8000-0000000000aa";
+      const t = rig(
+        [
+          localStep,
+          listOf(...[C3_WS, OTHER_WS, THIRD_WS].map((id) => ({ id, tags: ["factory", MINE] }))),
+          { ...snapshotAt(C3_WS), around },
+          { ...snapshotAt(OTHER_WS, working(OTHER_TERM)), around },
+          { ...snapshotAt(THIRD_WS, working(THIRD_TERM)), around },
+        ],
+        { config: { cloud: true } },
+      );
+      yield* seedCloud(t.data);
+      yield* seed(t.data, cloudRecord({ threadId: `cloud:${OTHER_WS}`, workspaceId: OTHER_WS, terminals: [OTHER_TERM] }));
+      yield* seed(t.data, cloudRecord({ threadId: `cloud:${THIRD_WS}`, workspaceId: THIRD_WS, terminals: [THIRD_TERM] }));
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 1 },
+        { target: { kind: "cloud" }, running: 3 },
+      ]);
+      assert.strictEqual(most, 2);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.effect("a listing that fails: the count is null for the pass, and no snapshot is read", () =>
+    Effect.gen(function* () {
+      const t = rig([localStep, bareCloud, { argv: listArgv, fail: "boom" }], { config: { cloud: true } });
+      yield* seedCloud(t.data);
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 1 },
+        { target: { kind: "cloud" }, running: null },
+      ]);
+      assert.deepStrictEqual(t.calls.filter((argv) => argv[0] === "snapshot" && argv.includes("cloud")), []);
+    }),
+  );
+
+  it.effect("with the count at 0 and cloud.max_runs 1, placement picks the cloud for a repo with an environment when no machine has room", () =>
+    Effect.gen(function* () {
+      // The one cloud run's agent has ended: its workspace shows no terminal, and cloud counts 0.
+      const t = rig([localStep, bareCloud, listOf({ id: C3_WS, tags: ["factory", MINE] }), snapshotAt(C3_WS, [])], {
+        config: { cloud: true },
+      });
+      yield* seedCloud(t.data);
+      const repo: WatchedRepo = { repo: "acme/cloudy", path: "/Users/tom/cloudy", cloud: ENV };
+      const machine: MachineConfig = {
+        ghConfigDir: "/gh",
+        pollSeconds: 60,
+        maxConcurrentRuns: 4,
+        maxConcurrentGates: 2,
+        feedbackSeconds: 600,
+        notify: true,
+        selfUpdate: true,
+        minFreeGib: 10,
+        maxLoadPerCore: 1,
+        modelFallbacks: {},
+        repos: [repo],
+        hosts: [],
+        cloud: { machineSize: "small", maxRuns: 1, proxy: "https://proxy.example.ts.net:8443" },
+        local: { maxRuns: 0 },
+        paradev: { cli: "/opt/superset", agent: "claude", belt: { enabled: false, visibility: "just_me" } },
+      };
+      const placer = makePlacer({
+        machine,
+        repoOfProject: () => repo,
+        hostLoads: new Map(),
+        hostsNotReady: () => new Map(),
+        readLoad: () => ({ oneMinute: 1, cores: 10 }),
+        running: t.run((s) => s.runningByTarget),
+        record: () => Effect.void,
+      });
+      placer.beginPass({ localHeld: null, proxy: null, machine });
+      assert.deepStrictEqual(yield* placer.place(request()), { kind: "cloud", environmentId: ENV, machineSize: "small" });
+      assert.deepStrictEqual(bare(t.calls), []);
+    }),
+  );
+
+  it.effect("snapshotArgv, which builds every snapshot's argv, refuses a cloud target with no workspace id before any CLI call, naming the missing workspace", () =>
+    Effect.gen(function* () {
+      const error = yield* snapshotArgv({ kind: "cloud" }, ["--host", "cloud"]).pipe(Effect.flip);
+      assert.include(error.message, "workspace");
+      assert.deepStrictEqual(yield* snapshotArgv({ kind: "cloud" }, ["--host", "cloud"], C3_WS), [
+        "snapshot", "--host", "cloud", "--workspace", C3_WS,
+      ]);
+      // This Mac and a host still read every workspace in one snapshot.
+      assert.deepStrictEqual(yield* snapshotArgv({ kind: "local" }, []), ["snapshot"]);
+      assert.deepStrictEqual(yield* snapshotArgv({ kind: "host", machineId: HOST }, ["--host", HOST]), ["snapshot", "--host", HOST]);
     }),
   );
 });
