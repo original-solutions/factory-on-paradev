@@ -370,6 +370,21 @@ esac
     expectNoTagPush(out.calls);
   });
 
+  it("names the last sync's error when a sync that fails the same way again does not move the source", () => {
+    const failed = sources({ syncedSha: OLD, syncedAt: BEFORE, syncError: "repository not found" });
+    const out = finish("same-error", {
+      origin: OLD,
+      ancestor: false,
+      before: failed,
+      sources: failed,
+      env: { RELEASE_FINISH_SYNC_WAIT_MS: "1500" },
+    });
+
+    expect(out.status).not.toBe(0);
+    expect(out.stderr).toContain("repository not found");
+    expectNoTagPush(out.calls);
+  });
+
   it("fails with Paradev's text and pushes no tag when the sync has a problem", () => {
     const out = finish("problem", {
       origin: OLD,
@@ -435,7 +450,8 @@ esac
     expect(out.status).not.toBe(0);
     expect(synced(out.calls)).toBe(false);
     expect(pushes(out.calls)).toEqual([pushMain]);
-    expect(out.stderr).toContain(`git tag -d ${TAG}`);
+    expect(out.stderr).toContain(`git tag -d ${TAG} && git fetch origin main && git reset --hard origin/main`);
+    expect(out.stderr).toContain(`make release VERSION=${VERSION}`);
   });
 
   it("stops before the sync when main has moved past the release commit", () => {
