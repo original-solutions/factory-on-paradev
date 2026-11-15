@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { DEFAULT_PARADEV_CLI } from "./config.ts";
 import { install, LABEL, LOGROTATE_LABEL, uninstall, type InstallEnv } from "./install.ts";
+import { PLUGIN_VERSION_READ } from "./paradev/ssh.ts";
 import { installPathsOf } from "./paths.ts";
 
 const EXAMPLE = NodeFS.readFileSync(
@@ -641,6 +642,28 @@ paradev:
     expect(login).toBeGreaterThanOrEqual(0);
     expect(firstSsh).toBeGreaterThan(login);
     expect(firstSsh).toBeLessThan(firstLaunchctl);
+  });
+
+  it("checks each host's plugin against the factory.minPluginVersion of the package it installs", async () => {
+    const packageRoot = makePackage();
+    write(
+      NodePath.join(packageRoot, "package.json"),
+      JSON.stringify({ version: "1.2.3", factory: { minPluginVersion: "0.3.10" } }),
+    );
+    const f = makeFixture({ packageRoot });
+    write(NodePath.join(f.dataDir, "config.yml"), WITH_HOST);
+    // The host has landed 0.3.5; every other read answers as the fixture's run does.
+    const env: InstallEnv = {
+      ...f.env,
+      run: (command, args, timeoutMs, inheritEnv) =>
+        command === "ssh" && args.at(-1) === PLUGIN_VERSION_READ
+          ? { status: 0, stdout: "0.3.5\n", stderr: "" }
+          : f.env.run(command, args, timeoutMs, inheritEnv),
+    };
+    expect(await install(env)).toBe(0);
+    expect(f.outs).toContain(
+      "  plugin: run this on the host: superset plugins install factory@organization && launchctl kickstart -k gui/$(id -u)/sh.superset.host (the factory plugin on the host is 0.3.5, older than the 0.3.10 this runner needs)",
+    );
   });
 
   it("makes no ssh call when the config has no hosts", async () => {
