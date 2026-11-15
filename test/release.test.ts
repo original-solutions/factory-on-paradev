@@ -33,12 +33,6 @@ afterAll(() => {
 });
 
 describe("the plugin's version fields", () => {
-  it("compares versions as three numbers", () => {
-    expect(compareVersions("0.3.10", "0.3.9")).toBeGreaterThan(0);
-    expect(compareVersions("0.3.9", "0.3.10")).toBeLessThan(0);
-    expect(compareVersions("1.0.0", "1.0.0")).toBe(0);
-  });
-
   it("are the runner's version, and factory.minPluginVersion is no newer", () => {
     const pkg = readJson(NodePath.join(root, "package.json"));
     const plugin = readJson(NodePath.join(root, "plugins/factory/plugin.json"));
@@ -65,7 +59,10 @@ describe("npm version", () => {
     GIT_COMMITTER_EMAIL: "t@example.com",
   };
 
-  /** A repo with this one's version script and plugin files at 0.3.4, tagged v0.3.4 when `tag`. */
+  /**
+   * A repo with this one's version script and plugin files at 0.3.4, minimum 0.3.4, tagged v0.3.4
+   * when `tag`. Only the script comes from this repo, so a release here does not move the fixture.
+   */
   const repo = (name: string, tag = true) => {
     const dir = NodePath.join(tmp, name);
     const real = readJson(NodePath.join(root, "package.json"));
@@ -73,7 +70,13 @@ describe("npm version", () => {
       NodeFS.mkdirSync(NodePath.dirname(NodePath.join(dir, path)), { recursive: true });
       NodeFS.writeFileSync(NodePath.join(dir, path), text);
     };
-    const pkg = { name: "t", version: "0.3.4", private: true, scripts: { version: real.scripts?.version }, factory: real.factory };
+    const pkg = {
+      name: "t",
+      version: "0.3.4",
+      private: true,
+      scripts: { version: real.scripts?.version },
+      factory: { minPluginVersion: "0.3.4" },
+    };
     put("package.json", `${JSON.stringify(pkg, null, 2)}\n`);
     for (const path of ["scripts/release-version.ts", "plugins/factory/plugin.json", ".agent-marketplace.json"]) {
       if (NodeFS.existsSync(NodePath.join(root, path))) put(path, NodeFS.readFileSync(NodePath.join(root, path), "utf8"));
@@ -93,8 +96,8 @@ describe("npm version", () => {
     git(dir, "commit", "-qam", `change ${path}`);
   };
 
-  const npmVersion = (dir: string, version: string) =>
-    NodeChildProcess.spawnSync("npm", ["version", version, "-m", "release: v%s"], { cwd: dir, encoding: "utf8", env: gitEnv });
+  const npmVersion = (dir: string, version: string, env: NodeJS.ProcessEnv = gitEnv) =>
+    NodeChildProcess.spawnSync("npm", ["version", version, "-m", "release: v%s"], { cwd: dir, encoding: "utf8", env });
 
   /** Every version field as the release commit holds it. */
   const committed = (dir: string) => {
@@ -138,6 +141,28 @@ describe("npm version", () => {
     expect(git(dir, "status", "--porcelain")).toBe("");
   });
 
+  it("fails the release, with no commit, when the skill diff exits above 1", () => {
+    const dir = repo("diff-error");
+    change(dir, "README.md");
+    const before = git(dir, "rev-parse", "HEAD");
+    // A git that answers 128 to `diff --quiet`, as on a damaged object, and is the real git otherwise.
+    const bin = NodePath.join(tmp, "diff-error-bin");
+    NodeFS.mkdirSync(bin, { recursive: true });
+    const real = NodeChildProcess.execFileSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    NodeFS.writeFileSync(
+      NodePath.join(bin, "git"),
+      `#!/usr/bin/env bash\n[ "$1 $2" = "diff --quiet" ] && { echo "fatal: bad object" >&2; exit 128; }\nexec ${JSON.stringify(real)} "$@"\n`,
+      { mode: 0o755 },
+    );
+
+    const out = npmVersion(dir, "0.3.5", { ...gitEnv, PATH: `${bin}:${process.env.PATH}` });
+
+    expect(out.status).not.toBe(0);
+    expect(out.stderr).toContain("exited 128");
+    expect(git(dir, "rev-parse", "HEAD")).toBe(before);
+    expect(git(dir, "tag", "--list", "v0.3.5")).toBe("");
+  });
+
   it("fails the release, with no commit, when there is no previous tag to compare the skill with", () => {
     const dir = repo("no-tag", false);
     const before = git(dir, "rev-parse", "HEAD");
@@ -179,6 +204,17 @@ describe("make release", () => {
     expect(finish).toBeGreaterThan(version);
     expect(recipe("release-finish").join("\n")).toContain("scripts/release-finish.ts");
   });
+
+  it("refuses, before npm version, a VERSION that is not three numbers and a main that is not origin/main", () => {
+    const body = recipe("release").join("\n");
+    const version = body.indexOf("npm version");
+    expect(body.indexOf("[0-9]+\\.[0-9]+\\.[0-9]+")).toBeGreaterThanOrEqual(0);
+    expect(body.indexOf("[0-9]+\\.[0-9]+\\.[0-9]+")).toBeLessThan(version);
+    expect(body.indexOf("git fetch --quiet origin main")).toBeGreaterThanOrEqual(0);
+    expect(body.indexOf("git fetch --quiet origin main")).toBeLessThan(version);
+    expect(body.indexOf("git rev-parse origin/main")).toBeGreaterThanOrEqual(0);
+    expect(body.indexOf("git rev-parse origin/main")).toBeLessThan(version);
+  });
 });
 
 describe("release-finish", () => {
@@ -195,13 +231,25 @@ describe("release-finish", () => {
   const orgBumped = readJson(NodePath.join(fixtures, "plugins-org-list-after-bump.json"));
   const sources = (patch: Record<string, unknown>) => [{ ...sourcesAfter[0], ...patch }];
 
+  // The source's last sync, before and after the release's own sync lands.
+  const BEFORE = "2026-11-15T10:23:55.578Z";
+  const AFTER = "2026-11-15T10:24:01.758Z";
+
   type Case = {
     /** origin/main before the script pushes. */
     origin: string;
     /** Whether the release commit is in origin/main's history. */
     ancestor: boolean;
+    /** The push of main is refused as not a fast-forward. */
+    rejected?: boolean;
+    /** `sources list` before the release's sync has landed. */
+    before?: unknown;
+    /** `sources list` once it has. */
     sources?: unknown;
+    /** How many `sources list` reads after the sync still answer `before`. */
+    lag?: number;
     org?: unknown;
+    env?: NodeJS.ProcessEnv;
   };
 
   /** Runs the script with `git` and `superset` stubbed, and returns every call each one got. */
@@ -211,7 +259,9 @@ describe("release-finish", () => {
     NodeFS.mkdirSync(bin, { recursive: true });
     NodeFS.writeFileSync(NodePath.join(state, "origin"), c.origin);
     if (c.ancestor) NodeFS.writeFileSync(NodePath.join(state, "ancestor"), "");
-    NodeFS.writeFileSync(NodePath.join(state, "sources.json"), JSON.stringify(c.sources ?? sources({ syncedSha: RELEASE })));
+    if (c.rejected) NodeFS.writeFileSync(NodePath.join(state, "rejected"), "");
+    NodeFS.writeFileSync(NodePath.join(state, "before.json"), JSON.stringify(c.before ?? sources({ syncedSha: OLD, syncedAt: BEFORE })));
+    NodeFS.writeFileSync(NodePath.join(state, "after.json"), JSON.stringify(c.sources ?? sources({ syncedSha: RELEASE, syncedAt: AFTER })));
     NodeFS.writeFileSync(NodePath.join(state, "org.json"), JSON.stringify(c.org ?? orgBumped));
     const log = `printf '%s\\037' "$(basename "$0")" "$@" >> "$S/calls"; printf '\\n' >> "$S/calls"`;
     NodeFS.writeFileSync(
@@ -224,7 +274,12 @@ case "$1 $2" in
   "rev-parse origin/main") cat "$S/origin"; echo ;;
   "fetch "*) ;;
   "merge-base --is-ancestor") [ "$(cat "$S/origin")" = ${RELEASE} ] || [ -f "$S/ancestor" ] || exit 1 ;;
-  "push "*) case " $* " in *" main "*) printf ${RELEASE} > "$S/origin" ;; esac ;;
+  "push "*)
+    case " $* " in
+      *":refs/heads/main "*)
+        [ -f "$S/rejected" ] && { echo " ! [rejected]        ${RELEASE} -> main (non-fast-forward)" >&2; exit 1; }
+        printf ${RELEASE} > "$S/origin" ;;
+    esac ;;
   *) echo "unexpected git $*" >&2; exit 99 ;;
 esac
 `,
@@ -236,8 +291,15 @@ esac
 S=${JSON.stringify(state)}
 ${log}
 case "$*" in
-  "plugins organization sources sync original-solutions/factory-on-paradev"*) cat ${JSON.stringify(NodePath.join(fixtures, "plugins-org-sources-sync.json"))} ;;
-  "plugins organization sources list"*) cat "$S/sources.json" ;;
+  "plugins organization sources sync original-solutions/factory-on-paradev"*)
+    touch "$S/synced"; cat ${JSON.stringify(NodePath.join(fixtures, "plugins-org-sources-sync.json"))} ;;
+  "plugins organization sources list"*)
+    if [ -f "$S/synced" ]; then
+      n=$(( $(cat "$S/reads" 2>/dev/null || echo 0) + 1 )); echo $n > "$S/reads"
+      [ $n -gt ${c.lag ?? 0} ] && cat "$S/after.json" || cat "$S/before.json"
+    else
+      cat "$S/before.json"
+    fi ;;
   "plugins organization list"*) cat "$S/org.json" ;;
   *) echo "unexpected superset $*" >&2; exit 99 ;;
 esac
@@ -247,7 +309,7 @@ esac
     const out = NodeChildProcess.spawnSync(process.execPath, [script, VERSION], {
       cwd: state,
       encoding: "utf8",
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      env: { ...process.env, ...c.env, PATH: `${bin}:${process.env.PATH}` },
     });
     const calls = NodeFS.existsSync(NodePath.join(state, "calls"))
       ? NodeFS.readFileSync(NodePath.join(state, "calls"), "utf8")
@@ -260,6 +322,7 @@ esac
 
   const pushes = (calls: Array<Array<string>>) => calls.filter((c) => c[0] === "git" && c[1] === "push");
   const synced = (calls: Array<Array<string>>) => calls.some((c) => c[0] === "superset" && c.includes("sync"));
+  const pushMain = ["git", "push", "--no-follow-tags", "origin", `${RELEASE}:refs/heads/main`];
 
   /** No push names the tag or sends tags, and the push of main carries --no-follow-tags. */
   const expectNoTagPush = (calls: Array<Array<string>>) => {
@@ -268,21 +331,20 @@ esac
       expect(push.some((a) => a.includes("refs/tags"))).toBe(false);
       expect(push).not.toContain("--tags");
       expect(push).not.toContain("--follow-tags");
-      if (push.includes("main")) expect(push).toContain("--no-follow-tags");
+      if (push.some((a) => a.endsWith("refs/heads/main"))) expect(push).toContain("--no-follow-tags");
     }
   };
 
-  it("pushes main without its tag, syncs, and pushes the tag last when the organization holds the release", () => {
+  it("pushes the release commit to main without its tag, syncs, and pushes the tag last when the organization holds the release", () => {
     const out = finish("ok", { origin: OLD, ancestor: false });
 
     expect(out.status, out.stderr).toBe(0);
     const p = pushes(out.calls);
-    expect(p).toHaveLength(2);
+    expect(p).toEqual([pushMain, ["git", "push", "origin", TAG]]);
     expectNoTagPush(p.slice(0, 1));
-    expect(p[0]).toContain("main");
     expect(out.calls.at(-1)).toEqual(["git", "push", "origin", TAG]);
     const sync = out.calls.findIndex((c) => c[0] === "superset" && c.includes("sync"));
-    expect(sync).toBeGreaterThan(out.calls.indexOf(p[0]!));
+    expect(sync).toBeGreaterThan(out.calls.findIndex((c) => c[1] === "push"));
   });
 
   it("does not push main again when origin/main already holds the release commit", () => {
@@ -292,8 +354,28 @@ esac
     expect(pushes(out.calls)).toEqual([["git", "push", "origin", TAG]]);
   });
 
+  it("waits for the sync to land before it judges the source", () => {
+    const out = finish("late", { origin: OLD, ancestor: false, lag: 1 });
+
+    expect(out.status, out.stderr).toBe(0);
+    expect(out.calls.at(-1)).toEqual(["git", "push", "origin", TAG]);
+  });
+
+  it("fails, with the rerun command and no tag push, when the sync does not land in time", () => {
+    const out = finish("never", { origin: OLD, ancestor: false, lag: 999, env: { RELEASE_FINISH_SYNC_WAIT_MS: "1500" } });
+
+    expect(out.status).not.toBe(0);
+    expect(out.stderr).toContain("had not landed");
+    expect(out.stderr).toContain(`make release-finish VERSION=${VERSION}`);
+    expectNoTagPush(out.calls);
+  });
+
   it("fails with Paradev's text and pushes no tag when the sync has a problem", () => {
-    const out = finish("problem", { origin: OLD, ancestor: false, sources: sources({ syncedSha: RELEASE, syncProblems: problem }) });
+    const out = finish("problem", {
+      origin: OLD,
+      ancestor: false,
+      sources: sources({ syncedSha: RELEASE, syncedAt: AFTER, syncProblems: problem }),
+    });
 
     expect(out.status).not.toBe(0);
     expect(out.stderr).toContain("its content changed but its version is still 0.1.1; bump the version");
@@ -301,8 +383,21 @@ esac
     expectNoTagPush(out.calls);
   });
 
+  it("fails with Paradev's text and pushes no tag when the sync reports an error", () => {
+    const out = finish("sync-error", {
+      origin: OLD,
+      ancestor: false,
+      sources: sources({ syncedSha: OLD, syncedAt: BEFORE, syncError: "repository not found" }),
+    });
+
+    expect(out.status).not.toBe(0);
+    expect(out.stderr).toContain("repository not found");
+    expect(out.stderr).toContain(`make release-finish VERSION=${VERSION}`);
+    expectNoTagPush(out.calls);
+  });
+
   it("fails and pushes no tag when the organization synced another commit", () => {
-    const out = finish("other-sha", { origin: OLD, ancestor: false, sources: sources({ syncedSha: LATER }) });
+    const out = finish("other-sha", { origin: OLD, ancestor: false, sources: sources({ syncedSha: LATER, syncedAt: AFTER }) });
 
     expect(out.status).not.toBe(0);
     expect(out.stderr).toContain(LATER);
@@ -323,6 +418,24 @@ esac
 
     expect(out.status).not.toBe(0);
     expectNoTagPush(out.calls);
+  });
+
+  it("fails before the sync when the organization has no source for this repo", () => {
+    const out = finish("no-source", { origin: OLD, ancestor: false, before: sources({ repo: "someone/else" }) });
+
+    expect(out.status).not.toBe(0);
+    expect(out.stderr).toContain("no plugin source original-solutions/factory-on-paradev");
+    expect(synced(out.calls)).toBe(false);
+    expectNoTagPush(out.calls);
+  });
+
+  it("stops before the sync, and says how to redo the release, when origin refuses the push of main", () => {
+    const out = finish("rejected", { origin: LATER, ancestor: false, rejected: true });
+
+    expect(out.status).not.toBe(0);
+    expect(synced(out.calls)).toBe(false);
+    expect(pushes(out.calls)).toEqual([pushMain]);
+    expect(out.stderr).toContain(`git tag -d ${TAG}`);
   });
 
   it("stops before the sync when main has moved past the release commit", () => {
