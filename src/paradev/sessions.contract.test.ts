@@ -4549,6 +4549,26 @@ describe("the cloud count, one workspace at a time (#85)", () => {
     }),
   );
 
+  it.effect("no cloud record that could count: the count is 0, and cloud is neither listed nor read", () =>
+    Effect.gen(function* () {
+      const t = rig([localStep, bareCloud, listOf({ id: C3_WS, tags: ["factory", MINE] }), snapshotAt(C3_WS)], {
+        config: { cloud: true },
+      });
+      // An archived cloud run, and one whose agent never started: neither can be running.
+      yield* seed(
+        t.data,
+        record({ threadId: `local:${L5_WS}`, workspaceId: L5_WS, terminals: [L5_DEAD] }),
+        cloudRecord({ archivedAt: 1794329708000 }),
+        cloudRecord({ threadId: `cloud:${OTHER_WS}`, workspaceId: OTHER_WS, terminals: [] }),
+      );
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 1 },
+        { target: { kind: "cloud" }, running: 0 },
+      ]);
+      assert.deepStrictEqual(t.calls, [["snapshot"]]);
+    }),
+  );
+
   it.effect("an empty listing: the count is 0", () =>
     Effect.gen(function* () {
       const t = rig([localStep, bareCloud, listOf()], { config: { cloud: true } });
