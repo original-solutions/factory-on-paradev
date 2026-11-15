@@ -41,7 +41,7 @@ A tag the runner installed itself goes back on its own when it keeps dying befor
 - Both versions need it. The version gone back to must skip the refused tag and show the `status` row, so the first release that carries this has neither when it goes back to a version from before it.
 - One refused tag is remembered, and only while it is the highest. Deleting that tag on GitHub lets a lower bad tag be staged again.
 - It counts starts, so a version that stays up while every pass fails is never counted and does not go back.
-- The count is read and written outside the runner lock, so two `run` processes that overlap can lose one count. launchd starts one at a time, and a second `factory-runner run` by hand hits the lock and gives its count back while the count is below three. At three it goes back as the fourth start would, before it looks at the lock, even with a runner of that version still up in its first pass.
+- The count is read and written outside the runner lock, so two `run` processes that overlap can lose one count. launchd starts one at a time, and a second `factory-runner run` by hand hits the lock and gives its count back while the count is below three. At three it goes back as the fourth start would, before it looks at the lock, even with a runner of that version still up in its first pass. That runner's passes then clear nothing, so `status` says the older version runs until the next restart starts it.
 
 ## Not affiliated with Paradev
 
