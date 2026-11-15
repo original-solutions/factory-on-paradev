@@ -3060,6 +3060,7 @@ describe("start: an issue that names its base", () => {
         request.hostMessage!("h1").includes("Open the pull request against feature/x"),
         request.hostMessage!("h1"),
       );
+      assert.strictEqual(request.cloudMessage, cloudLaunchMessage(REPO, 7, undefined, "feature/x"));
       assert.strictEqual(baseOf(dataDir), "feature/x");
     }),
   );

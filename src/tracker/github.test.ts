@@ -4740,6 +4740,8 @@ it.effect(
           ),
         ),
       );
+      // The query must ask for the type, or a real answer never says Bot.
+      assert.ok(CLOSING_PRS_QUERY.includes("author { __typename login }"), CLOSING_PRS_QUERY);
       const closed = yield* closing.ok(closing.github.openPullRequestsClosing(6));
       assert.deepStrictEqual(
         closed.map((pull) => pull.author),
