@@ -11,5 +11,5 @@
     "erasableSyntaxOnly": true,
     "types": ["node"]
   },
-  "include": ["src", "spike", "test"]
+  "include": ["src", "spike", "test", "scripts"]
 }
