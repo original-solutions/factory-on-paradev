@@ -7,6 +7,7 @@
 import type { State } from "../domain/lifecycle.ts";
 import type { CommandResult } from "../gate.ts";
 import { runIdToString, type RunId } from "../ledger/runId.ts";
+import { CLOUD_APP_SLUG } from "../sessions.ts";
 import { commandLine, sanitize, shortSha } from "../text.ts";
 import type { CheckStatus, DropReason, Feedback, FeedbackKind } from "../tracker/github.ts";
 
@@ -257,7 +258,7 @@ export const cloudLaunchMessage = (
   resumed?: ResumeFrom,
   base?: string,
 ): string =>
-  `${launchBody(repo, issue, resumed, base)}\n\nYou act on GitHub as the Paradev GitHub App (superset-app[bot]), through the GH_TOKEN the sandbox already has. Do not run gh api user: it answers 403 there. Never set, unset or replace GH_TOKEN, GH_CONFIG_DIR or GH_HOST, and never run gh auth login, gh auth switch or gh auth token, on any command. The repo's permissions object reads all false there, so prove you can push with the factory skill's push dry run, and end with FACTORY-STOP: stuck only when that dry run fails.`;
+  `${launchBody(repo, issue, resumed, base)}\n\nYou act on GitHub as the Paradev GitHub App (${CLOUD_APP_SLUG}[bot]), through the GH_TOKEN the sandbox already has. Do not run gh api user: it answers 403 there. Never set, unset or replace GH_TOKEN, GH_CONFIG_DIR or GH_HOST, and never run gh auth login, gh auth switch or gh auth token, on any command. The repo's permissions object reads all false there, so prove you can push with the factory skill's push dry run, and end with FACTORY-STOP: stuck only when that dry run fails.`;
 
 /** The issue's single status comment. */
 export const statusBody = (

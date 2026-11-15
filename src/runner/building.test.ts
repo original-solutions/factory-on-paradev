@@ -3297,18 +3297,24 @@ describe("advance: the pull request a session leaves when it stops or asks", () 
     }),
   );
 
-  it.effect("is recorded when the Paradev GitHub App opened it, only for a repo with a cloud environment", () =>
+  it.effect("is recorded when the Paradev GitHub App opened it on a cloud launch branch, only for a repo with a cloud environment", () =>
     Effect.gen(function* () {
-      const rig = rigFor();
-      rig.ctx = { ...rig.ctx, cloud: true };
-      rig.world.onHead = { "t3code/abc": [draftOn("t3code/abc", { author: "app/superset-app" })] };
-      setStatus(rig, "completed", "FACTORY-STOP: stuck");
+      const CLOUD_BRANCH = "superset/fac-10-1-a2bc69cb";
+      const stoppedOn = (head: string, cloud: boolean) => {
+        const rig = rigFor();
+        rig.ctx = { ...rig.ctx, cloud };
+        rig.world.onHead = { [head]: [draftOn(head, { author: "app/superset-app" })] };
+        setStatus(rig, "completed", "FACTORY-STOP: stuck", { branch: head });
+        return rig;
+      };
+      const rig = stoppedOn(CLOUD_BRANCH, true);
       assertStuck(rig, yield* advanceIn(rig), { publicReason: SAID_STUCK, left: [PR_LEFT] });
-      const other = rigFor();
-      other.world.onHead = { "t3code/abc": [draftOn("t3code/abc", { author: "app/superset-app" })] };
-      setStatus(other, "completed", "FACTORY-STOP: stuck");
-      assert.strictEqual((yield* advanceIn(other)).kind, "stuck");
-      assert.deepStrictEqual(leftLines(other), []);
+      // The app's pull request on any other branch is a person's cloud workspace, and without a
+      // cloud environment the app is no login of the factory's.
+      for (const other of [stoppedOn("t3code/abc", true), stoppedOn(CLOUD_BRANCH, false)]) {
+        assert.strictEqual((yield* advanceIn(other)).kind, "stuck");
+        assert.deepStrictEqual(leftLines(other), []);
+      }
     }),
   );
 

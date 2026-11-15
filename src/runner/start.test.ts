@@ -2883,22 +2883,29 @@ describe("start: the resume onto an open pull request of an earlier attempt", ()
     }),
   );
 
-  it.effect("finds an open pull request by the Paradev GitHub App only for a repo with a cloud environment", () =>
+  it.effect("finds an open pull request by the Paradev GitHub App only on a cloud launch branch of the issue, for a repo with a cloud environment", () =>
     Effect.gen(function* () {
-      const cloudDir = tempDir();
-      const cloud = fakeTracker({ closing: [closingDraft("t3code/abc", { author: "app/superset-app" })] });
-      const onCloud = fakeSessions(cloudDir, {});
-      yield* startIn(cloudDir, cloud.tracker, onCloud.sessions, { cloud: true });
-      const request = onCloud.launchRequests[0]!;
-      assert.strictEqual(request.baseRef, "t3code/abc");
+      const CLOUD_BRANCH = "superset/fac-7-1-a2bc69cb";
+      const byApp = (head: string) => closingDraft(head, { author: "app/superset-app" });
+      const launchedOn = (head: string, extra: Partial<StartContext> = {}) =>
+        Effect.gen(function* () {
+          const dataDir = tempDir();
+          const sessions = fakeSessions(dataDir, {});
+          yield* startIn(dataDir, fakeTracker({ closing: [byApp(head)] }).tracker, sessions.sessions, extra);
+          return sessions.launchRequests[0]!;
+        });
+
+      const request = yield* launchedOn(CLOUD_BRANCH, { cloud: true });
+      assert.strictEqual(request.baseRef, CLOUD_BRANCH);
       assert.ok(request.cloudMessage!.includes(URL12), request.cloudMessage);
       assert.ok(request.cloudMessage!.includes("Do not open another pull request"), request.cloudMessage);
 
-      const localDir = tempDir();
-      const local = fakeTracker({ closing: [closingDraft("t3code/abc", { author: "app/superset-app" })] });
-      const noCloud = fakeSessions(localDir, {});
-      yield* startIn(localDir, local.tracker, noCloud.sessions);
-      assert.strictEqual(noCloud.launchRequests[0]!.baseRef, "main");
+      // The app is every cloud workspace's author, so a person's branch, another issue's launch
+      // branch and a local launch branch under the app's name are not the run's own.
+      for (const head of ["t3code/abc", "superset/my-fix-a2bc69cb", "superset/fac-8-1-a2bc69cb", "fac/7-1"]) {
+        assert.strictEqual((yield* launchedOn(head, { cloud: true })).baseRef, "main", head);
+      }
+      assert.strictEqual((yield* launchedOn(CLOUD_BRANCH)).baseRef, "main");
     }),
   );
 

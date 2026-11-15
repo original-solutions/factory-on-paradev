@@ -44,6 +44,8 @@ import {
   type IssueDetail,
 } from "../tracker/github.ts";
 import {
+  CLOUD_APP_SLUG,
+  isCloudLaunchBranch,
   isNoTargetHasRoom,
   type FactoryProject,
   type FactorySessions,
@@ -136,32 +138,33 @@ export const earlierRuns = Effect.fn("RunnerStart.earlierRuns")(function* (
 /**
  * The Paradev GitHub App as a pull request listing names its author: `gh pr list --json author`
  * prints it, and `openPullRequestsClosing` gives a Bot's login the same `app/` form. No user login
- * has a `/`, so no user account matches it; but every Paradev Cloud pull request on the repo has
- * this author, a person's made in a cloud workspace included, and counts as the run's own, as a
- * person's pull request under a host login does.
+ * has a `/`, so no user account matches it. Every Paradev Cloud pull request on the repo has this
+ * author, a person's made in a cloud workspace included, so the author alone never makes one the
+ * run's own (`isOwnPull`).
  */
-export const CLOUD_APP_LOGIN = "app/superset-app";
-
-/** Whether one of the factory's logins (the runner's, a host's or the cloud app's, matched without case) opened `pull`. */
-export const isOwnPull = (
-  pull: { readonly author: string | null },
-  logins: ReadonlyArray<string>,
-): boolean =>
-  pull.author !== null && logins.some((login) => asciiLower(pull.author!) === asciiLower(login));
+export const CLOUD_APP_LOGIN = `app/${CLOUD_APP_SLUG}`;
 
 /**
- * The logins whose pull requests are the run's own: the runner's, then each host's, then the
- * Paradev GitHub App's for a repo with a cloud environment.
+ * Whether `pull` is the run's own. One of the factory's logins opened it (the runner's or a
+ * host's, matched without case); or, for a repo with a cloud environment, the Paradev GitHub App
+ * opened it on a branch Paradev Cloud names for a launch branch (`isCloudLaunchBranch`), of
+ * `issue` when the caller has not already asked by the run's own branch. A person's pull request
+ * from a cloud workspace is by the app too, on a branch of another shape, and is not taken over.
  */
-export const ownLogins = (ctx: {
-  readonly trackerUser: string;
-  readonly hostLogins: ReadonlyMap<string, string>;
-  readonly cloud: boolean;
-}): ReadonlyArray<string> => [
-  ctx.trackerUser,
-  ...ctx.hostLogins.values(),
-  ...(ctx.cloud ? [CLOUD_APP_LOGIN] : []),
-];
+export const isOwnPull = (
+  pull: { readonly author: string | null; readonly headRef: string },
+  ctx: {
+    readonly trackerUser: string;
+    readonly hostLogins: ReadonlyMap<string, string>;
+    readonly cloud: boolean;
+  },
+  issue?: number,
+): boolean => {
+  if (pull.author === null) return false;
+  const author = asciiLower(pull.author);
+  if (author === CLOUD_APP_LOGIN) return ctx.cloud && isCloudLaunchBranch(pull.headRef, issue);
+  return [ctx.trackerUser, ...ctx.hostLogins.values()].some((login) => author === asciiLower(login));
+};
 
 /** The login a run of this repo acts as on host `machineId`: the host's resolved one, else the runner's. */
 export const hostLoginOf = (
@@ -1005,7 +1008,7 @@ const existingPullRequest = Effect.fn("RunnerStart.existingPullRequest")(functio
     }
   }
   const own = (yield* ctx.tracker.openPullRequestsClosing(issue)).filter(
-    (pull) => isOwnPull(pull, ownLogins(ctx)) && isResumablePull(pull, base),
+    (pull) => isOwnPull(pull, ctx, issue) && isResumablePull(pull, base),
   );
   const newest = own.reduce<OpenPullRequest | null>(
     (best, pull) => (best === null || pull.number > best.number ? pull : best),

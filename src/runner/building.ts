@@ -104,7 +104,6 @@ import {
 import {
   earlierRuns,
   isOwnPull,
-  ownLogins,
   isResumablePull,
   previousRun,
   recordApproval,
@@ -1119,7 +1118,7 @@ const recordLeftPullRequest = Effect.fn("RunnerBuilding.recordLeftPullRequest")(
       return;
     }
     const left = listed.success.find(
-      (pull) => isOwnPull(pull, ownLogins(ctx)) && isResumablePull(pull, ctx.project.base),
+      (pull) => isOwnPull(pull, ctx) && isResumablePull(pull, ctx.project.base),
     );
     if (left === undefined) continue;
     const recorded =

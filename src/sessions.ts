@@ -136,6 +136,15 @@ const LAUNCH_BRANCH = /^fac\/(\d+|x)-[0-9a-f-]+$/;
  */
 const CLOUD_LAUNCH_BRANCH = /^superset\/fac-(\d+|x)-[0-9a-f-]+-[0-9a-f]{8}$/;
 
+/** Whether `branch` is one Paradev Cloud names for a launch branch, of `issue` when one is given. */
+export const isCloudLaunchBranch = (branch: string, issue?: number): boolean => {
+  const match = CLOUD_LAUNCH_BRANCH.exec(branch);
+  return match !== null && (issue === undefined || match[1] === String(issue));
+};
+
+/** The Paradev GitHub App's slug: its pull requests are by `app/<slug>` and it acts as `<slug>[bot]`. */
+export const CLOUD_APP_SLUG = "superset-app";
+
 /**
  * Whether `branch` is a launch branch and `worktreePath` is a Paradev worktree on it: the path
  * ends with `/<branch>`. A cloud launch branch is one with any path, since the sandbox's is
@@ -144,7 +153,7 @@ const CLOUD_LAUNCH_BRANCH = /^superset\/fac-(\d+|x)-[0-9a-f-]+-[0-9a-f]{8}$/;
  * the adapter; `paradev/branches.ts` re-exports it beside `launchBranch`.
  */
 export const isLaunchBranch = (branch: string, worktreePath: string | null): boolean =>
-  CLOUD_LAUNCH_BRANCH.test(branch) ||
+  isCloudLaunchBranch(branch) ||
   (worktreePath !== null && LAUNCH_BRANCH.test(branch) && worktreePath.endsWith(`/${branch}`));
 
 /**
