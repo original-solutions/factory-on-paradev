@@ -55,8 +55,8 @@ const currentTarget = (f: Fixture) => NodeFS.readlinkSync(installPathsOf(f.home)
 const versionPath = (f: Fixture, version: string) => NodePath.join(installPathsOf(f.home).versions, version);
 const loud = (f: Fixture) => f.logs.filter((log) => log.level !== "Debug" && log.level !== "Trace");
 
-const start = (f: Fixture, version = "0.2.0", lockHeld = false): Effect.Effect<Start> =>
-  countStart({ home: f.home, dataDir: f.dataDir, version, nowMs: () => NOW, lockHeld: () => lockHeld }).pipe(
+const start = (f: Fixture, version = "0.2.0"): Effect.Effect<Start> =>
+  countStart({ home: f.home, dataDir: f.dataDir, version, nowMs: () => NOW }).pipe(
     Effect.provide(
       Logger.layer(
         [
@@ -138,17 +138,6 @@ describe("the start count of a self-installed version", () => {
     }),
   );
 
-  it.effect("at three starts with a live runner holding the lock, it neither goes back nor counts: the lock turns it away", () =>
-    Effect.gen(function* () {
-      const f = fixture();
-      writePendingFile(f, { from: "0.1.0", to: "0.2.0", starts: 3 });
-      expect((yield* start(f, "0.2.0", true)).kind).toBe("run");
-      expect(currentTarget(f)).toBe(versionPath(f, "0.2.0"));
-      expect(pendingOf(f)).toEqual({ from: "0.1.0", to: "0.2.0", starts: 3 });
-      expect(NodeFS.existsSync(refusedFile(f))).toBe(false);
-      expect(loud(f)).toEqual([]);
-    }),
-  );
 
   it.effect("a refused file that cannot be written still moves current, and the line says the tag can be staged again", () =>
     Effect.gen(function* () {
@@ -277,7 +266,7 @@ describe("bin.ts run and the start count", () => {
     expect(NodeFS.existsSync(NodePath.join(f.dataDir, LOCK_FILE))).toBe(false);
   });
 
-  it("a start that finds the lock held exits 1 and is not counted, nor goes back at three starts", () => {
+  it("a start that finds the lock held exits 1 and is not counted", () => {
     const f = fixture();
     // A live process whose command line is a runner's: the lock is held, not stale.
     const holder = NodeChildProcess.spawn(
@@ -287,7 +276,7 @@ describe("bin.ts run and the start count", () => {
     );
     try {
       NodeFS.writeFileSync(NodePath.join(f.dataDir, LOCK_FILE), `${holder.pid}\n`);
-      for (const starts of [1, 3]) {
+      for (const starts of [0, 2]) {
         writePendingFile(f, { from: "0.1.0", to: RUNNING, starts });
         const done = runBin(f);
         expect(done.status).toBe(1);
@@ -295,6 +284,25 @@ describe("bin.ts run and the start count", () => {
         expect(pendingOf(f)).toEqual({ from: "0.1.0", to: RUNNING, starts });
         expect(currentTarget(f)).toBe(versionPath(f, "0.2.0"));
       }
+    } finally {
+      holder.kill();
+    }
+  });
+
+  it("at three starts goes back before it looks at the lock, as the issue orders, even with a runner up", () => {
+    const f = fixture();
+    writePendingFile(f, { from: "0.1.0", to: RUNNING, starts: 3 });
+    const holder = NodeChildProcess.spawn(
+      process.execPath,
+      ["-e", "setTimeout(() => {}, 120_000)", NodePath.join(f.home, "held-lock-holder", "bin.ts"), "run"],
+      { stdio: "ignore" },
+    );
+    try {
+      NodeFS.writeFileSync(NodePath.join(f.dataDir, LOCK_FILE), `${holder.pid}\n`);
+      const done = runBin(f);
+      expect(done.status, done.stderr).toBe(0);
+      expect(currentTarget(f)).toBe(versionPath(f, "0.1.0"));
+      expect(NodeFS.existsSync(pendingFile(f))).toBe(false);
     } finally {
       holder.kill();
     }
