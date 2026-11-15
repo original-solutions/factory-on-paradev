@@ -139,6 +139,11 @@ describe("choosePlacement", () => {
     });
   });
 
+  it("gives this Mac's hold before its plugin check, as a host's load comes before its check", () => {
+    const placed = choosePlacement([local({ held: "low disk", notReady: "x" })]);
+    assert.deepStrictEqual(placed.dropped, [{ id: "local", target: "local", reason: "this Mac holds claims: low disk" }]);
+  });
+
   it("refuses when this Mac is the only candidate and its plugin check failed", () => {
     assert.deepStrictEqual(choosePlacement([local({ notReady: "x" })]), {
       kind: "refused",

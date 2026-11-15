@@ -96,6 +96,8 @@ interface Fixture {
   readonly logs: Array<{ readonly level: string; readonly text: string }>;
   /** The open attention items, one per id. */
   items: Array<NewItem>;
+  /** Every item raised that was not open: each would post a notification. */
+  posted: Array<NewItem>;
 }
 
 /**
@@ -140,6 +142,7 @@ const fixture = (underVersions = true): Fixture => {
     },
     logs: [],
     items: [],
+    posted: [],
   };
 };
 
@@ -265,7 +268,9 @@ const withUpdater = <A, E>(
         attention: {
           raise: (item) =>
             Effect.sync(() => {
-              if (!f.items.some((open) => open.id === item.id)) f.items.push(item);
+              if (f.items.some((open) => open.id === item.id)) return;
+              f.items.push(item);
+              f.posted.push(item);
             }),
           clear: (matches) =>
             Effect.sync(() => {
@@ -671,11 +676,12 @@ describe("self-update", () => {
         expect(updateItems(f)).toEqual([
           { id: "plugin-update-needed", kind: "attention", repo: null, issue: null, run: null, message: line },
         ]);
-        // The tag is not marked: the next check tries it again, and says nothing new.
+        // The tag is not marked: the next check tries it again, says nothing new and posts nothing new.
         yield* TestClock.adjust(TEN_MINUTES);
         expect(commands(f)).toEqual([...REFUSED, ...REFUSED]);
         expect(loud(f)).toHaveLength(1);
         expect(updateItems(f)).toHaveLength(1);
+        expect(f.posted).toHaveLength(1);
         // A person updates the plugin: the next check stages the tag and the item goes.
         landPlugin(f, "0.2.0");
         yield* TestClock.adjust(TEN_MINUTES);
@@ -859,6 +865,25 @@ describe("self-update", () => {
         );
       });
     }
+  });
+
+  it.effect("a tag past the plugin step is no longer held: a step that throws after it marks the tag", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.minPlugin = "0.2.0";
+    landPlugin(f, "0.1.0");
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        landPlugin(f, "0.2.0");
+        f.answers.npm = "throw";
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual([...REFUSED, ...REFUSED, "npm"]);
+        const before = f.calls.length;
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f).slice(before)).toEqual(["gh"]);
+      }),
+    );
   });
 
   it.effect("an item an earlier start left goes when the highest tag is the refused one", () => {

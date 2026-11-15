@@ -4689,6 +4689,33 @@ describe("liveWorld: the hosts", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("each pass runs this Mac's plugin check when it is due, and a plugin that went drops this Mac", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let answer: string | null = null;
+        let checks = 0;
+        const worlds: Array<PassWorld> = [];
+        const { loop, factoryDir, attention } = yield* started(configFor([["a/b", "/b"]], "/gh"), noGhProcess, {
+          checkLocalPlugin: () => {
+            checks += 1;
+            return answer;
+          },
+          onWorld: (world) => worlds.push(world),
+        });
+        yield* idleAfter(loop, factoryDir, 1);
+        // Checked once, at the config load: the first pass found it not due.
+        assert.strictEqual(checks, 1);
+        // An hour on, the next pass checks again and finds the plugin gone.
+        answer = "the factory plugin is not on this Mac: gone";
+        worlds[0]!.localPlugin.checkedAt = Date.now() - 60 * 60 * 1000;
+        yield* onePassMore(loop, factoryDir);
+        assert.strictEqual(checks, 2);
+        assert.strictEqual(worlds[0]!.localPlugin.notReady, answer);
+        assert.strictEqual((yield* attention.list()).filter((item) => item.id === "plugin-not-ready").length, 1);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it("this Mac's live plugin check holds the landed VERSION against this runner's own factory.minPluginVersion", () => {
     const { factory } = JSON.parse(NodeFS.readFileSync(NodePath.resolve(import.meta.dirname, "../package.json"), "utf8")) as {
       factory: { minPluginVersion: string };
