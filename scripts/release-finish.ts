@@ -72,7 +72,8 @@ if (!isAncestor(commit, "origin/main")) {
   if (pushed.status !== 0) {
     fail(
       `origin refused ${tag} (${commit}) as main: ${output(pushed)}`,
-      `If origin/main has moved on, the release has to be made again: git tag -d ${tag}, bring main up to date, then make release. ` +
+      `If origin/main has moved on, drop the release commit and make the release again: ` +
+        `git tag -d ${tag} && git fetch origin main && git reset --hard origin/main, then make release VERSION=${version}. ` +
         `If the push failed for another reason, run: ${rerun}`,
     );
   }
@@ -92,7 +93,10 @@ must("superset", "plugins", "organization", "sources", "sync", SOURCE, "--json")
 const deadline = Date.now() + SYNC_WAIT_MS;
 let source = readSource();
 while (source.syncedAt === before.syncedAt && source.syncError === before.syncError) {
-  if (Date.now() >= deadline) fail(`the sync of ${SOURCE} had not landed after ${SYNC_WAIT_MS / 1000} s: its last sync is still ${before.syncedAt}`);
+  if (Date.now() >= deadline) {
+    const last = before.syncError ? `, and it failed: ${before.syncError}` : "";
+    fail(`the sync of ${SOURCE} had not landed after ${SYNC_WAIT_MS / 1000} s: its last sync is still ${before.syncedAt}${last}`);
+  }
   sleep(POLL_MS);
   source = readSource();
 }

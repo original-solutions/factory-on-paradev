@@ -17,6 +17,7 @@ const fail = (message: string): never => {
 };
 
 const git = (...args: Array<string>) => spawnSync("git", args, { encoding: "utf8" });
+const output = (out: ReturnType<typeof git>) => out.error?.message ?? (out.stderr || "").trim();
 
 const readJson = (path: string): any => JSON.parse(readFileSync(path, "utf8"));
 const writeJson = (path: string, value: unknown, indent: string) =>
@@ -39,7 +40,7 @@ writeFileSync(VERSION_FILE, `${version}\n`);
 
 // The previous release: the nearest v* tag behind HEAD, which npm has not tagged yet.
 const described = git("describe", "--tags", "--abbrev=0", "--match", "v*");
-if (described.status !== 0) fail(`no previous v* tag to compare the skill with: ${described.stderr.trim()}`);
+if (described.status !== 0) fail(`no previous v* tag to compare the skill with: ${output(described)}`);
 const previous = described.stdout.trim();
 
 const diff = git("diff", "--quiet", previous, "--", SKILLS, `:!${VERSION_FILE}`);
@@ -48,8 +49,8 @@ if (diff.status === 1) {
   writeJson("package.json", pkg, "  ");
   console.log(`release-version: the skill changed since ${previous}; factory.minPluginVersion is ${version}`);
 } else if (diff.status !== 0) {
-  fail(`git diff against ${previous} exited ${diff.status ?? diff.signal}: ${diff.stderr.trim()}`);
+  fail(`git diff against ${previous} exited ${diff.status ?? diff.signal}: ${output(diff)}`);
 }
 
 const add = git("add", "--", "package.json", PLUGIN, MARKETPLACE, VERSION_FILE);
-if (add.status !== 0) fail(`git add failed: ${add.stderr.trim()}`);
+if (add.status !== 0) fail(`git add failed: ${output(add)}`);
