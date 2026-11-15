@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import type { HostConfig, MachineConfig } from "../config.ts";
+import { HOST_PLUGIN_FIX, type Read } from "../plugin.ts";
 import {
   checkHost,
   firstFailure,
@@ -18,6 +19,7 @@ import {
   ghTokenCheck,
   GIT_EMAIL,
   isAllowed,
+  PLUGIN_VERSION_READ,
   PROXY_ENV_READ,
   remoteUrl,
   shellQuote,
@@ -65,6 +67,7 @@ const world = () => {
     [GH_AUTH_STATUS, ok("Logged in\n")],
     [ghTokenCheck(RUNNER), ok("")],
     [CLAUDE_VERSION, ok("2.1.0\n")],
+    [PLUGIN_VERSION_READ, ok("0.3.5\n")],
   ]);
   const superset = new Map<string, unknown | Error>([
     ["hosts list", [{ id: "h1", name: "mini", online: "yes" }]],
@@ -73,6 +76,8 @@ const world = () => {
   const commands: Array<string> = [];
   const supersetCalls: Array<string> = [];
   const runner: { login: string | Error } = { login: RUNNER };
+  /** The runner's `factory.minPluginVersion` as the check is given it. */
+  const plugin: { minimum: Read<string | null> } = { minimum: { ok: "0.3.5" } };
   const io: HostCheckIo = {
     runnerLogin: Effect.suspend(() =>
       runner.login instanceof Error ? Effect.fail(runner.login.message) : Effect.succeed(runner.login),
@@ -91,11 +96,11 @@ const world = () => {
         return answer instanceof Error ? Effect.fail(answer.message) : Effect.succeed(answer);
       }),
   };
-  return { io, ssh, superset, commands, supersetCalls, runner };
+  return { io, ssh, superset, commands, supersetCalls, runner, plugin };
 };
 
 const run = (w: ReturnType<typeof world>, machine = machineOf([HOST])) =>
-  Effect.runPromise(checkHost(w.io, machine, HOST));
+  Effect.runPromise(checkHost(w.io, machine, HOST, w.plugin.minimum));
 
 const byCheck = (lines: ReadonlyArray<CheckLine>, check: string): CheckLine => {
   const line = lines.find((l) => l.check === check);
@@ -120,6 +125,7 @@ describe("checkHost", () => {
         "gh",
         "gh login rawphp",
         "claude",
+        "plugin",
       ],
     );
     assert.isTrue(lines.every((l) => l.ok && l.text === "ok"), JSON.stringify(lines));
@@ -302,7 +308,7 @@ describe("checkHost", () => {
     const lines = await run(world(), machineOf([HOST], []));
     assert.deepStrictEqual(
       lines.map((l) => l.check),
-      ["online", "ssh", "cli", "proxy env", "git identity", "gh", "gh login rawphp", "claude"],
+      ["online", "ssh", "cli", "proxy env", "git identity", "gh", "gh login rawphp", "claude", "plugin"],
     );
   });
 });
@@ -316,7 +322,7 @@ describe("checkHost: gh login", () => {
     const w = world();
     w.ssh.set(ghTokenCheck("tomkaczocha"), ok());
     const h = { ...HOST, ghLogin: "tomkaczocha" };
-    const lines = await Effect.runPromise(checkHost(w.io, withLogins({ ghLogin: "tomkaczocha" }, [{ id: "h1", path: PATH }]), h));
+    const lines = await Effect.runPromise(checkHost(w.io, withLogins({ ghLogin: "tomkaczocha" }, [{ id: "h1", path: PATH }]), h, w.plugin.minimum));
     assert.deepStrictEqual(
       ghLines(lines).map((l) => [l.check, l.ok, l.text]),
       [["gh login tomkaczocha", true, "ok"]],
@@ -346,7 +352,7 @@ describe("checkHost: gh login", () => {
         { repo: "acme/three", path: "/Users/tom/three", hosts: [{ id: "h1", path: PATH, ghLogin: "tomk-bot" }] },
       ],
     };
-    const lines = ghLines(await Effect.runPromise(checkHost(w.io, machine, h)));
+    const lines = ghLines(await Effect.runPromise(checkHost(w.io, machine, h, w.plugin.minimum)));
     assert.deepStrictEqual(
       lines.map((l) => [l.check, l.ok]),
       [
@@ -362,7 +368,7 @@ describe("checkHost: gh login", () => {
     const h = { ...HOST, ghLogin: "tomkaczocha" };
     w.ssh.set(ghTokenCheck("tomkaczocha"), ok());
     w.runner.login = new Error("boom");
-    const covered = ghLines(await Effect.runPromise(checkHost(w.io, withLogins({ ghLogin: "tomkaczocha" }, [{ id: "h1", path: PATH, ghLogin: "tomkaczocha" }]), h)));
+    const covered = ghLines(await Effect.runPromise(checkHost(w.io, withLogins({ ghLogin: "tomkaczocha" }, [{ id: "h1", path: PATH, ghLogin: "tomkaczocha" }]), h, w.plugin.minimum)));
     assert.deepStrictEqual(covered.map((l) => l.ok), [true]);
     const lines = ghLines(await run(w));
     assert.deepStrictEqual(
@@ -385,6 +391,116 @@ describe("checkHost: gh login", () => {
     assert.notInclude(JSON.stringify(lines), SECRET);
     w.ssh.set(ghTokenCheck(RUNNER), { exitCode: 1, timedOut: false, stdout: SECRET, stderr: SECRET });
     assert.notInclude(JSON.stringify(await run(w)), SECRET);
+  });
+});
+
+describe("checkHost: plugin", () => {
+  const FIX = `run this on the host: ${HOST_PLUGIN_FIX}`;
+  const withMinimum = (minimum: Read<string | null>) => {
+    const w = world();
+    w.plugin.minimum = minimum;
+    return w;
+  };
+  const pluginLine = async (w: ReturnType<typeof world>) => byCheck(await run(w), "plugin");
+
+  it("reads ~/.agents/skills/factory-build/VERSION with cat, a read-only allowed command", () => {
+    assert.strictEqual(PLUGIN_VERSION_READ, "cat ~/.agents/skills/factory-build/VERSION");
+    assert.isTrue(isAllowed(PLUGIN_VERSION_READ));
+    assert.strictEqual(
+      HOST_PLUGIN_FIX,
+      "superset plugins install factory@organization && launchctl kickstart -k gui/$(id -u)/sh.superset.host",
+    );
+  });
+
+  it("current: a landed plugin at the runner's minimum or newer, compared as three numbers, is ok", async () => {
+    for (const [landed, minimum] of [["0.3.5", "0.3.5"], ["0.3.10", "0.3.9"], ["1.0.0", "0.9.9"]] as const) {
+      const w = withMinimum({ ok: minimum });
+      w.ssh.set(PLUGIN_VERSION_READ, ok(`${landed}\n`));
+      assert.deepStrictEqual(await pluginLine(w), { check: "plugin", ok: true, text: "ok" }, `${landed} against ${minimum}`);
+    }
+  });
+
+  it("old: a landed plugin older than the runner's minimum fails with the host's fix", async () => {
+    const w = withMinimum({ ok: "0.3.10" });
+    w.ssh.set(PLUGIN_VERSION_READ, ok("0.3.9\n"));
+    assert.deepStrictEqual(await pluginLine(w), {
+      check: "plugin",
+      ok: false,
+      text: FIX,
+      detail: "the factory plugin on the host is 0.3.9, older than the 0.3.10 this runner needs",
+    });
+  });
+
+  it("missing: a VERSION file cat cannot read fails with the host's fix and says why", async () => {
+    const w = world();
+    w.ssh.set(PLUGIN_VERSION_READ, failed("cat: /Users/me/.agents/skills/factory-build/VERSION: No such file or directory\n"));
+    const line = await pluginLine(w);
+    assert.deepStrictEqual([line.ok, line.text], [false, FIX]);
+    assert.strictEqual(
+      line.detail,
+      "~/.agents/skills/factory-build/VERSION could not be read: exit 1: cat: /Users/me/.agents/skills/factory-build/VERSION: No such file or directory",
+    );
+  });
+
+  it("unreadable: a VERSION that is empty, not a version or unreadable fails with the host's fix", async () => {
+    const cases: ReadonlyArray<readonly [SshAnswer, string]> = [
+      [ok(""), "~/.agents/skills/factory-build/VERSION is empty"],
+      [ok(" \n"), "~/.agents/skills/factory-build/VERSION is empty"],
+      [ok("v0.3.5\n"), '~/.agents/skills/factory-build/VERSION holds "v0.3.5", not a version'],
+      [ok("0.3\n"), '~/.agents/skills/factory-build/VERSION holds "0.3", not a version'],
+      [
+        failed("cat: /Users/me/.agents/skills/factory-build/VERSION: Permission denied"),
+        "~/.agents/skills/factory-build/VERSION could not be read: exit 1: cat: /Users/me/.agents/skills/factory-build/VERSION: Permission denied",
+      ],
+      [
+        { exitCode: null, timedOut: true, stdout: "", stderr: "" },
+        "~/.agents/skills/factory-build/VERSION could not be read: no answer within 10 s",
+      ],
+    ];
+    for (const [answer, detail] of cases) {
+      const w = world();
+      w.ssh.set(PLUGIN_VERSION_READ, answer);
+      assert.deepStrictEqual(await pluginLine(w), { check: "plugin", ok: false, text: FIX, detail }, detail);
+    }
+  });
+
+  it("with no minimum, needs only a landed version", async () => {
+    const w = withMinimum({ ok: null });
+    w.ssh.set(PLUGIN_VERSION_READ, ok("0.0.1\n"));
+    assert.isTrue((await pluginLine(w)).ok);
+    w.ssh.set(PLUGIN_VERSION_READ, ok(""));
+    assert.isFalse((await pluginLine(w)).ok);
+  });
+
+  it("fails when the runner's own minimum could not be read, and says so", async () => {
+    const w = withMinimum({ failed: "package.json could not be read: ENOENT" });
+    assert.deepStrictEqual(await pluginLine(w), {
+      check: "plugin",
+      ok: false,
+      text: FIX,
+      detail: "package.json could not be read: ENOENT",
+    });
+  });
+
+  it("when ssh failed, the plugin line is not checked and nothing is read", async () => {
+    const w = world();
+    w.ssh.set(TRUE_COMMAND, failed("Connection refused"));
+    const lines = await run(w);
+    assert.deepStrictEqual(byCheck(lines, "plugin"), { check: "plugin", ok: false, text: "not checked: ssh failed" });
+    assert.notInclude(w.commands, PLUGIN_VERSION_READ);
+  });
+
+  it("a host that fails only this line is host-not-ready with it", async () => {
+    const w = world();
+    w.ssh.set(PLUGIN_VERSION_READ, failed("cat: VERSION: No such file or directory"));
+    const lines = await run(w);
+    assert.deepStrictEqual(lines.filter((l) => !l.ok).map((l) => l.check), ["plugin"]);
+    const failing = firstFailure(lines);
+    assert.strictEqual(failing, `plugin: ${FIX}`);
+    assert.strictEqual(
+      hostNotReadyItem(HOST, failing!).message,
+      `host mini is not ready: plugin: ${FIX}; it takes no run until its check passes (checked again every 5 minutes; factory-runner hosts check mini prints every line)`,
+    );
   });
 });
 

@@ -62,7 +62,7 @@ import { AgentProcess } from "./paradev/sessions.ts";
 import { writeThread } from "./paradev/state.ts";
 import * as Paths from "./paths.ts";
 import type { SelfUpdateOptions } from "./selfUpdate.ts";
-import { LOAD_COMMAND, PROXY_ENV_READ, type SshSpawn } from "./paradev/ssh.ts";
+import { LOAD_COMMAND, PLUGIN_VERSION_READ, PROXY_ENV_READ, type SshSpawn } from "./paradev/ssh.ts";
 import { PARADEV_HOLD_PASSES, PARADEV_OFFLINE_ITEM_ID, type PassWorld, type Repo } from "./pass.ts";
 import {
   FactoryProcess,
@@ -2495,7 +2495,7 @@ status: () =>
 
   describe("the host check's runner login", () => {
     const HOST = { id: "h1", name: "mini", ssh: "me@mini", maxRuns: 2, maxLoadPerCore: 1 };
-    const checked = (lastGood: Map<string, { trackerUser?: string }>) => {
+    const checked = (lastGood: Map<string, { trackerUser?: string }>, landedPlugin = "") => {
       const calls: Array<ReadonlyArray<string>> = [];
       const process = FactoryProcess.of({
         run: (input: RunInput) => {
@@ -2523,7 +2523,13 @@ status: () =>
           gate: { run: () => Effect.succeed({ _tag: "running" as const }) },
           wake: Effect.void,
           scope: Scope.makeUnsafe(),
-          ssh: () => Effect.succeed({ exitCode: 0, timedOut: false, stdout: "", stderr: "" }),
+          ssh: (args) =>
+            Effect.succeed({
+              exitCode: 0,
+              timedOut: false,
+              stdout: args.at(-1) === PLUGIN_VERSION_READ ? landedPlugin : "",
+              stderr: "",
+            }),
         },
         undefined,
         undefined,
@@ -2539,6 +2545,24 @@ status: () =>
         const { lines, calls } = yield* checked(new Map([["a/b", { trackerUser: "rawphp" }]]));
         assert.isTrue(lines.some((line) => line.check === "gh login rawphp" && line.ok), JSON.stringify(lines));
         assert.deepStrictEqual(calls, []);
+      }),
+    );
+
+    it.effect("the plugin line holds the host's VERSION against this runner's own factory.minPluginVersion", () =>
+      Effect.gen(function* () {
+        const minimum = (
+          JSON.parse(NodeFS.readFileSync(NodePath.resolve(import.meta.dirname, "../package.json"), "utf8")) as {
+            factory: { minPluginVersion: string };
+          }
+        ).factory.minPluginVersion;
+        const lastGood = new Map([["a/b", { trackerUser: "rawphp" }]]);
+        const current = yield* checked(lastGood, `${minimum}\n`);
+        assert.deepStrictEqual(current.lines.find((line) => line.check === "plugin"), { check: "plugin", ok: true, text: "ok" });
+        const old = yield* checked(lastGood, "0.0.0\n");
+        assert.strictEqual(
+          old.lines.find((line) => line.check === "plugin")?.detail,
+          `the factory plugin on the host is 0.0.0, older than the ${minimum} this runner needs`,
+        );
       }),
     );
 
@@ -4519,12 +4543,12 @@ describe("liveWorld: the hosts", () => {
   const HOSTS = "hosts:\n  - id: h1\n    name: mini\n    ssh: me@mini\n    max_runs: 2\n";
   const refused: SshSpawn = () =>
     Effect.succeed({ exitCode: 255, timedOut: false, stdout: "", stderr: "Connection refused\n" });
-  /** A host whose every ssh read passes: no proxy name missing, an email, gh and claude there. */
+  /** A host whose every ssh read passes: no proxy name missing, an email, gh and claude there, and the plugin at this runner's version. */
   const healthy: SshSpawn = (args) =>
     Effect.succeed({
       exitCode: 0,
       timedOut: false,
-      stdout: args.at(-1) === PROXY_ENV_READ ? "" : "me@example.com\n",
+      stdout: args.at(-1) === PROXY_ENV_READ ? "" : args.at(-1) === PLUGIN_VERSION_READ ? `${version}\n` : "me@example.com\n",
       stderr: "",
     });
   const hostsListed = (paradev: FakeParadev) =>

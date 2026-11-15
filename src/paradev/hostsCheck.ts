@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 
 import type { NewItem } from "../attention.ts";
 import { configuredGhLogin, type HostConfig, type MachineConfig } from "../config.ts";
+import { HOST_PLUGIN_FIX, landedVersion, pluginReason, type Read } from "../plugin.ts";
 import { LOGIN_ARGS, loginOf } from "../tracker/github.ts";
 import { CLI_ENV, classify } from "./cli.ts";
 import {
@@ -18,6 +19,8 @@ import {
   GH_AUTH_STATUS,
   ghTokenCheck,
   GIT_EMAIL,
+  HOST_PLUGIN_FILE,
+  PLUGIN_VERSION_READ,
   PROXY_ENV_READ,
   remoteUrl,
   runSsh,
@@ -117,15 +120,17 @@ const proxyFix = (stdout: string): string | null => {
 /**
  * Runs the checks of the spec's table for one host, in its order: online, ssh, cli, then clone,
  * project and trusted for each repo that lists the host, then proxy env, git identity, gh, a
- * `gh login` line for each distinct login a run on the host acts as, and claude. `hosts list` and
- * `projects list --host` are read once, and the runner's login only when a login falls back to
- * it. When ssh fails the later ssh lines are `not checked`; when the CLI fails the project lines
- * are.
+ * `gh login` line for each distinct login a run on the host acts as, claude, and the plugin landed
+ * on the host against `minPluginVersion`, this runner's `factory.minPluginVersion` as it read.
+ * `hosts list` and `projects list --host` are read once, and the runner's login only when a login
+ * falls back to it. When ssh fails the later ssh lines are `not checked`; when the CLI fails the
+ * project lines are.
  */
 export const checkHost = (
   io: HostCheckIo,
   machine: MachineConfig,
   host: HostConfig,
+  minPluginVersion: Read<string | null>,
 ): Effect.Effect<ReadonlyArray<CheckLine>> =>
   Effect.gen(function* () {
     const ssh = (command: string) => Effect.result(runSsh(io.ssh, host.ssh, command));
@@ -248,6 +253,7 @@ export const checkHost = (
       for (const check of ["proxy env", "git identity", "gh"]) lines.push(skipped(check, SSH_SKIPPED));
       lines.push(...(yield* loginLines));
       lines.push(skipped("claude", SSH_SKIPPED));
+      lines.push(skipped("plugin", SSH_SKIPPED));
       return lines;
     }
     const proxy = yield* ssh(PROXY_ENV_READ);
@@ -280,6 +286,15 @@ export const checkHost = (
         missingFrom(claude, "claude"),
       ),
     );
+    const landed = yield* ssh(PLUGIN_VERSION_READ);
+    const pluginWhy = pluginReason(
+      "the host",
+      landed._tag === "Success"
+        ? landedVersion(HOST_PLUGIN_FILE, landed.success)
+        : { failed: `${HOST_PLUGIN_FILE} could not be read: ${landed.failure.message}` },
+      minPluginVersion,
+    );
+    lines.push(line("plugin", pluginWhy === null ? null : `run this on the host: ${HOST_PLUGIN_FIX}`, pluginWhy ?? undefined));
     return lines;
   });
 
@@ -350,19 +365,21 @@ export const hostCheckIoFromCommands = (
 });
 
 /**
- * Runs and prints `hosts check` for each of `hosts`, one after another, as the CLI and install do:
+ * Runs and prints `hosts check` for each of `hosts`, one after another, against the runner's
+ * `minPluginVersion`, as the CLI and install do:
  * each host's lines, then for a host that fails, that it gets no run. True when every line is ok.
  */
 export const printHostChecks = async (
   run: SyncCommandRun,
   config: MachineConfig,
   hosts: ReadonlyArray<HostConfig>,
+  minPluginVersion: Read<string | null>,
   out: (line: string) => void,
 ): Promise<boolean> => {
   const io = hostCheckIoFromCommands(run, config.paradev.cli, config.ghConfigDir);
   let ok = true;
   for (const host of hosts) {
-    const lines = await Effect.runPromise(checkHost(io, config, host));
+    const lines = await Effect.runPromise(checkHost(io, config, host, minPluginVersion));
     for (const text of formatHostCheck(host, lines)) out(text);
     if (firstFailure(lines) !== null) {
       ok = false;

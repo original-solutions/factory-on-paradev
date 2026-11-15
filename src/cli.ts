@@ -15,6 +15,7 @@ import { formatConfigError, parseMachineConfig } from "./config.ts";
 import { pauseClaimsNow, resumeClaimsNow, stopRun } from "./control.ts";
 import { install, uninstall, type CommandResult, type InstallEnv } from "./install.ts";
 import { printHostChecks } from "./paradev/hostsCheck.ts";
+import { readMinPluginVersion } from "./plugin.ts";
 import { packageVersion } from "./paths.ts";
 import { isRunner, lockHolder } from "./runnerLock.ts";
 import { retro, RETRO_USAGE } from "./retro.ts";
@@ -154,7 +155,7 @@ const hostsCheck = async (name: string | undefined, io: CliIo): Promise<number> 
     io.err(`no host ${name} in the machine config`);
     return 1;
   }
-  return (await printHostChecks(io.run, config, chosen, io.out)) ? 0 : 1;
+  return (await printHostChecks(io.run, config, chosen, readMinPluginVersion(io.packageRoot), io.out)) ? 0 : 1;
 };
 
 const command = async (

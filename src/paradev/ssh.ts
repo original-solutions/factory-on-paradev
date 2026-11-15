@@ -12,6 +12,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { landedPluginPath } from "../plugin.ts";
 import type { FactoryProcess, RunResult } from "../process.ts";
 
 /** The options every call passes: no prompt for a password or a host key, and a 10 s connect. */
@@ -155,6 +156,10 @@ export const ghTokenCheck = (login: string): string =>
   `gh auth token --user ${shellQuote(login)} >/dev/null 2>&1`;
 /** Whether Claude Code is installed on the host. */
 export const CLAUDE_VERSION = "claude --version";
+/** The factory plugin's landed `VERSION` file on a host, under the host's own home. */
+export const HOST_PLUGIN_FILE = landedPluginPath("~");
+/** The version of the factory plugin the host has landed: its `VERSION` file, read. */
+export const PLUGIN_VERSION_READ = `cat ${HOST_PLUGIN_FILE}`;
 
 /** `git` in the worktree at `dir` on a host: every word quoted, git's own options (`pre`) before `-C`. */
 export const hostGit = (dir: string, args: ReadonlyArray<string>, pre: ReadonlyArray<string> = []): string =>
@@ -222,6 +227,7 @@ const CONSTANTS: ReadonlySet<string> = new Set([
   GIT_EMAIL,
   GH_AUTH_STATUS,
   CLAUDE_VERSION,
+  PLUGIN_VERSION_READ,
 ]);
 
 const SHAPES: ReadonlyArray<RegExp> = [

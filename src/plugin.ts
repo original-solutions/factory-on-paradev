@@ -4,7 +4,8 @@
  * Paradev copies every file of the plugin's skill folder to `~/.agents/skills/factory-build/`, so
  * its `VERSION` file says both that the skill has landed and at which version. A runner needs that
  * version at its `factory.minPluginVersion` or newer. The runner never installs the plugin: a
- * person runs {@link LOCAL_PLUGIN_FIX}.
+ * person runs {@link LOCAL_PLUGIN_FIX}, or on a host {@link HOST_PLUGIN_FIX}; `hosts check` reads a
+ * host's file over ssh.
  */
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -16,6 +17,10 @@ export type Read<A> = { readonly ok: A } | { readonly failed: string };
 
 /** This Mac's fix for a plugin that is missing or older than a runner needs. */
 export const LOCAL_PLUGIN_FIX = "superset plugins install factory@organization, then restart the Paradev app";
+
+/** A host's fix for the same, run on the host: the install, then a restart of its host service, which copies the skill. */
+export const HOST_PLUGIN_FIX =
+  "superset plugins install factory@organization && launchctl kickstart -k gui/$(id -u)/sh.superset.host";
 
 /** The `VERSION` file of the plugin's skill as it landed under `home`. */
 export const landedPluginPath = (home: string): string =>
@@ -29,19 +34,27 @@ const whyNot = (error: unknown): string =>
 export const olderThan = (landed: string, minimum: string): boolean =>
   compareVersions(parseVersion(landed)!, parseVersion(minimum)!) < 0;
 
+/** The version a landed `VERSION` file holds, given its `text` as read from `path`; text that is empty or not a version fails. */
+export const landedVersion = (path: string, text: string): Read<string> => {
+  const trimmed = text.trim();
+  if (trimmed === "") return { failed: `${path} is empty` };
+  return parseVersion(trimmed) === null
+    ? { failed: `${path} holds ${JSON.stringify(trimmed)}, not a version` }
+    : { ok: trimmed };
+};
+
 /** The version in this Mac's landed `VERSION` file; a file that is missing, empty or not a version fails. */
 export const readLandedPlugin = (home: string): Read<string> => {
   const path = landedPluginPath(home);
   let text: string;
   try {
-    text = NodeFS.readFileSync(path, "utf8").trim();
+    text = NodeFS.readFileSync(path, "utf8");
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT"
       ? { failed: `the factory plugin is not on this Mac: ${path} is missing` }
       : { failed: `${path} could not be read: ${whyNot(error)}` };
   }
-  if (text === "") return { failed: `${path} is empty` };
-  return parseVersion(text) === null ? { failed: `${path} holds ${JSON.stringify(text)}, not a version` } : { ok: text };
+  return landedVersion(path, text);
 };
 
 /**
@@ -64,15 +77,19 @@ export const readMinPluginVersion = (packageRoot: string): Read<string | null> =
 };
 
 /**
- * Why this Mac's landed plugin does not do for a runner whose `factory.minPluginVersion` read as
- * `minimum`; null when it does. A runner with no minimum needs only a landed version.
+ * Why the plugin `landed` on a target (`on`: "this Mac", "the host") does not do for a runner whose
+ * `factory.minPluginVersion` read as `minimum`; null when it does. A runner with no minimum needs
+ * only a landed version.
  */
-export const localPluginReason = (home: string, minimum: Read<string | null>): string | null => {
+export const pluginReason = (on: string, landed: Read<string>, minimum: Read<string | null>): string | null => {
   if ("failed" in minimum) return minimum.failed;
-  const landed = readLandedPlugin(home);
   if ("failed" in landed) return landed.failed;
   if (minimum.ok === null) return null;
   return olderThan(landed.ok, minimum.ok)
-    ? `the factory plugin on this Mac is ${landed.ok}, older than the ${minimum.ok} this runner needs`
+    ? `the factory plugin on ${on} is ${landed.ok}, older than the ${minimum.ok} this runner needs`
     : null;
 };
+
+/** {@link pluginReason} for the plugin landed on this Mac under `home`. */
+export const localPluginReason = (home: string, minimum: Read<string | null>): string | null =>
+  "failed" in minimum ? minimum.failed : pluginReason("this Mac", readLandedPlugin(home), minimum);

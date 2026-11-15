@@ -25,6 +25,7 @@ import {
   LOOKUP_MARK,
   newestSessionList,
   pathExists,
+  PLUGIN_VERSION_READ,
   PROXY_ENV_READ,
   PROXY_ENV_SCRIPT,
   remoteUrl,
@@ -86,6 +87,7 @@ const ALLOWED: ReadonlyArray<string> = [
   GIT_EMAIL,
   GH_AUTH_STATUS,
   CLAUDE_VERSION,
+  PLUGIN_VERSION_READ,
   ghTokenCheck("tomkaczocha"),
   // The adapter's calls in a worktree on a host (#67).
   hostGit("/wt", ["rev-parse", "--verify", "HEAD^{commit}"]),
