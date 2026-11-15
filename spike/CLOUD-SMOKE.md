@@ -38,7 +38,11 @@ Not the Paradev GitHub App, as the cloud spike of 2026-11-13 saw. Each session r
 
 ## Cost
 
-The billing page was not read: it needs a signed-in browser. From the ledgers, the three workspaces lived 3 min 13 s, 59 s and 5 min 6 s, 9 min 18 s in all, on a small machine (2 vCPU, 4 GB). If Paradev bills memory by the minute that is about 37 GB-minutes, plus about 4 for the one-minute probe workspace of issue 87. The billing page's figure and the recommendation on the plan are still to be added by a person.
+The billing page, read on 2026-11-15 after the smoke: Team plan, `GB-hours used: 6.7 of 1,200`, resets 2026-12-13, extra GB-hours at $0.06 each. The page counts GB-hours, not GB-minutes, and gives one total for the cycle, so the 6.7 also holds the cloud spike of 2026-11-13 and the probe workspace of issue 87.
+
+The smoke's own share comes from the ledgers: the three workspaces lived 3 min 13 s, 59 s and 5 min 6 s, 9 min 18 s in all, on a small machine (2 vCPU, 4 GB). That is about 0.6 GB-hours, or 37 GB-minutes, and about 0.2 GB-hours for a run that ends `FACTORY-DONE`. At that rate the plan's 1,200 GB-hours cover about 6,000 such runs a month, and a run past the pool would cost about one cent.
+
+The recommendation on the plan is still to be added.
 
 ## Found on the way
 
