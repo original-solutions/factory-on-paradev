@@ -424,7 +424,8 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
         yield* Effect.logInfo(`update staged: ${tag} (running ${running}); restarting when no gate runs`);
       }).pipe(
         // A step that throws (an EMFILE from the spawn) is a failed step, not a clone left behind.
-        Effect.catchDefect((defect) => failClone(`a step threw: ${messageOf(defect)}`)),
+        // A step that did not start is a read that did not answer: a held tag waits through it.
+        Effect.catchDefect((defect) => failClone(`a step threw: ${messageOf(defect)}`, true)),
       );
     });
 
