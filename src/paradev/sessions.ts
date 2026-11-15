@@ -1151,11 +1151,13 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   /**
    * The workspaces `target`'s snapshots show. This Mac and a host: one snapshot, no `--workspace`.
-   * Cloud is not one host, so each workspace this runner tagged (`factory-<runner id>`) and not
-   * deleted is read on its own with `--workspace`; none tagged reads no snapshot. A workspace of
-   * `counted` the listing shows neither tagged nor `deleted` fails the read: its agent would count
-   * nothing, and a count that misses a running agent lets cloud take more runs than it has room
-   * for. With no record in `counted`, cloud is not read at all: nothing in it would count.
+   * Cloud is not one host, so each workspace of `counted` that the listing shows with this runner's
+   * tag (`factory-<runner id>`) and not deleted is read on its own with `--workspace`, two at a
+   * time; none such reads no snapshot. A tagged workspace with no record in `counted` (an archived
+   * run's, an orphan's) is not read: nothing in it would count, and its failed snapshot would lose
+   * the count. A workspace of `counted` the listing shows neither tagged nor `deleted` fails the
+   * read: its agent would count nothing, and a count that misses a running agent lets cloud take
+   * more runs than it has room for. With no record in `counted`, cloud is not read at all.
    */
   const snapshotWorkspaces = (target: ThreadTarget, counted: ReadonlyArray<ThreadRecord>) =>
     Effect.gen(function* () {
@@ -1163,15 +1165,18 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       if (counted.length === 0) return [];
       const tag = yield* mine;
       const rows = yield* listCloud;
-      const ids = rows
-        .filter((row) => row.status !== "deleted" && hasTag(row.tags, tag) && isPlainId(row.id))
-        .map((row) => row.id);
+      const tagged = new Set(
+        rows
+          .filter((row) => row.status !== "deleted" && hasTag(row.tags, tag) && isPlainId(row.id))
+          .map((row) => row.id),
+      );
       const deleted = new Set(rows.filter((row) => row.status === "deleted").map((row) => row.id));
-      const unlisted = counted.find((record) => !ids.includes(record.workspaceId) && !deleted.has(record.workspaceId));
+      const unlisted = counted.find((record) => !tagged.has(record.workspaceId) && !deleted.has(record.workspaceId));
       if (unlisted !== undefined) {
         return yield* fail(`cloud workspace ${unlisted.workspaceId} of ${unlisted.threadId} is not listed with the tag ${tag}`);
       }
-      const answers = yield* Effect.forEach(ids, (id) => snapshot(target, id), { concurrency: "unbounded" });
+      const ids = counted.map((record) => record.workspaceId).filter((id) => tagged.has(id));
+      const answers = yield* Effect.forEach(ids, (id) => snapshot(target, id), { concurrency: 2 });
       return answers.flatMap((answer) => answer.workspaces);
     });
 
