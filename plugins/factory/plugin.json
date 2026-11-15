@@ -2,7 +2,7 @@
 	"$schema": "https://superset.sh/schemas/plugin/1.0.0.json",
 	"name": "factory",
 	"version": "0.3.4",
-	"description": "One GitHub issue in, one draft pull request out: the /factory skill the runner's agents build with",
+	"description": "One GitHub issue in, one draft pull request out: the /factory-build skill the runner's agents build with",
 	"author": {
 		"name": "Original Solutions"
 	},
