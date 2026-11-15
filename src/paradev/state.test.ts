@@ -10,10 +10,13 @@ import * as Logger from "effect/Logger";
 
 import { useTempDirs } from "../ledger/testSupport.ts";
 import {
+  listCloudCreates,
   listThreads,
+  markCloudCreate,
   readLaunch,
   readPlacement,
   readThread,
+  removeCloudCreate,
   runnerId,
   targetOf,
   type ThreadRecord,
@@ -209,6 +212,39 @@ describe("placement files", () => {
         NodeFS.writeFileSync(file, text);
         yield* readPlacement(data, id).pipe(Effect.flip);
       }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("cloud create marks", () => {
+  const dir = (data: string) => NodePath.join(data, "paradev", "cloud-creates");
+
+  it.effect("a mark holds the name and the time of the first send, lists back, and is removed once", () =>
+    Effect.gen(function* () {
+      const data = tempDir("state");
+      assert.deepStrictEqual(yield* listCloudCreates(data), []);
+      yield* markCloudCreate(data, "launch-1", "fac/1-1", 1000);
+      // A second send under the same command id keeps the first time.
+      yield* markCloudCreate(data, "launch-1", "fac/1-1", 2000);
+      yield* markCloudCreate(data, "launch-2", "fac/2-1", 3000);
+      const marks = [...(yield* listCloudCreates(data))].sort((a, b) => a.at - b.at);
+      assert.deepStrictEqual(marks.map(({ name, at }) => ({ name, at })), [
+        { name: "fac/1-1", at: 1000 },
+        { name: "fac/2-1", at: 3000 },
+      ]);
+      yield* removeCloudCreate(marks[0]!);
+      yield* removeCloudCreate(marks[0]!);
+      assert.deepStrictEqual((yield* listCloudCreates(data)).map((mark) => mark.name), ["fac/2-1"]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("a mark that does not read back is skipped", () =>
+    Effect.gen(function* () {
+      const data = tempDir("state");
+      yield* markCloudCreate(data, "launch-1", "fac/1-1", 1000);
+      NodeFS.writeFileSync(NodePath.join(dir(data), "torn.json"), '{"name":"fac/9');
+      NodeFS.writeFileSync(NodePath.join(dir(data), "notes.txt"), "x");
+      assert.deepStrictEqual((yield* listCloudCreates(data)).map((mark) => mark.name), ["fac/1-1"]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
