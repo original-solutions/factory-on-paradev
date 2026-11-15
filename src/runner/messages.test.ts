@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import { describe } from "vitest";
 
 import {
+  AGENT_DIED_NO_SESSION,
   INSTRUCTION_LIMIT,
   INTERRUPTION_MESSAGE,
   CANNOT_VERIFY_DURING_BUILD,
@@ -330,6 +331,10 @@ describe("the fixed reasons of a building run", () => {
     );
     assert.strictEqual(TIME_LIMIT, "the run passed its time limit");
     assert.strictEqual(THREAD_GONE, "the T3 thread no longer exists");
+    assert.strictEqual(
+      AGENT_DIED_NO_SESSION,
+      "the session's agent process died and has no Claude session to resume",
+    );
     assert.strictEqual(STOPPED_BY_HAND, "stopped by hand");
     assert.strictEqual(
       CHANGED_DURING_BUILD,

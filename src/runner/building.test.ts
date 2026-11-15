@@ -46,7 +46,7 @@ import {
   type AdvanceOutcome,
   type BuildingContext,
 } from "./building.ts";
-import { INTERRUPTION_MESSAGE } from "./messages.ts";
+import { AGENT_DIED_NO_SESSION, INTERRUPTION_MESSAGE } from "./messages.ts";
 import { readProgress } from "./progress.ts";
 import { runProject } from "./run.ts";
 import { interruptible } from "./testSupport.ts";
@@ -1605,9 +1605,25 @@ describe("advance: a run whose agent process died", () => {
         error: new ThreadNotFoundError({ threadId: "thread-1" }),
         delivered: false,
       };
+      rig.world.thread = { worktreePath: "/t3/wt", branch: "t3code/abc", archived: true };
       const bytes = bytesOf(rig);
       assert.deepStrictEqual(yield* advanceIn(rig), { kind: "ended-badly", what: "thread-gone" });
       assert.strictEqual(bytesOf(rig), bytes);
+    }),
+  );
+
+  it.effect("whose thread is still there but has no session to resume goes stuck", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      died(rig);
+      // The adapter answers a missing Claude session the way it answers a gone workspace.
+      rig.world.sendFailure = {
+        error: new ThreadNotFoundError({ threadId: "thread-1" }),
+        delivered: false,
+      };
+      assertStuck(rig, yield* advanceIn(rig), { publicReason: AGENT_DIED_NO_SESSION });
+      assert.deepStrictEqual(stuckCauses(rig), Array(3).fill("advance agent-died-no-session"));
+      assert.ok(!linesOf(rig).some((line) => line.event === "session_paused"));
     }),
   );
 
