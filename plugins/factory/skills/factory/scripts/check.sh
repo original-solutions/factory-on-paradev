@@ -35,7 +35,8 @@ grep -qF -- 'the branch pushes, the draft PR, and the repo labels' SKILL.md || {
 grep -qF -- 'push it and open the draft PR' SKILL.md && { echo "SKILL.md: the stuck path still has its own push instruction"; exit 1; }
 grep -qF -- 'until one succeeds' references/commits.md || { echo "references/commits.md: the -u push is not repeated until one succeeds"; exit 1; }
 grep -qF -- 'git push' references/ship.md && { echo "references/ship.md: Ship still pushes"; exit 1; }
-grep -qF -- 'git rev-parse HEAD origin/<branch>' references/ship.md || { echo "references/ship.md: Ship does not check origin/<branch> against HEAD"; exit 1; }
+grep -qF -- 'git ls-remote origin refs/heads/<branch>' references/ship.md || { echo "references/ship.md: Ship does not compare ls-remote of <branch> with HEAD"; exit 1; }
+grep -rqF -- 'origin/<branch>' SKILL.md references && { echo "the skill still reads origin/<branch>, which a cloud worktree's fetch does not make"; exit 1; }
 
 [ -f references/linear.md ] || { echo "references/linear.md: missing"; exit 1; }
 for needle in 'api.linear.app/graphql' 'editedAt' 'displayName' 'references/linear.md'; do
