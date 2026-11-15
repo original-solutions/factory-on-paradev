@@ -8,11 +8,11 @@ Machine config for the smoke: `repos[].hosts` on the spike repo named the host, 
 
 ## Result
 
-Passed on the second attempt. The first attempt, on 0.3.0, found a bug that stopped every host run (see "Found on the way"). Issue 78 fixed it and 0.3.1 carries the fix.
+Passed on the second attempt, with one gap: a killed agent waited for an instructor's comment before it resumed (see "The kill test"; issue 81). The first attempt, on 0.3.0, found a bug that stopped every host run (see "Found on the way"). Issue 78 fixed it and 0.3.1 carries the fix.
 
 | Case | Spike issue | Run | Result |
 |---|---|---|---|
-| Ends `FACTORY-DONE`, and the kill test | 17 | `…__17__2` | Killed 75 s after launch, resumed, PR 21, gate passed first time, `pr-open` |
+| Ends `FACTORY-DONE`, and the kill test | 17 | `…__17__2` | Killed 75 s after launch, paused, resumed after an instructor's comment, PR 21, gate passed first time, `pr-open` |
 | Ends `FACTORY-STOP: needs-info` | 18 | `…__18__1` | Stopped because `docs/farewell.txt` is missing, questions posted, `needs-info` after 114 s. No branch, no PR |
 | Gate fails once | 19 | `…__19__1` | PR 20. First gate: `node scripts/smoke-gate.js` exit 1. Sent back, the agent deleted `GATE_FAIL_ONCE`, second gate passed, `pr-open` |
 | Stale host clone | 22 | `…__22__1` | PR 23, gate passed first time, `pr-open` |
@@ -41,7 +41,7 @@ On run `…__17__2`, workspace `32addc14…`, terminal `7dfaf8cc…`:
 | 00:26:28 | An instructor's comment on issue 17, posted at 00:26, was forwarded. The thread record gained a second terminal, `0d2cb7c0…`, and a `resume` turn |
 | 00:29:41 | PR 21 opened; the gate passed at 00:29:46 and the issue went `pr-open` at 00:29:56 |
 
-So a killed host agent reads as L5b did on local, and the run resumes from its session id and ends with a result line. It does not resume by itself: between the pause and the comment the run sat idle, and it would have stayed there.
+So a killed host agent reads as L5b did on local, and the run resumes from its session id and ends with a result line. It does not resume by itself: between the pause and the comment the run sat idle, and it would have stayed there. The P1 spec's failure table says the core sends its resume message here, so this is a defect in the runner, not the design: issue 81.
 
 ## The base check
 
@@ -66,7 +66,7 @@ So X8 does not hold on this host: `--base-branch main` gave a branch from GitHub
 3. The commits of the host pull requests show on GitHub as `rawphp`: the email set as the host's git `user.email` belongs to that account. The pull requests themselves are by `tomkaczocha`.
 4. A repo that runs only on hosts is still skipped until its clone is a Paradev project on this Mac. With `local.max_runs: 0` the runner claimed nothing for four passes, with the attention item `its clone … is no Paradev project on this Mac`, until `superset projects create --local` was run for the spike clone.
 5. The public reason of run `…__17__1` told the reader to restart "the factory's T3 server". Issue 78 reworded it.
-6. A killed agent is paused, not resumed: see the kill test. The P1 spec's failure table says the core sends its resume message after the liveness check; here it waited for an instructor.
+6. A killed agent is paused, not resumed: see the kill test. The P1 spec's failure table says the core sends its resume message after the liveness check; here it waited for an instructor. Issue 81.
 
 ## Left as it was found
 
