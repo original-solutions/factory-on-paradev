@@ -131,7 +131,7 @@ describe("hostLaunchMessage", () => {
 
 /** The paragraph a session placed in Paradev Cloud gets. */
 const CLOUD_IDENTITY_WORDS =
-  "You act on GitHub as the Paradev GitHub App (superset-app[bot]), through the GH_TOKEN the sandbox already has. Do not run gh api user: it answers 403 there. Never set, unset or replace GH_TOKEN, GH_CONFIG_DIR or GH_HOST, and never run gh auth login, gh auth switch or gh auth token, on any command. The repo's permissions object reads all false there, so prove you can push with the factory skill's push dry run, and end with FACTORY-STOP: stuck only when that dry run fails.";
+  "You act on GitHub through the GH_TOKEN the sandbox already has. Never set, unset or replace GH_TOKEN, GH_CONFIG_DIR or GH_HOST, and never run gh auth login, gh auth switch or gh auth token, on any command. Prove you can push with the factory skill's push dry run, and end with FACTORY-STOP: stuck only when that dry run fails.";
 
 describe("cloudLaunchMessage", () => {
   it("is the local message with the cloud's account paragraph in place of the local one", () => {
@@ -163,6 +163,15 @@ describe("cloudLaunchMessage", () => {
     assert.ok(!cloud.includes("alice"), cloud);
     assert.ok(!cloud.includes("gh api user --jq"), cloud);
     assert.ok(!cloud.includes("the session's gh account is"), cloud);
+  });
+
+  it("says nothing about which token the sandbox holds, and keeps the push dry run", () => {
+    const cloud = cloudLaunchMessage("rawphp/softfac", 10);
+    assert.ok(!cloud.includes("GitHub App"), cloud);
+    assert.ok(!cloud.includes("[bot]"), cloud);
+    assert.ok(!cloud.includes("403"), cloud);
+    assert.ok(!cloud.includes("permissions"), cloud);
+    assert.ok(cloud.includes("Prove you can push with the factory skill's push dry run"), cloud);
   });
 });
 
