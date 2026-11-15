@@ -49,6 +49,7 @@ import {
   NO_PROJECT,
   otherRepoProject,
   TEXT_CHANGED,
+  hostLaunchMessage,
   launchMessage,
   sessionMayExistNote,
   statusBody,
@@ -325,6 +326,7 @@ const ctxFor = (
 ): StartContext => ({
   repo: REPO,
   trackerUser: USER,
+  hostLogins: new Map(),
   machine: "mac-mini",
   project: project(),
   dataDir,
@@ -478,17 +480,35 @@ describe("start: a fresh ready issue", () => {
         `status 7 rawphp ${BUILDING}`,
       ]);
       assert.deepStrictEqual(t3.calls, ["findProject /work/softfac", `launch ${LAUNCH_ID}`]);
-      assert.deepStrictEqual(t3.launchRequests, [
-        {
-          commandId: LAUNCH_ID,
-          projectId: "proj-1",
-          title: "rawphp/softfac#7 Build step",
-          baseRef: "main",
-          message: launchMessage(REPO, 7, USER),
-          model: MODEL,
-        },
-      ]);
+      assert.deepStrictEqual(
+        t3.launchRequests.map(({ hostMessage, ...rest }) => ({ ...rest, hostMessage: typeof hostMessage })),
+        [
+          {
+            commandId: LAUNCH_ID,
+            projectId: "proj-1",
+            title: "rawphp/softfac#7 Build step",
+            baseRef: "main",
+            message: launchMessage(REPO, 7, USER),
+            hostMessage: "function",
+            model: MODEL,
+          },
+        ],
+      );
       assert.deepStrictEqual(entriesOf(dataDir), startedEvents());
+    }),
+  );
+
+  it.effect("sends the host message naming the machine's resolved login, the runner's login for a machine with none", () =>
+    Effect.gen(function* () {
+      const dataDir = tempDir();
+      const { tracker } = fakeTracker({});
+      const t3 = fakeSessions(dataDir, {});
+      yield* startIn(dataDir, tracker, t3.sessions, { hostLogins: new Map([["h1", "tomkaczocha"]]) });
+      const { hostMessage } = t3.launchRequests[0]!;
+      assert.strictEqual(hostMessage!("h1"), hostLaunchMessage(REPO, 7, "tomkaczocha"));
+      assert.strictEqual(hostMessage!("other"), hostLaunchMessage(REPO, 7, USER));
+      assert.ok(hostMessage!("h1").includes("gh auth token --user tomkaczocha"));
+      assert.strictEqual(t3.launchRequests[0]!.message, launchMessage(REPO, 7, USER));
     }),
   );
 
@@ -2823,6 +2843,34 @@ describe("start: the resume onto an open pull request of an earlier attempt", ()
     }),
   );
 
+  it.effect("finds an open pull request by a host's login for a resume", () =>
+    Effect.gen(function* () {
+      const dataDir = tempDir();
+      const { tracker } = fakeTracker({
+        closing: [closingDraft("t3code/abc", { author: "TomKaczocha" })],
+      });
+      const t3 = fakeSessions(dataDir, {});
+      yield* startIn(dataDir, tracker, t3.sessions, { hostLogins: new Map([["h1", "tomkaczocha"]]) });
+      assert.strictEqual(t3.launchRequests[0]!.baseRef, "t3code/abc");
+      assert.ok(t3.launchRequests[0]!.message.includes(URL12));
+      const host = t3.launchRequests[0]!.hostMessage!("h1");
+      assert.ok(host.includes(URL12), host);
+      assert.ok(host.includes("Do not open another pull request"), host);
+      assert.ok(host.includes("You act on GitHub as tomkaczocha."), host);
+      assert.ok(host.includes("GH_TOKEN=$(gh auth token --user tomkaczocha)"), host);
+    }),
+  );
+
+  it.effect("does not take another login's pull request when no host has that login", () =>
+    Effect.gen(function* () {
+      const dataDir = tempDir();
+      const { tracker } = fakeTracker({ closing: [closingDraft("t3code/abc", { author: "tomkaczocha" })] });
+      const t3 = fakeSessions(dataDir, {});
+      yield* startIn(dataDir, tracker, t3.sessions);
+      assert.strictEqual(t3.launchRequests[0]!.baseRef, "main");
+    }),
+  );
+
   it.effect("takes the newest open pull request of the factory's own on GitHub", () =>
     Effect.gen(function* () {
       const dataDir = tempDir();
@@ -2966,6 +3014,10 @@ describe("start: an issue that names its base", () => {
           "Open the pull request against feature/x, not the repo's default base.",
         ),
         request.message,
+      );
+      assert.ok(
+        request.hostMessage!("h1").includes("Open the pull request against feature/x"),
+        request.hostMessage!("h1"),
       );
       assert.strictEqual(baseOf(dataDir), "feature/x");
     }),

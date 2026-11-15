@@ -60,10 +60,14 @@ self_update: true
 #     path: /Users/YOU/factory-runner/original-solutions/factory-paradev-spike
 repos: []
 
-# Where a repo may run: this Mac, other Paradev hosts, and Paradev Cloud. These keys are read and
-# checked, but nothing acts on them yet: every launch runs on this Mac, up to
-# max_concurrent_runs, and local.max_runs does not limit it. To set them, move these keys out of
-# the comment: the repos entry goes in the list above, the other blocks stay at the top level.
+# Where a repo may run: this Mac, other Paradev hosts, and Paradev Cloud. Each launch is placed on
+# one of them that has room, up to max_concurrent_runs across them all. To set them, move these
+# keys out of the comment: the repos entry goes in the list above, the other blocks stay at the top
+# level.
+# An open pull request that closes an issue counts as the factory's own when the runner's login or
+# the gh_login of any host the repo lists opened it, wherever the run is placed: the next run of
+# that issue carries on from its branch. So a person's own pull request under one of those logins
+# is taken over.
 # Config load makes no CLI call, so check each id yourself with `superset hosts list` and
 # `superset environments list`.
 # --- targets ---
@@ -74,6 +78,8 @@ repos: []
 #     hosts:
 #       - id: c9c39956e0c1756e30d6bb9f4f907ff1
 #         path: /Users/tomk/factory-runner/original-solutions/factory-paradev-spike
+#         # Optional: the GitHub login this repo's runs on this host act as, over the host's gh_login.
+#         gh_login: tomkaczocha
 #     # Optional: a Paradev Cloud environment id that has this repo. Needs the cloud block.
 #     cloud: edad9805-e48d-40f3-a06c-e19a4105f974
 #
@@ -90,6 +96,8 @@ repos: []
 #     # The 1-minute load per core above which the host takes no run. 0 turns the check off.
 #     # Defaults to 1.
 #     max_load_per_core: 1
+#     # Optional: the GitHub login runs on this host act as. Defaults to the runner's own login.
+#     gh_login: tomkaczocha
 #
 # # Present when some repo names a cloud environment.
 # cloud:

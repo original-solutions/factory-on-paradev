@@ -66,7 +66,7 @@ const THREAD_GONE = "the T3 thread no longer exists";
 const REMINDER =
   "Your last reply had no result line. If your work is still in progress, finish it. End your reply with one of these lines as the last line: FACTORY-DONE: <PR URL>, FACTORY-STOP: needs-info (after your numbered questions) or FACTORY-STOP: stuck.";
 const WRONG_ACCOUNT =
-  "the session ran as the wrong GitHub account: restart the factory's T3 server so it has GH_CONFIG_DIR, then set factory:ready again";
+  "the session's gh could not act as the login the run names: for a host run, run factory-runner hosts check <name>; for a local run, check this Mac's active gh login; then set factory:ready again";
 
 type Line = { readonly event: string; readonly data: unknown };
 
@@ -489,6 +489,7 @@ const rigFor = (
   const ctx: BuildingContext = {
     repo: REPO,
     trackerUser: "rawphp",
+    hostLogins: new Map(),
     machine: "mac-mini",
     project: projectConfig(options.base),
     dataDir,
@@ -3277,6 +3278,21 @@ describe("advance: the pull request a session leaves when it stops or asks", () 
       const seen = readProgress(readRun(rig.dataDir, rig.run).entries);
       assert.deepStrictEqual(seen.opened, []);
       assert.strictEqual(seen.lastPr, null);
+    }),
+  );
+
+  it.effect("is recorded when a host's login opened it, and not when no host has that login", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      rig.ctx = { ...rig.ctx, hostLogins: new Map([["h1", "tomkaczocha"]]) };
+      rig.world.onHead = { "t3code/abc": [draftOn("t3code/abc", { author: "TomKaczocha" })] };
+      setStatus(rig, "completed", "FACTORY-STOP: stuck");
+      assertStuck(rig, yield* advanceIn(rig), { publicReason: SAID_STUCK, left: [PR_LEFT] });
+      const other = rigFor();
+      other.world.onHead = { "t3code/abc": [draftOn("t3code/abc", { author: "tomkaczocha" })] };
+      setStatus(other, "completed", "FACTORY-STOP: stuck");
+      assert.strictEqual((yield* advanceIn(other)).kind, "stuck");
+      assert.deepStrictEqual(leftLines(other), []);
     }),
   );
 

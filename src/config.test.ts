@@ -13,6 +13,7 @@ import {
   ConfigErrors,
   formatConfigError,
   factoryOptIn,
+  hostGhLogin,
   loadMachineConfig,
   loadProjectConfig,
   parseMachineConfig,
@@ -946,6 +947,53 @@ describe("machine config", () => {
       }
     });
 
+    describe("gh_login", () => {
+      it("a config without the keys has no login on its host or its repo host", () => {
+        const c = machine(TARGETS);
+        expect(c.hosts[0]).not.toHaveProperty("ghLogin");
+        expect(c.repos[0]!.hosts![0]).not.toHaveProperty("ghLogin");
+        expect(hostGhLogin(c.hosts, c.repos[0]!, HOST, "rawphp")).toBe("rawphp");
+      });
+
+      it("reads the host's key, which a repo on that host takes", () => {
+        const c = machine(edit(TARGETS, (tree) => set(tree, "hosts.0.gh_login", "tomkaczocha")));
+        expect(c.hosts[0]!.ghLogin).toBe("tomkaczocha");
+        expect(c.repos[0]!.hosts![0]).not.toHaveProperty("ghLogin");
+        expect(hostGhLogin(c.hosts, c.repos[0]!, HOST, "rawphp")).toBe("tomkaczocha");
+      });
+
+      it("reads a repo's key, which beats the host's key and the runner's login", () => {
+        const both = machine(
+          edit(TARGETS, (tree) => {
+            set(tree, "hosts.0.gh_login", "tomkaczocha");
+            set(tree, "repos.0.hosts.0.gh_login", "tomk-bot");
+          }),
+        );
+        expect(both.repos[0]!.hosts![0]!.ghLogin).toBe("tomk-bot");
+        expect(hostGhLogin(both.hosts, both.repos[0]!, HOST, "rawphp")).toBe("tomk-bot");
+        const repoOnly = machine(edit(TARGETS, (tree) => set(tree, "repos.0.hosts.0.gh_login", "tomk-bot")));
+        expect(hostGhLogin(repoOnly.hosts, repoOnly.repos[0]!, HOST, "rawphp")).toBe("tomk-bot");
+      });
+
+      it("a repo that does not list the host takes the host's key, else the runner's login", () => {
+        const c = machine(edit(TARGETS, (tree) => set(tree, "hosts.0.gh_login", "tomkaczocha")));
+        expect(hostGhLogin(c.hosts, { repo: "a/b", path: "/p" }, HOST, "rawphp")).toBe("tomkaczocha");
+        expect(hostGhLogin(c.hosts, { repo: "a/b", path: "/p" }, "other", "rawphp")).toBe("rawphp");
+      });
+
+      it("refuses a value that is not a GitHub login, once, at its path", () => {
+        for (const [path, field] of [
+          ["hosts.0.gh_login", "hosts[0].gh_login"],
+          ["repos.0.hosts.0.gh_login", "repos[0].hosts[0].gh_login"],
+        ] as const) {
+          for (const bad of ['""', "a b", "a_b", "a/b", "[x]", "7", "a".repeat(40)]) {
+            assertOne(machineErr(edit(TARGETS, (tree) => set(tree, path, bad))), field, MFILE);
+          }
+          expect(machine(edit(TARGETS, (tree) => set(tree, path, "a".repeat(39))))).toBeDefined();
+        }
+      });
+    });
+
     it("refuses a host id listed twice, in hosts or in one repo", () => {
       const twice = edit(TARGETS, (tree) => {
         tree.hosts.push({ ...tree.hosts[0], name: "other" });
@@ -1136,9 +1184,11 @@ describe("the example machine config", () => {
           Object.assign(tree, parse(yaml));
         }),
       );
-      expect(c.hosts.map((h) => [h.id, h.name])).toEqual([["c9c39956e0c1756e30d6bb9f4f907ff1", "trilogy-mac"]]);
+      expect(c.hosts.map((h) => [h.id, h.name, h.ghLogin])).toEqual([
+        ["c9c39956e0c1756e30d6bb9f4f907ff1", "trilogy-mac", "tomkaczocha"],
+      ]);
       expect(c.repos[0]!.hosts).toEqual([
-        { id: "c9c39956e0c1756e30d6bb9f4f907ff1", path: expect.stringMatching(/^\//) },
+        { id: "c9c39956e0c1756e30d6bb9f4f907ff1", path: expect.stringMatching(/^\//), ghLogin: "tomkaczocha" },
       ]);
       expect(c.repos[0]!.cloud).toBe("edad9805-e48d-40f3-a06c-e19a4105f974");
       expect(c.cloud).toBeDefined();

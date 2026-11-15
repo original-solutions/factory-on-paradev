@@ -15,6 +15,7 @@ import {
 import {
   CLAUDE_VERSION,
   GH_AUTH_STATUS,
+  ghTokenCheck,
   GIT_EMAIL,
   isAllowed,
   PROXY_ENV_READ,
@@ -28,6 +29,7 @@ import {
 const HOST: HostConfig = { id: "h1", name: "mini", ssh: "me@mini", maxRuns: 2, maxLoadPerCore: 1 };
 const PATH = "/Users/me/app";
 const SECRET = "sk-secret-value";
+const RUNNER = "rawphp";
 
 const machineOf = (hosts: ReadonlyArray<HostConfig>, repoHosts = [{ id: "h1", path: PATH }]): MachineConfig => ({
   ghConfigDir: "/gh",
@@ -61,6 +63,7 @@ const world = () => {
     [PROXY_ENV_READ, ok("")],
     [GIT_EMAIL, ok("me@example.com\n")],
     [GH_AUTH_STATUS, ok("Logged in\n")],
+    [ghTokenCheck(RUNNER), ok("")],
     [CLAUDE_VERSION, ok("2.1.0\n")],
   ]);
   const superset = new Map<string, unknown | Error>([
@@ -69,7 +72,11 @@ const world = () => {
   ]);
   const commands: Array<string> = [];
   const supersetCalls: Array<string> = [];
+  const runner: { login: string | Error } = { login: RUNNER };
   const io: HostCheckIo = {
+    runnerLogin: Effect.suspend(() =>
+      runner.login instanceof Error ? Effect.fail(runner.login.message) : Effect.succeed(runner.login),
+    ),
     ssh: (args) =>
       Effect.sync(() => {
         const command = args[args.length - 1] ?? "";
@@ -84,7 +91,7 @@ const world = () => {
         return answer instanceof Error ? Effect.fail(answer.message) : Effect.succeed(answer);
       }),
   };
-  return { io, ssh, superset, commands, supersetCalls };
+  return { io, ssh, superset, commands, supersetCalls, runner };
 };
 
 const run = (w: ReturnType<typeof world>, machine = machineOf([HOST])) =>
@@ -111,6 +118,7 @@ describe("checkHost", () => {
         "proxy env",
         "git identity",
         "gh",
+        "gh login rawphp",
         "claude",
       ],
     );
@@ -160,7 +168,7 @@ describe("checkHost", () => {
       byCheck(lines, "ssh").detail,
       "ssh -o BatchMode=yes me@mini true failed: exit 1: Permission denied (publickey).",
     );
-    for (const check of ["clone acme/app", "trusted acme/app", "proxy env", "git identity", "gh", "claude"]) {
+    for (const check of ["clone acme/app", "trusted acme/app", "proxy env", "git identity", "gh", "gh login rawphp", "claude"]) {
       const line = byCheck(lines, check);
       assert.deepStrictEqual([line.ok, line.text], [false, "not checked: ssh failed"], check);
     }
@@ -294,8 +302,89 @@ describe("checkHost", () => {
     const lines = await run(world(), machineOf([HOST], []));
     assert.deepStrictEqual(
       lines.map((l) => l.check),
-      ["online", "ssh", "cli", "proxy env", "git identity", "gh", "claude"],
+      ["online", "ssh", "cli", "proxy env", "git identity", "gh", "gh login rawphp", "claude"],
     );
+  });
+});
+
+describe("checkHost: gh login", () => {
+  const withLogins = (host: Partial<HostConfig>, repoHosts: Array<{ id: string; path: string; ghLogin?: string }>) =>
+    machineOf([{ ...HOST, ...host }], repoHosts);
+  const ghLines = (lines: ReadonlyArray<CheckLine>) => lines.filter((l) => l.check.startsWith("gh login"));
+
+  it("is ok when the token command exits 0 for the host's own gh_login, and only that login is checked", async () => {
+    const w = world();
+    w.ssh.set(ghTokenCheck("tomkaczocha"), ok());
+    const h = { ...HOST, ghLogin: "tomkaczocha" };
+    const lines = await Effect.runPromise(checkHost(w.io, withLogins({ ghLogin: "tomkaczocha" }, [{ id: "h1", path: PATH }]), h));
+    assert.deepStrictEqual(
+      ghLines(lines).map((l) => [l.check, l.ok, l.text]),
+      [["gh login tomkaczocha", true, "ok"]],
+    );
+    assert.deepStrictEqual(w.commands.filter((c) => c.includes("gh auth token")), [ghTokenCheck("tomkaczocha")]);
+    assert.isTrue(w.commands.every(isAllowed), JSON.stringify(w.commands));
+  });
+
+  it("missing: a login with no token on the host gets the gh auth login fix", async () => {
+    const w = world();
+    w.ssh.set(ghTokenCheck(RUNNER), failed("no oauth token found for rawphp"));
+    const line = byCheck(await run(w), "gh login rawphp");
+    assert.deepStrictEqual([line.ok, line.text], [false, "gh auth login as rawphp on the host"]);
+  });
+
+  it("a repo override adds a line after the host's, a repeat of a login adds none, and a login in another case is its own line", async () => {
+    const w = world();
+    w.ssh.set(ghTokenCheck("tomkaczocha"), ok());
+    w.ssh.set(ghTokenCheck("tomk-bot"), failed());
+    w.ssh.set(ghTokenCheck("TOMKACZOCHA"), ok());
+    const h = { ...HOST, ghLogin: "tomkaczocha" };
+    const machine = {
+      ...machineOf([h]),
+      repos: [
+        { repo: "acme/app", path: "/Users/tom/app", hosts: [{ id: "h1", path: PATH, ghLogin: "tomk-bot" }] },
+        { repo: "acme/two", path: "/Users/tom/two", hosts: [{ id: "h1", path: PATH, ghLogin: "TOMKACZOCHA" }] },
+        { repo: "acme/three", path: "/Users/tom/three", hosts: [{ id: "h1", path: PATH, ghLogin: "tomk-bot" }] },
+      ],
+    };
+    const lines = ghLines(await Effect.runPromise(checkHost(w.io, machine, h)));
+    assert.deepStrictEqual(
+      lines.map((l) => [l.check, l.ok]),
+      [
+        ["gh login tomkaczocha", true],
+        ["gh login tomk-bot", false],
+        ["gh login TOMKACZOCHA", true],
+      ],
+    );
+  });
+
+  it("reads the runner's login only when a line falls back to it, and says so when it cannot", async () => {
+    const w = world();
+    const h = { ...HOST, ghLogin: "tomkaczocha" };
+    w.ssh.set(ghTokenCheck("tomkaczocha"), ok());
+    w.runner.login = new Error("boom");
+    const covered = ghLines(await Effect.runPromise(checkHost(w.io, withLogins({ ghLogin: "tomkaczocha" }, [{ id: "h1", path: PATH, ghLogin: "tomkaczocha" }]), h)));
+    assert.deepStrictEqual(covered.map((l) => l.ok), [true]);
+    const lines = ghLines(await run(w));
+    assert.deepStrictEqual(
+      lines.map((l) => [l.check, l.ok, l.text, l.detail]),
+      [["gh login", false, "not checked: the runner's gh login could not be read", "boom"]],
+    );
+  });
+
+  it("when ssh failed, the gh login lines are not checked", async () => {
+    const w = world();
+    w.ssh.set(TRUE_COMMAND, failed());
+    const lines = ghLines(await run(w));
+    assert.deepStrictEqual(lines.map((l) => [l.check, l.ok, l.text]), [["gh login rawphp", false, "not checked: ssh failed"]]);
+  });
+
+  it("never prints what the token command answered", async () => {
+    const w = world();
+    w.ssh.set(ghTokenCheck(RUNNER), { exitCode: 0, timedOut: false, stdout: SECRET, stderr: SECRET });
+    const lines = await run(w);
+    assert.notInclude(JSON.stringify(lines), SECRET);
+    w.ssh.set(ghTokenCheck(RUNNER), { exitCode: 1, timedOut: false, stdout: SECRET, stderr: SECRET });
+    assert.notInclude(JSON.stringify(await run(w)), SECRET);
   });
 });
 
@@ -346,7 +435,7 @@ describe("hostCheckIoFromCommands", () => {
     const io = hostCheckIoFromCommands((command, args, timeoutMs, inheritEnv) => {
       calls.push({ command, args, timeoutMs, inheritEnv });
       return { status: 0, stdout: '[{"id":"h1"}]', stderr: "" };
-    }, "/opt/superset");
+    }, "/opt/superset", "/gh");
     assert.deepStrictEqual(await Effect.runPromise(io.superset(["hosts", "list"])), [{ id: "h1" }]);
     assert.deepStrictEqual(calls, [
       {
@@ -362,21 +451,39 @@ describe("hostCheckIoFromCommands", () => {
     const failing = hostCheckIoFromCommands(
       () => ({ status: 1, stdout: "", stderr: "noise\nError: PARADEV_OFFLINE: not running\nHint: open it\n" }),
       "superset",
+      "/gh",
     );
     assert.strictEqual(
       await Effect.runPromise(Effect.flip(failing.superset(["hosts", "list"]))),
       "PARADEV_OFFLINE: not running",
     );
-    const silent = hostCheckIoFromCommands(() => ({ status: 3, stdout: "", stderr: "" }), "superset");
+    const silent = hostCheckIoFromCommands(() => ({ status: 3, stdout: "", stderr: "" }), "superset", "/gh");
     assert.strictEqual(await Effect.runPromise(Effect.flip(silent.superset(["x"]))), "exit 3");
-    const spawn = hostCheckIoFromCommands(() => ({ status: null, stdout: "", stderr: "spawnSync superset ENOENT\n" }), "superset");
+    const spawn = hostCheckIoFromCommands(() => ({ status: null, stdout: "", stderr: "spawnSync superset ENOENT\n" }), "superset", "/gh");
     assert.strictEqual(await Effect.runPromise(Effect.flip(spawn.superset(["x"]))), "spawnSync superset ENOENT");
-    const garbage = hostCheckIoFromCommands(() => ({ status: 0, stdout: "not json", stderr: "" }), "superset");
+    const garbage = hostCheckIoFromCommands(() => ({ status: 0, stdout: "not json", stderr: "" }), "superset", "/gh");
     assert.isString(await Effect.runPromise(Effect.flip(garbage.superset(["x"]))));
   });
 
+  it("reads the runner's login with the runner's gh_config_dir, and says so when it cannot", async () => {
+    const seen: Array<ReadonlyArray<string>> = [];
+    const io = hostCheckIoFromCommands((_command, args) => {
+      seen.push(args);
+      return { status: 0, stdout: '{"login":"rawphp","id":1}\n', stderr: "" };
+    }, "superset", "/gh/rawphp");
+    assert.strictEqual(await Effect.runPromise(io.runnerLogin), "rawphp");
+    // The call `GitHub.login` makes, under the runner's gh_config_dir.
+    assert.deepStrictEqual(seen, [["GH_CONFIG_DIR=/gh/rawphp", "gh", "api", "user"]]);
+    const down = hostCheckIoFromCommands(() => ({ status: 1, stdout: "", stderr: "gh: no" }), "superset", "/gh");
+    assert.strictEqual(await Effect.runPromise(Effect.flip(down.runnerLogin)), "gh: no");
+    for (const stdout of ['{"login":"","id":1}', '{"id":1}', "rawphp\n", ""]) {
+      const none = hostCheckIoFromCommands(() => ({ status: 0, stdout, stderr: "" }), "superset", "/gh");
+      assert.strictEqual(await Effect.runPromise(Effect.flip(none.runnerLogin)), "gh printed no login", stdout);
+    }
+  });
+
   it("reads ssh through the same runner", async () => {
-    const io = hostCheckIoFromCommands((command, args) => ({ status: 0, stdout: `${command} ${args.at(-1)}`, stderr: "" }), "superset");
+    const io = hostCheckIoFromCommands((command, args) => ({ status: 0, stdout: `${command} ${args.at(-1)}`, stderr: "" }), "superset", "/gh");
     const done = await Effect.runPromise(io.ssh(["-o", "x", "me@h", "true"], 10_000));
     assert.strictEqual(done.stdout, "ssh true");
   });

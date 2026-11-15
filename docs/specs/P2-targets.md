@@ -34,7 +34,7 @@ Settled 2026-11-14. U1 was Tom's; the rest took the smallest option that the spi
 | # | Decision | Settled |
 |---|---|---|
 | U1 | How a run is placed | By load on each machine: the lowest 1-minute load per core among the targets that list the repo, are online, pass their check, and have a free slot. This Mac wins a tie. Cloud is the overflow: it is chosen only when no machine qualifies, because it costs GB-minutes and its plan is on a one-month trial (U5) |
-| U2 | Who the agent is on GitHub, per target | As the spikes found, with no normalising: local PRs by this Mac's active `gh` login, host PRs by the account `gh` sees in a Paradev terminal there (`rawphp` on the Trilogy Mac), cloud PRs by the Paradev GitHub App bot (`app/superset-app`). The runner's own writes (claims, labels, comments, ready) use `gh_config_dir` as in P1, so the issue trail reads the same whatever opened the PR. A host must have a git `user.email` set, or `hosts check` fails: an auto-detected email links to no GitHub user, which the host spike's pull request 16 on the spike repo shows |
+| U2 | Who the agent is on GitHub, per target | Local PRs by this Mac's active `gh` login, host PRs by the host's configured login (`repos[].hosts[].gh_login`, else `hosts[].gh_login`, else the runner's login), which the session selects with that login's token when the host terminal's active `gh` login is another one, cloud PRs by the Paradev GitHub App bot (`app/superset-app`). The runner's own writes (claims, labels, comments, ready) use `gh_config_dir` as in P1, so the issue trail reads the same whatever opened the PR. An open pull request that closes the issue counts as the run's own when the runner's login or the resolved login of any host the repo lists opened it, wherever the run is placed, so a person's own pull request under one of those logins is taken over. A host must have a git `user.email` set, or `hosts check` fails: an auto-detected email links to no GitHub user, which the host spike's pull request 16 on the spike repo shows |
 | U3 | How agents reach Claude | Every target goes through the CLI Proxy API on the Trilogy Mac. This Mac and hosts carry `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` in their own `~/.claude/settings.json` `env` (hosts get nothing from the org's connection: X9 host). Cloud gets `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL` from `connections agents set` through the Tailscale Funnel (C0). The Funnel stays on while `cloud` is in the config; the runner never turns it on or off. Before each cloud launch it checks the proxy answers 401 to an unkeyed `GET /v1/models` through the Funnel: up and guarded. Anything else makes cloud no candidate this pass |
 | U4 | Host prerequisites | Read-only. `factory-runner hosts check` reads each host over SSH and prints what is missing with the command that fixes it. The runner writes nothing into a host's dotfiles. Trusting the clone, the proxy env, the git identity and the gh login are the person's, done once per host |
 | U5 | The Team plan trial | Hosts land first, cloud second. The cloud smoke (#59) runs before 2026-12-13, when the trial ends, and its result decides whether the plan stays. Until then `cloud.max_runs` is 1 |
@@ -55,6 +55,7 @@ repos:
     hosts:                                                                   # optional: where else it may run
       - id: c9c39956e0c1756e30d6bb9f4f907ff1                                 # superset hosts list
         path: /Users/tomk/factory-runner/original-solutions/clockwork        # the clone on that host
+        gh_login: tomkaczocha                                                # optional: the GitHub login this repo's runs on that host act as, over the host's
     cloud: edad9805-e48d-40f3-a06c-e19a4105f974                              # optional: an environment id that has this repo
 
 hosts:                        # every host a repo names must be here
@@ -63,6 +64,7 @@ hosts:                        # every host a repo names must be here
     ssh: tomk@trilogy-mac     # an ssh destination that works with BatchMode=yes
     max_runs: 2
     max_load_per_core: 1      # 0 turns the load check off for this host
+    gh_login: tomkaczocha     # optional: the GitHub login runs on this host act as; default the runner's own
 
 cloud:                        # present only when some repo names an environment
   machine_size: small         # small | medium | large
@@ -91,7 +93,7 @@ A target is one of:
 | a host | `host:<machineId>:<workspaceId>` | `--host <machineId>` | from `projects list --host <machineId>` by the repo's `hosts[].path` | SSH for load and processes; the CLI for everything else |
 | cloud | `cloud:<workspaceId>` | `--host cloud` | the environment id; cloud has no project | the CLI only |
 
-`findProject(root)` keeps its P1 signature and meaning: it answers the local project for the repo's clone. Placement happens in `launch`, which is where the adapter learns the command id, so a retried launch places the same way (below). The core does not change for placement: `LaunchRequest` gains nothing, and `Launched.threadId` carries the target.
+`findProject(root)` keeps its P1 signature and meaning: it answers the local project for the repo's clone. Placement happens in `launch`, which is where the adapter learns the command id, so a retried launch places the same way (below). The core changes little for placement: `LaunchRequest` gains one optional field, `hostMessage(machineId)`, the first message for a launch placed on a host (it names the host's resolved `gh_login` and lets the session select that login's token); the adapter uses it in place of `message` when placement picks a host. `Launched.threadId` still carries the target.
 
 ### Thread record v2
 
@@ -175,6 +177,7 @@ Reads every configured host, or one, over SSH and through the CLI. Prints one li
 | proxy env | `~/.claude/settings.json` `env` has `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` (presence only; the value is never printed) | the two keys to add |
 | git identity | `git config --global user.email` non-empty | `git config --global user.email <email>` |
 | gh | `gh auth status` exits 0 over SSH | `gh auth login` on the host |
+| gh login, per distinct login | `gh auth token --user <login>` exits 0 over SSH, its output discarded and never printed; the logins are the host's `gh_login`, each repo's override, and the runner's login for any that names none | `gh auth login` as `<login>` on the host |
 | claude | `claude --version` over SSH | install Claude Code |
 
 It writes nothing on the host (U4).

@@ -84,16 +84,21 @@ import { MARKER } from "./tracker/github.ts";
  * The mocks of liveWorldBase.test.ts, hoisted for the whole file: each wrapped function calls
  * through to the real one, unless the test that wants to see a step's context has `stub.on` set.
  */
-const { bases, startContexts, stub, wrapped } = vi.hoisted(() => {
+const { bases, buildingHostLogins, startContexts, stub, wrapped } = vi.hoisted(() => {
   const stub = { on: false };
   const bases: Array<string> = [];
+  const buildingHostLogins: Array<unknown> = [];
   const wrapped = <F>(name: string, actual: F, stubbed: () => unknown): F =>
-    ((ctx: { readonly project: { readonly base: string } }, ...rest: Array<unknown>) => {
+    ((
+      ctx: { readonly project: { readonly base: string }; readonly hostLogins?: unknown },
+      ...rest: Array<unknown>
+    ) => {
       if (!stub.on) return (actual as unknown as (...args: Array<unknown>) => unknown)(ctx, ...rest);
       bases.push(`${name} ${ctx.project.base}`);
+      buildingHostLogins.push(ctx.hostLogins);
       return stubbed();
     }) as unknown as F;
-  return { bases, startContexts: [] as Array<unknown>, stub, wrapped };
+  return { bases, buildingHostLogins, startContexts: [] as Array<unknown>, stub, wrapped };
 });
 
 vi.mock("./runner/building.ts", async (importOriginal) => {
@@ -2416,6 +2421,65 @@ status: () =>
     ).pipe(Effect.map((result) => ({ result, readings })));
   };
 
+  describe("the host check's runner login", () => {
+    const HOST = { id: "h1", name: "mini", ssh: "me@mini", maxRuns: 2, maxLoadPerCore: 1 };
+    const checked = (lastGood: Map<string, { trackerUser?: string }>) => {
+      const calls: Array<ReadonlyArray<string>> = [];
+      const process = FactoryProcess.of({
+        run: (input: RunInput) => {
+          calls.push(input.args ?? []);
+          return Effect.succeed({
+            exitCode: 1,
+            timedOut: false,
+            tail: "",
+            stderrTail: "gh: no",
+            truncated: false,
+            tailTruncated: false,
+          } satisfies RunResult);
+        },
+      });
+      const world = liveWorld(
+        { ...machine, hosts: [HOST] },
+        "/factory-test/data",
+        process,
+        NodeServices.layer,
+        stubSessions,
+        () => NOW,
+        "mac-mini",
+        noAttention,
+        {
+          gate: { run: () => Effect.succeed({ _tag: "running" as const }) },
+          wake: Effect.void,
+          scope: Scope.makeUnsafe(),
+          ssh: () => Effect.succeed({ exitCode: 0, timedOut: false, stdout: "", stderr: "" }),
+        },
+        undefined,
+        undefined,
+        { ...newShared(), lastGood },
+      );
+      return Effect.promise(() => Effect.runPromise(world.checkHost(HOST))).pipe(
+        Effect.map((lines) => ({ lines, calls })),
+      );
+    };
+
+    it.effect("a login the pass already read is the runner's, with no GitHub read of its own", () =>
+      Effect.gen(function* () {
+        const { lines, calls } = yield* checked(new Map([["a/b", { trackerUser: "rawphp" }]]));
+        assert.isTrue(lines.some((line) => line.check === "gh login rawphp" && line.ok), JSON.stringify(lines));
+        assert.deepStrictEqual(calls, []);
+      }),
+    );
+
+    it.effect("with none read yet, the login is read from GitHub, and a failed read is not invented as success", () =>
+      Effect.gen(function* () {
+        const { lines, calls } = yield* checked(new Map());
+        assert.isTrue(calls.length > 0);
+        const line = lines.find((l) => l.check === "gh login");
+        assert.deepStrictEqual([line?.ok, line?.text], [false, "not checked: the runner's gh login could not be read"]);
+      }),
+    );
+  });
+
   describe("with the machine's default_project", () => {
     const withDefault: MachineConfig = {
       ...machine,
@@ -4197,6 +4261,83 @@ describe("liveWorld: a model that cools down", () => {
   );
 });
 
+describe("liveWorld: the login a run acts as on each host", () => {
+  const hosts = ["h1", "h2", "h3"].map((id) => ({ id, name: id, ssh: `me@${id}`, maxRuns: 1, maxLoadPerCore: 1 }));
+  const started = (machine: MachineConfig, repo: Repo) =>
+    Effect.gen(function* () {
+      const world = liveWorld(
+        machine,
+        "/factory-test/data",
+        noGh,
+        NodeServices.layer,
+        stubSessions,
+        () => T0,
+        "mac-mini",
+        noAttention,
+        baseLive(yield* Scope.make()),
+      );
+      stub.on = true;
+      yield* Effect.ensuring(
+        world.start(repo, 7),
+        Effect.sync(() => {
+          stub.on = false;
+        }),
+      );
+      return startContexts.at(-1) as StartContext;
+    });
+
+  it.effect("the repo's override, else the host's gh_login, else the runner's, reach the start and the building contexts", () =>
+    Effect.gen(function* () {
+      const watched = {
+        ...baseRepo.watched,
+        hosts: [
+          { id: "h1", path: "/a" },
+          { id: "h2", path: "/b", ghLogin: "repo-bot" },
+          { id: "h3", path: "/c" },
+        ],
+      };
+      const repo: Repo = { ...baseRepo, watched };
+      const machine: MachineConfig = {
+        ...baseMachine,
+        repos: [watched],
+        hosts: [{ ...hosts[0]!, ghLogin: "tomkaczocha" }, { ...hosts[1]!, ghLogin: "host-bot" }, hosts[2]!],
+      };
+      const ctx = yield* started(machine, repo);
+      assert.deepStrictEqual([...ctx.hostLogins], [
+        ["h1", "tomkaczocha"],
+        ["h2", "repo-bot"],
+        ["h3", "rawphp"],
+      ]);
+      // A building step (a relaunch, a resume, a feedback pass) gets the same logins.
+      const world = liveWorld(
+        machine,
+        "/factory-test/data",
+        noGh,
+        NodeServices.layer,
+        stubSessions,
+        () => T0,
+        "mac-mini",
+        noAttention,
+        baseLive(yield* Scope.make()),
+      );
+      buildingHostLogins.length = 0;
+      stub.on = true;
+      yield* Effect.ensuring(
+        world.advance(repo, newRunId("rawphp/softfac", "10", 1), "feature/x"),
+        Effect.sync(() => {
+          stub.on = false;
+        }),
+      );
+      assert.strictEqual(buildingHostLogins.length, 1);
+      assert.deepStrictEqual([...(buildingHostLogins[0] as ReadonlyMap<string, string>)], [
+        ["h1", "tomkaczocha"],
+        ["h2", "repo-bot"],
+        ["h3", "rawphp"],
+      ]);
+    }),
+  );
+});
+
 describe("liveWorld: the sessions of runs, for threads on a broken worktree", () => {
   const tempDir = useTempDirs();
 
@@ -4423,7 +4564,8 @@ describe("liveWorld: the hosts", () => {
         const paradev = newParadev();
         paradev.hostsList = [{ id: "h1", name: "mini", online: "yes" }];
         const { loop, factoryDir } = yield* started(
-          configFor([["a/b", "/b"]], "/gh", HOSTS),
+          // The host names its login, so the check does not need the runner's, which noGhProcess cannot read.
+          configFor([["a/b", "/b"]], "/gh", `${HOSTS}    gh_login: tomkaczocha\n`),
           noGhProcess,
           { ssh: healthy, onWorld: (world) => worlds.push(world) },
           paradev,

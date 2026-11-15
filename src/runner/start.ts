@@ -59,6 +59,7 @@ import {
   TEXT_CHANGED,
   baseNotABranch,
   baseNotOnOrigin,
+  hostLaunchMessage,
   launchMessage,
   sessionMayExistNote,
   type EarlierRunResume,
@@ -131,9 +132,24 @@ export const earlierRuns = Effect.fn("RunnerStart.earlierRuns")(function* (
   return runs;
 });
 
-/** Whether the factory's own login (`user`, matched without case) opened `pull`. */
-export const isOwnPull = (pull: { readonly author: string | null }, user: string): boolean =>
-  pull.author !== null && asciiLower(pull.author) === asciiLower(user);
+/** Whether one of the factory's logins (the runner's or a host's, matched without case) opened `pull`. */
+export const isOwnPull = (
+  pull: { readonly author: string | null },
+  logins: ReadonlyArray<string>,
+): boolean =>
+  pull.author !== null && logins.some((login) => asciiLower(pull.author!) === asciiLower(login));
+
+/** The logins whose pull requests are the run's own: the runner's, then each host's. */
+export const ownLogins = (ctx: {
+  readonly trackerUser: string;
+  readonly hostLogins: ReadonlyMap<string, string>;
+}): ReadonlyArray<string> => [ctx.trackerUser, ...ctx.hostLogins.values()];
+
+/** The login a run of this repo acts as on host `machineId`: the host's resolved one, else the runner's. */
+export const hostLoginOf = (
+  ctx: { readonly trackerUser: string; readonly hostLogins: ReadonlyMap<string, string> },
+  machineId: string,
+): string => ctx.hostLogins.get(machineId) ?? ctx.trackerUser;
 
 /**
  * Whether a session can be launched onto `pull` and told to push to its branch: it is in this
@@ -156,6 +172,8 @@ export interface StartContext {
   readonly repo: string;
   /** The login the tracker knows the factory by. */
   readonly trackerUser: string;
+  /** Machine id to the GitHub login a run of this repo acts as on that host. */
+  readonly hostLogins: ReadonlyMap<string, string>;
   /** The host name, for the `claimed` line and the status comment. */
   readonly machine: string;
   readonly project: ProjectConfig;
@@ -799,6 +817,14 @@ const launchSession = Effect.fn("RunnerStart.launchSession")(function* (
         resumed ?? undefined,
         named ? base : undefined,
       ),
+      hostMessage: (machineId) =>
+        hostLaunchMessage(
+          ctx.repo,
+          issue,
+          hostLoginOf(ctx, machineId),
+          resumed ?? undefined,
+          named ? base : undefined,
+        ),
       model,
       ...(resumed?.after === "existing-pr" && { pullRequestUrl: resumed.prUrl }),
     }),
@@ -953,7 +979,7 @@ const existingPullRequest = Effect.fn("RunnerStart.existingPullRequest")(functio
     }
   }
   const own = (yield* ctx.tracker.openPullRequestsClosing(issue)).filter(
-    (pull) => isOwnPull(pull, ctx.trackerUser) && isResumablePull(pull, base),
+    (pull) => isOwnPull(pull, ownLogins(ctx)) && isResumablePull(pull, base),
   );
   const newest = own.reduce<OpenPullRequest | null>(
     (best, pull) => (best === null || pull.number > best.number ? pull : best),

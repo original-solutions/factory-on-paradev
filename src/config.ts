@@ -125,6 +125,8 @@ export interface WatchedRepo {
 export interface RepoHost {
   readonly id: string;
   readonly path: string;
+  /** `gh_login`: the GitHub login this repo's runs on the host act as, over the host's own. Absent: the host's. */
+  readonly ghLogin?: string;
 }
 
 /** One entry of `hosts`: a Paradev host the runner may start agents on. */
@@ -139,7 +141,28 @@ export interface HostConfig {
   readonly maxRuns: number;
   /** The 1-minute load per core above which the host takes no run; 0 turns the check off. */
   readonly maxLoadPerCore: number;
+  /** `gh_login`: the GitHub login runs on this host act as. Absent: the runner's own login. */
+  readonly ghLogin?: string;
 }
+
+/** The `gh_login` a run on `host` is configured with: the repo's for that host, else the host's; absent when neither names one. */
+export const configuredGhLogin = (host: HostConfig | undefined, on?: RepoHost): string | undefined =>
+  on?.ghLogin ?? host?.ghLogin;
+
+/**
+ * The GitHub login a run of `repo` on host `machineId` acts as: the configured one, else
+ * `runnerLogin`.
+ */
+export const hostGhLogin = (
+  hosts: ReadonlyArray<HostConfig>,
+  repo: WatchedRepo,
+  machineId: string,
+  runnerLogin: string,
+): string =>
+  configuredGhLogin(
+    hosts.find((host) => host.id === machineId),
+    repo.hosts?.find((on) => on.id === machineId),
+  ) ?? runnerLogin;
 
 export type MachineSize = "small" | "medium" | "large";
 
@@ -642,7 +665,7 @@ const checkUnknownKeys = (c: Checker, root: Mapping) => {
 };
 
 const REPO_KEYS = ["repo", "path", "hosts", "cloud"] as const;
-const REPO_HOST_KEYS = ["id", "path"] as const;
+const REPO_HOST_KEYS = ["id", "path", "gh_login"] as const;
 /** `owner/name` as GitHub allows them. */
 const REPO_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
@@ -654,6 +677,20 @@ interface TargetsKnown {
   readonly hostIds: ReadonlySet<string> | undefined;
   readonly cloud: boolean | undefined;
 }
+
+/** A GitHub login: letters, digits and `-`, 1 to 39 characters. */
+const GH_LOGIN = /^[A-Za-z0-9-]{1,39}$/;
+
+/** `gh_login` of a host or a repo's host: null when absent, undefined when it has an error. */
+const ghLoginFrom = (c: Checker, entry: Mapping, path: string): string | null | undefined => {
+  if (!Object.hasOwn(entry, "gh_login")) return null;
+  const login = c.nonEmptyString(entry["gh_login"], `${path}.gh_login`);
+  if (login !== undefined && !GH_LOGIN.test(login)) {
+    c.err(`${path}.gh_login`, "must be a GitHub login: letters, digits and -, at most 39");
+    return undefined;
+  }
+  return login;
+};
 
 /** `repos[i].hosts`: absent, or a list of `{ id, path }` naming hosts in `hosts`, no id twice. */
 const repoHostsFrom = (
@@ -680,8 +717,9 @@ const repoHostsFrom = (
     }
     const id = c.nonEmptyString(c.child(host, at, "id"), `${at}.id`);
     const clone = c.nonEmptyString(c.child(host, at, "path"), `${at}.path`);
+    const ghLogin = ghLoginFrom(c, host, at);
     c.unknownFields(host, REPO_HOST_KEYS, at);
-    if (id === undefined || clone === undefined) {
+    if (id === undefined || clone === undefined || ghLogin === undefined) {
       ok = false;
       return;
     }
@@ -700,7 +738,7 @@ const repoHostsFrom = (
       ok = false;
       return;
     }
-    out.push({ id, path: clone });
+    out.push({ id, path: clone, ...(ghLogin !== null && { ghLogin }) });
   });
   return ok ? out : undefined;
 };
@@ -786,7 +824,7 @@ const reposFrom = (
   return ok ? out : undefined;
 };
 
-const HOST_KEYS = ["id", "name", "ssh", "max_runs", "max_load_per_core"] as const;
+const HOST_KEYS = ["id", "name", "ssh", "max_runs", "max_load_per_core", "gh_login"] as const;
 /**
  * `user@host`, nothing else: with no user, ssh under BatchMode guesses one. An ssh config alias
  * keeps its HostName, port and key when written `user@alias`. Neither side starts with `-`, which
@@ -822,6 +860,7 @@ const hostsFrom = (c: Checker, root: Mapping): ReadonlyArray<HostConfig> | undef
       DEFAULT_MAX_LOAD_PER_CORE,
       0,
     );
+    const ghLogin = ghLoginFrom(c, entry, path);
     c.unknownFields(entry, HOST_KEYS, path);
     // A machine id goes into thread ids (`host:<id>:<ws>`) and onto the superset command line.
     if (id !== undefined && !isPlainId(id)) {
@@ -844,12 +883,13 @@ const hostsFrom = (c: Checker, root: Mapping): ReadonlyArray<HostConfig> | undef
       name === undefined ||
       ssh === undefined ||
       maxRuns === undefined ||
-      maxLoadPerCore === undefined
+      maxLoadPerCore === undefined ||
+      ghLogin === undefined
     ) {
       ok = false;
       return;
     }
-    out.push({ id, name, ssh, maxRuns, maxLoadPerCore });
+    out.push({ id, name, ssh, maxRuns, maxLoadPerCore, ...(ghLogin !== null && { ghLogin }) });
   });
   return ok ? out : undefined;
 };

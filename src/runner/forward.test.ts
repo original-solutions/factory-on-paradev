@@ -351,6 +351,7 @@ const rigFor = (
   const ctx: BuildingContext = {
     repo: REPO,
     trackerUser: "rawphp",
+    hostLogins: new Map(),
     machine: "mac-mini",
     project: projectConfig(options.instructors ?? ["rawphp"]),
     dataDir,

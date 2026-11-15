@@ -16,12 +16,14 @@ import { isNoTargetHasRoom, type FactorySessions } from "../sessions.ts";
 import {
   END_WITH_DONE,
   LAUNCH_FAILED,
+  hostLaunchMessage,
   launchMessage,
   sessionMayExistNote,
   type ResumeFrom,
 } from "./messages.ts";
 import { launchable } from "./launchTarget.ts";
 import { relaunchCommandId, type Relaunch } from "./progress.ts";
+import { hostLoginOf } from "./start.ts";
 import {
   describe,
   goStuck,
@@ -93,7 +95,8 @@ export const relaunchSession = Effect.fn("RunnerRelaunch.relaunchSession")(funct
     prUrl: from.prUrl,
     after: relaunch.fixes.kind === "feedback" ? "feedback" : "failed-regate",
   };
-  const message = `${launchMessage(ctx.repo, issue, ctx.trackerUser, resumed)}\n\n${END_WITH_DONE}\n\n${relaunch.message}`;
+  const tail = `\n\n${END_WITH_DONE}\n\n${relaunch.message}`;
+  const message = `${launchMessage(ctx.repo, issue, ctx.trackerUser, resumed)}${tail}`;
   const launched = yield* Effect.result(
     ctx.sessions.launch({
       commandId,
@@ -101,6 +104,8 @@ export const relaunchSession = Effect.fn("RunnerRelaunch.relaunchSession")(funct
       title: `${ctx.repo}#${issue} ${detail.title}`,
       baseRef: relaunch.branch,
       message,
+      hostMessage: (machineId) =>
+        `${hostLaunchMessage(ctx.repo, issue, hostLoginOf(ctx, machineId), resumed)}${tail}`,
       model: project.model,
       pullRequestUrl: from.prUrl,
     }),

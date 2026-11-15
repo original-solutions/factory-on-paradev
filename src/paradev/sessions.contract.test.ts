@@ -255,6 +255,20 @@ const launchScript = (r: ReturnType<typeof repos>): ReadonlyArray<Step> => [
 ];
 
 describe("launch", () => {
+  it.live("a local launch keeps message as the prompt, whatever hostMessage says", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      r.addWorktree("fac/x8", "main");
+      const t = rig(
+        [...launchScript(r), { argv: argvIs("agents", "explain"), fixture: "agents-explain-local-starting" }],
+        { config: { remoteBase: r.remoteBase } },
+      );
+      yield* t.run((s) => s.launch(request({ hostMessage: () => "host message" })));
+      const argv = t.calls.find(argvIs("agents", "create"))!;
+      assert.strictEqual(argv[argv.indexOf("--prompt") + 1], "/factory original-solutions/factory-paradev-spike#1");
+    }),
+  );
+
   it.live("creates the workspace with no --agent, starts the agent with agents create, records the thread", () =>
     Effect.gen(function* () {
       const r = repos();
@@ -2739,6 +2753,17 @@ describe("launch on a host", () => {
     }),
   );
 
+  it.live("starts the agent with the host's message, built for the machine it was placed on", () =>
+    Effect.gen(function* () {
+      const r = repos();
+      const ssh = fakeSsh((command) => (command.includes("'rev-parse'") ? { tail: `${r.main}\n` } : { exitCode: 1 }));
+      const t = rig(hostScript(r), { config: { remoteBase: r.remoteBase, ssh: ssh.runner, ...onHost } });
+      yield* t.run((s) => s.launch(request({ hostMessage: (machineId) => `host message for ${machineId}` })));
+      const argv = t.calls.find(argvIs("agents", "create"))!;
+      assert.strictEqual(argv[argv.indexOf("--prompt") + 1], `host message for ${HOST}`);
+    }),
+  );
+
   it.live("resets a host worktree off the base over SSH, after the snapshot shows no agent and before the agent starts", () =>
     Effect.gen(function* () {
       const r = repos();
@@ -2814,6 +2839,22 @@ describe("launch in the cloud", () => {
     "--name", "fac/1-1", "--base-branch", "main", "--tag", "factory", "--tag", `factory-${RUNNER}`,
   ];
   const getArgv = ["workspaces", "get", C3_WS, "--host", "cloud"];
+
+  it.live("a cloud launch keeps message as the prompt, whatever hostMessage says", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
+        ],
+        { config: onCloud },
+      );
+      yield* t.run((s) => s.launch(request({ hostMessage: () => "host message" })));
+      const argv = t.calls.find(argvIs("agents", "create"))!;
+      assert.strictEqual(argv[argv.indexOf("--prompt") + 1], "/factory original-solutions/factory-paradev-spike#1");
+    }),
+  );
 
   it.live("creates with no --branch or --agent, records before the ready poll, starts the agent once ready, keeps Paradev's branch", () =>
     Effect.gen(function* () {

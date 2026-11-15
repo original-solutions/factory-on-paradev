@@ -1,5 +1,6 @@
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Random from "effect/Random";
 import * as Schema from "effect/Schema";
 
@@ -681,6 +682,16 @@ const ClaimedRows = Schema.Array(
   }),
 );
 const UserView = Schema.Struct({ login: Schema.optional(Schema.NullOr(Schema.String)) });
+const decodeUser = Schema.decodeUnknownOption(Schema.fromJsonString(UserView));
+
+/** The `gh` arguments that ask the API who `gh` is authenticated as. */
+export const LOGIN_ARGS: ReadonlyArray<string> = ["api", "user"];
+
+/** The login in what `gh` prints for {@link LOGIN_ARGS}; null when that is not a user or names no login. */
+export const loginOf = (stdout: string): string | null => {
+  const login = Option.getOrUndefined(decodeUser(stdout))?.login;
+  return login === undefined || login === null || login === "" ? null : login;
+};
 
 const BlockerRows = Schema.Array(
   Schema.Struct({
@@ -1167,6 +1178,9 @@ export interface GitHubOptions {
 
 type GitHubEffect<A> = Effect.Effect<A, GitHubError, FactoryProcess>;
 type GitHubGen<A> = Effect.fn.Return<A, GitHubError, FactoryProcess>;
+
+/** The login `gh` is authenticated as under `ghConfigDir`: {@link makeGitHub}'s `login`, which names no repo. */
+export const ghLogin = (ghConfigDir: string) => makeGitHub({ repo: "", ghConfigDir }).login();
 
 export const makeGitHub = (options: GitHubOptions) => {
   const { repo } = options;
@@ -2412,12 +2426,9 @@ export const makeGitHub = (options: GitHubOptions) => {
 
   /** The login `gh` is authenticated as, from the API. */
   const login = Effect.fn("GitHub.login")(function* (): GitHubGen<string> {
-    const args = ["api", "user"];
-    const me = yield* ghJson(args, UserView, "an object with the user's login");
-    if (me.login === undefined || me.login === null || me.login === "") {
-      return yield* parseError(args, "an object with the user's login (it was empty)");
-    }
-    return me.login;
+    const found = loginOf(yield* ghRead(LOGIN_ARGS));
+    if (found === null) return yield* parseError(LOGIN_ARGS, "an object with the user's login");
+    return found;
   });
 
   /**

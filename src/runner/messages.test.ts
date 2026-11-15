@@ -19,6 +19,7 @@ import {
   failureMessage,
   feedbackMessage,
   fenced,
+  hostLaunchMessage,
   launchMessage,
   mergeConflictMessage,
   prepareOutputTail,
@@ -86,6 +87,42 @@ describe("launchMessage", () => {
     );
     assert.ok(!message.includes("T3"), message);
     assert.ok(!message.includes("GH_CONFIG_DIR="), message);
+  });
+});
+
+/** The paragraph a session placed on a host gets, for the login `tomkaczocha`. */
+const HOST_IDENTITY_WORDS =
+  "You act on GitHub as tomkaczocha. This login is fixed for the run and overrides the factory skill's own account pick: act as tomkaczocha and choose no other login, even if another one can push. Paradev started this session on a host whose terminal's active gh login may be another one. Before anything else run gh api user --jq .login exactly as written, in the environment you were started with. If it prints tomkaczocha, carry on. If it prints another login, take only the prefix form from the factory skill's GitHub account rule: prefix every gh and git call that reaches GitHub with GH_TOKEN=$(gh auth token --user tomkaczocha) inline, and give each such git call -c credential.helper= -c 'credential.helper=!gh auth git-credential' as well. Then prove the selection once: run GH_TOKEN=$(gh auth token --user tomkaczocha) gh api user --jq .login, and carry on only when it prints tomkaczocha. Never print, echo or export the token or write it anywhere, never set GH_CONFIG_DIR or GH_HOST, and never use gh auth switch. If that proof prints anything else, or gh auth token --user tomkaczocha finds no token, end with FACTORY-STOP: stuck and make the first line of your message \"the session's gh account is <x>, not tomkaczocha\".";
+
+describe("hostLaunchMessage", () => {
+  it("is the local message with the host's account paragraph in place of the local one", () => {
+    const host = hostLaunchMessage("rawphp/softfac", 10, "tomkaczocha");
+    assert.strictEqual(
+      host,
+      `/factory rawphp/softfac#10\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${BRANCH_WORDS}\n\n${HOST_IDENTITY_WORDS}`,
+    );
+    const local = launchMessage("rawphp/softfac", 10, "tomkaczocha");
+    assert.strictEqual(
+      host.slice(0, host.lastIndexOf("\n\n")),
+      local.slice(0, local.lastIndexOf("\n\n")),
+    );
+  });
+
+  it("keeps the resume and base paragraphs, and the local text still bans the token command", () => {
+    const resumed: EarlierRunResume = {
+      run: { repo: "acme/widgets", issue: "42", attempt: 1 },
+      branch: "t3code/abc",
+      after: "time-limit",
+    };
+    const host = hostLaunchMessage("acme/widgets", 42, "alice", resumed, "release");
+    const local = launchMessage("acme/widgets", 42, "alice", resumed, "release");
+    assert.strictEqual(
+      host.slice(0, host.lastIndexOf("\n\n")),
+      local.slice(0, local.lastIndexOf("\n\n")),
+    );
+    assert.ok(host.includes("Open the pull request against release"), host);
+    assert.ok(local.includes("never use gh auth token or gh auth switch"), local);
+    assert.ok(!host.includes("never use gh auth token"), host);
   });
 });
 
@@ -289,7 +326,7 @@ describe("the fixed reasons of a building run", () => {
     );
     assert.strictEqual(
       WRONG_ACCOUNT,
-      "the session ran as the wrong GitHub account: restart the factory's T3 server so it has GH_CONFIG_DIR, then set factory:ready again",
+      "the session's gh could not act as the login the run names: for a host run, run factory-runner hosts check <name>; for a local run, check this Mac's active gh login; then set factory:ready again",
     );
     assert.strictEqual(TIME_LIMIT, "the run passed its time limit");
     assert.strictEqual(THREAD_GONE, "the T3 thread no longer exists");
