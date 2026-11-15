@@ -30,6 +30,7 @@ import { GIB, isLowDisk, type FreeSpace } from "./disk.ts";
 import { stateLabel, type State } from "./domain/lifecycle.ts";
 import { overload, type Load, type Overload } from "./load.ts";
 import { readHostLoad } from "./paradev/hostLoad.ts";
+import { LOCAL_PLUGIN_FIX } from "./plugin.ts";
 import {
   firstFailure,
   HOST_NOT_READY_PREFIX,
@@ -435,6 +436,14 @@ export interface PassWorld {
   readonly hostCheckedAt: Map<string, number>;
   /** Runs the host's ten checks of `hosts check`: the lines, `ok` or the fix each. Never fails. */
   readonly checkHost: (host: HostConfig) => Effect.Effect<ReadonlyArray<CheckLine>>;
+  /**
+   * This Mac's plugin check: why it failed, null when it passed, and when it last ran (null: not
+   * since this world was built). A new world starts not ready, as not checked yet; `checkLocalPlugin`
+   * sets it. Per world, so a config load starts over. Placement reads `notReady`.
+   */
+  readonly localPlugin: { notReady: string | null; checkedAt: number | null };
+  /** Reads this Mac's landed plugin against the running runner's minimum: why it does not do, null when it does. Never throws. */
+  readonly checkLocalPlugin: () => string | null;
   /**
    * The free space of the fuller of the volumes that hold the sessions' worktrees and the gate's
    * checkouts; not read when `min_free_gib` is 0.
@@ -1276,6 +1285,45 @@ const cloudProxy = Effect.fn("Pass.cloudProxy")(function* (
     });
   }
   return `the proxy check failed: ${answer.reason}`;
+});
+
+/** The item this Mac's failed plugin check keeps open. */
+export const PLUGIN_NOT_READY_ITEM_ID = "plugin-not-ready";
+
+/** What this Mac's plugin check reads and writes: its reading, attention and the clock. */
+export type LocalPluginWorld = Pick<PassWorld, "localPlugin" | "checkLocalPlugin" | "attention" | "nowMs">;
+
+/**
+ * Checks this Mac's plugin when due, on the host checks' cadence: not checked since this world was
+ * built (a config load), not ready and last checked at least `HOST_RECHECK_EVERY_MS` ago, or ready
+ * and last checked at least `HOST_READY_RECHECK_EVERY_MS` ago. The runner runs it beside the pass,
+ * before the pass places anything; it is one file read. A failure is this Mac's `notReady`, with
+ * one `plugin-not-ready` item that prints the fix (replaced when the reason changed); a pass clears it.
+ */
+export const checkLocalPlugin = Effect.fn("Pass.checkLocalPlugin")(function* (world: LocalPluginWorld) {
+  const now = world.nowMs();
+  const { checkedAt, notReady } = world.localPlugin;
+  if (checkedAt !== null) {
+    const every = notReady === null ? HOST_READY_RECHECK_EVERY_MS : HOST_RECHECK_EVERY_MS;
+    if (now - checkedAt < every) return;
+  }
+  const reason = world.checkLocalPlugin();
+  world.localPlugin.checkedAt = now;
+  world.localPlugin.notReady = reason;
+  if (reason === null) {
+    return yield* world.attention.clear((item) => item.id === PLUGIN_NOT_READY_ITEM_ID);
+  }
+  const message = `this Mac takes no run: ${reason}; run ${LOCAL_PLUGIN_FIX} (checked again every 5 minutes)`;
+  // An open item is not raised again, so one about another reason is cleared first.
+  yield* world.attention.clear((open) => open.id === PLUGIN_NOT_READY_ITEM_ID && open.message !== message);
+  yield* world.attention.raise({
+    id: PLUGIN_NOT_READY_ITEM_ID,
+    kind: "attention",
+    repo: null,
+    issue: null,
+    run: null,
+    message,
+  });
 });
 
 /** How long after its last check a host that is not ready is checked again. */

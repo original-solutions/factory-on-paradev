@@ -64,16 +64,16 @@ describe("readMinPluginVersion", () => {
   });
 
   it("fails on a package.json that cannot be read, or a minimum that is not a version", () => {
-    const gone = NodePath.join(tmp, "no-such-package");
-    const unread = readMinPluginVersion(gone);
-    assert.isTrue("failed" in unread && unread.failed.startsWith(`${NodePath.join(gone, "package.json")} could not be read: `));
-    const bad = packageWith('{"factory":{"minPluginVersion":"0.3"}}');
-    assert.deepStrictEqual(readMinPluginVersion(bad), {
-      failed: `${NodePath.join(bad, "package.json")} has factory.minPluginVersion "0.3", not a version`,
+    const unread = readMinPluginVersion(NodePath.join(tmp, "no-such-package"));
+    assert.isTrue("failed" in unread && unread.failed.startsWith("package.json could not be read: "));
+    assert.deepStrictEqual(readMinPluginVersion(packageWith('{"factory":{"minPluginVersion":"0.3"}}')), {
+      failed: 'package.json has factory.minPluginVersion "0.3", not a version',
     });
-    const notJson = packageWith("{");
-    const broken = readMinPluginVersion(notJson);
-    assert.isTrue("failed" in broken && broken.failed.startsWith(`${NodePath.join(notJson, "package.json")} could not be read: `));
+    assert.deepStrictEqual(readMinPluginVersion(packageWith('{"factory":{"minPluginVersion":3}}')), {
+      failed: "package.json has factory.minPluginVersion 3, not a version",
+    });
+    const broken = readMinPluginVersion(packageWith("{"));
+    assert.isTrue("failed" in broken && broken.failed.startsWith("package.json could not be read: "));
   });
 });
 

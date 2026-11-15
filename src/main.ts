@@ -52,6 +52,7 @@ import { readLowestFreeSpace, type FreeSpace } from "./disk.ts";
 import { overload, readLoad, type Load } from "./load.ts";
 import { checkHost, type CliCall } from "./paradev/hostsCheck.ts";
 import { liveSshSpawn, type SshSpawn } from "./paradev/ssh.ts";
+import { localPluginReason, readMinPluginVersion } from "./plugin.ts";
 import { clearAfterPass, makeSelfUpdate, type SelfUpdate, type SelfUpdateOptions } from "./selfUpdate.ts";
 import * as Gate from "./gate.ts";
 import { guardLogStreams } from "./logStreams.ts";
@@ -71,6 +72,7 @@ import {
   errorKind,
   gateQueued,
   checkHosts,
+  checkLocalPlugin,
   lastGoodCopy,
   plain,
   runPass,
@@ -153,6 +155,9 @@ guardLogStreams();
 
 /** The runner's version, as `package.json` has it. */
 export const version = Paths.packageVersion(NodePath.resolve(import.meta.dirname, ".."));
+
+/** The plugin this runner needs on a target: its `factory.minPluginVersion`, or why that did not read. */
+const minPluginVersion = readMinPluginVersion(NodePath.resolve(import.meta.dirname, ".."));
 
 /**
  * The running factory, for the code that wakes it. Its `status` follows `reload`.
@@ -338,6 +343,8 @@ export interface LiveGate {
   readonly proxyGet?: ProxyGet;
   /** Asks the Paradev CLI (with --json) for the host checks: the parsed answer, or the error text. */
   readonly superset?: CliCall;
+  /** This Mac's plugin check. Default the `VERSION` file under HOME; a test passes the answer it needs. */
+  readonly checkLocalPlugin?: () => string | null;
 }
 
 /** The run's line when its gate, started in the background, has ended. */
@@ -850,6 +857,9 @@ export const liveWorld = (
         : checkProxy(proxyGet, machine.cloud.proxy),
     hostsNotReady,
     hostCheckedAt: new Map(),
+    // Not ready until its check passes, as a host: a new world is a new config load.
+    localPlugin: { notReady: "not checked yet since the config load", checkedAt: null },
+    checkLocalPlugin: live.checkLocalPlugin ?? (() => localPluginReason(NodeOS.homedir(), minPluginVersion)),
     checkHost: (host) =>
       checkHost(
         {
@@ -939,6 +949,8 @@ export interface RuntimeOptions {
   readonly shared?: LiveShared;
   /** Makes the self-update the factory forks and checks after each pass. Default the real one; a test passes its own. */
   readonly selfUpdate?: (options: SelfUpdateOptions) => Effect.Effect<SelfUpdate>;
+  /** This Mac's plugin check. Default the `VERSION` file under HOME; a test passes the answer it needs. */
+  readonly checkLocalPlugin?: () => string | null;
 }
 
 /** A pass of a factory with no config to run on. */
@@ -1073,6 +1085,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
   let placing: {
     readonly machine: MachineConfig;
     readonly hostsNotReady: () => ReadonlyMap<string, string>;
+    readonly localNotReady: () => string | null;
     readonly running: Effect.Effect<ReadonlyArray<TargetCount>>;
     readonly record: (event: MachineEvent) => Effect.Effect<void>;
   } | null = null;
@@ -1092,6 +1105,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     },
     hostLoads: shared.hostLoads,
     hostsNotReady: () => placingNow().hostsNotReady(),
+    localNotReady: () => placingNow().localNotReady(),
     readLoad: options.readLoad ?? readLoad,
     running: Effect.suspend(() => placingNow().running),
     record: (event) => Effect.suspend(() => placingNow().record(event)),
@@ -1111,6 +1125,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     execPath: globalThis.process.execPath,
     ghConfigDir: () => placingNow().machine.ghConfigDir,
     gatesRunning: () => shared.gating.size,
+    attention,
   });
 
   const onePass = Effect.gen(function* () {
@@ -1137,6 +1152,9 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         Effect.forkIn(scope),
       );
     }
+    // This Mac's plugin check is one file read, so it runs here, before the pass places anything,
+    // on the host checks' cadence: first after each config load.
+    yield* checkLocalPlugin(current.world);
     // The self-update goes beside the pass too, once per start: it reads the tags every ten
     // minutes, and `self_update` from the config current at each read, not pinned to the first pass's.
     if (!updating) {
@@ -1317,6 +1335,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
         ...(options.readLoad !== undefined && { readLoad: options.readLoad }),
         ...(options.ssh !== undefined && { ssh: options.ssh }),
         ...(options.proxyGet !== undefined && { proxyGet: options.proxyGet }),
+        ...(options.checkLocalPlugin !== undefined && { checkLocalPlugin: options.checkLocalPlugin }),
         superset: (argv) => cli.run(argv, { timeoutMs: 30_000 }).pipe(Effect.mapError((e) => e.text.split("\n")[0] ?? e.text)),
       },
       options.gateRemoteBase,
@@ -1436,6 +1455,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     placing = {
       machine,
       hostsNotReady: () => base.hostsNotReady,
+      localNotReady: () => base.localPlugin.notReady,
       running: Effect.suspend(() => sessions.runningByTarget),
       record: (event) =>
         base.record(event).pipe(

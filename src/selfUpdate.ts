@@ -27,6 +27,7 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 
+import type { Attention } from "./attention.ts";
 import { gateLocksHeld } from "./gate.ts";
 import {
   FETCH_CREDENTIAL_FLAGS,
@@ -35,7 +36,9 @@ import {
 } from "./gitHardening.ts";
 import { place, pointCurrent, stage } from "./install.ts";
 import { installPathsOf, packageVersion, UPDATE_REFUSED_FILE } from "./paths.ts";
+import { LOCAL_PLUGIN_FIX, readLandedPlugin, readMinPluginVersion } from "./plugin.ts";
 import { FactoryProcess, type RunInput } from "./process.ts";
+import { compareVersions, parseVersion, type Version } from "./version.ts";
 import {
   readPending,
   readRefused,
@@ -66,15 +69,8 @@ const TAG_LINE = /^refs\/tags\/v(\d+)\.(\d+)\.(\d+) ([0-9a-f]{40}) (commit|tag)$
 const SHA = /^[0-9a-f]{40}$/;
 const REPOSITORY = /^github:([^/\s]+)\/([^/\s]+)$/;
 const OFF_LINE = "self-update off: self_update is false";
-
-type Version = readonly [number, number, number];
-
-const compare = (a: Version, b: Version): number => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
-
-const parseVersion = (text: string): Version | null => {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(text);
-  return match === null ? null : [Number(match[1]), Number(match[2]), Number(match[3])];
-};
+/** The item a tag held back for this Mac's plugin keeps open. */
+export const PLUGIN_UPDATE_NEEDED_ITEM_ID = "plugin-update-needed";
 
 /** A `vX.Y.Z` tag and the object its ref names: a commit, or an annotated tag to peel. */
 interface Candidate {
@@ -90,7 +86,7 @@ const highestTag = (lines: ReadonlyArray<string>): Candidate | null => {
     const match = TAG_LINE.exec(line.trim());
     if (match === null) continue;
     const version: Version = [Number(match[1]), Number(match[2]), Number(match[3])];
-    if (best === null || compare(version, best.version) > 0) {
+    if (best === null || compareVersions(version, best.version) > 0) {
       best = { version, sha: match[4]!, annotated: match[5] === "tag" };
     }
   }
@@ -144,6 +140,8 @@ export interface SelfUpdateOptions {
    * runs, so the restart waits on both.
    */
   readonly gatesRunning: () => number;
+  /** Where a tag held back for this Mac's plugin raises `plugin-update-needed`, and clears it. */
+  readonly attention: Pick<Attention["Service"], "raise" | "clear">;
 }
 
 export interface SelfUpdate {
@@ -176,6 +174,8 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
   let enabled: () => boolean = () => false;
   /** Whether the off line was logged since the key was last seen on. */
   let offSaid = false;
+  /** The plugin refusals logged since start, by tag and reason, so a retry logs nothing new. */
+  const pluginSaid = new Set<string>();
 
   /** `self_update` now; the first read that finds it off logs one line, until it is on again. */
   const enabledNow = Effect.suspend(() => {
@@ -225,10 +225,51 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
     });
 
   /**
+   * Why the clone of `tag` cannot run on this Mac's plugin, null when it can: its
+   * `factory.minPluginVersion` is newer than the landed plugin, or either read failed. A tag with
+   * no minimum reads no plugin.
+   */
+  const pluginHold = (clone: string): string | null => {
+    const needed = readMinPluginVersion(clone);
+    if ("failed" in needed) return `its ${needed.failed}`;
+    if (needed.ok === null) return null;
+    const landed = readLandedPlugin(options.home);
+    if ("failed" in landed) return `it needs the factory plugin ${needed.ok} or newer, and ${landed.failed}`;
+    return compareVersions(parseVersion(landed.ok)!, parseVersion(needed.ok)!) < 0
+      ? `it needs the factory plugin ${needed.ok} or newer, and this Mac has ${landed.ok}`
+      : null;
+  };
+
+  /**
+   * Holds `tag` back for this Mac's plugin: one warning per tag and reason while the runner runs,
+   * and one `plugin-update-needed` item, replaced when its text changed. The tag is not marked, so
+   * the next period tries it again.
+   */
+  const holdForPlugin = (tag: string, why: string, running: string) =>
+    Effect.gen(function* () {
+      const line = `update ${tag} not staged: ${why}; on this Mac run ${LOCAL_PLUGIN_FIX}; the runner stays on ${running} and tries again every 10 minutes`;
+      if (!pluginSaid.has(line)) {
+        pluginSaid.add(line);
+        yield* Effect.logWarning(line);
+      }
+      // An open item is not raised again, so one about another tag or reason is cleared first.
+      yield* options.attention.clear((open) => open.id === PLUGIN_UPDATE_NEEDED_ITEM_ID && open.message !== line);
+      yield* options.attention.raise({
+        id: PLUGIN_UPDATE_NEEDED_ITEM_ID,
+        kind: "attention",
+        repo: null,
+        issue: null,
+        run: null,
+        message: line,
+      });
+    });
+
+  /**
    * Pins the tag to the commit its ref named at the read, checks that commit is on the default
-   * branch, clones the tag and checks the clone is that commit, installs and smokes it, and places
-   * it under `versions/`; a failure warns once and marks the tag. A runner stopped part way leaves
-   * its clone for the next start.
+   * branch, clones the tag and checks the clone is that commit, checks this Mac's plugin is new
+   * enough for it, installs and smokes it, and places it under `versions/`; a failure warns once
+   * and marks the tag, and a plugin too old is held back without the mark. A runner stopped part
+   * way leaves its clone for the next start.
    */
   const stageTag = (repository: Repository, candidate: Candidate, version: string, running: string) =>
     Effect.gen(function* () {
@@ -298,6 +339,15 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
             `the clone's HEAD ${head.ok.trim()} is not the checked commit ${sha} of ${tag}: the tag moved, or a branch of its name was cloned`,
           );
         }
+
+        // Before npm ci, so a held tag costs one shallow clone. Not `fail`: a person updates the
+        // plugin, and the next period stages the tag by itself.
+        const held = pluginHold(clone);
+        if (held !== null) {
+          NodeFS.rmSync(clone, { recursive: true, force: true });
+          return yield* holdForPlugin(tag, held, running);
+        }
+        yield* options.attention.clear((open) => open.id === PLUGIN_UPDATE_NEEDED_ITEM_ID);
 
         const nodeDir = NodePath.dirname(options.execPath);
         const installed = yield* step("npm ci", {
@@ -379,7 +429,7 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
         return yield* Effect.logWarning(`self-update could not read the tags of ${repository.owner}/${repository.repo}: ${why}`);
       }
       const candidate = highestTag(read.success.tail.split("\n"));
-      if (candidate === null || compare(candidate.version, running) <= 0) return;
+      if (candidate === null || compareVersions(candidate.version, running) <= 0) return;
       const version = candidate.version.join(".");
       // The highest tag only: a refused one stages nothing, not a lower tag still above the running version.
       let refusedTag: string | null;
@@ -498,7 +548,7 @@ export const clearAfterPass = (dataDir: string, running: string): Effect.Effect<
     }
     const runningVersion = parseVersion(running);
     const refusedVersion = refused === null ? null : parseVersion(refused.tag.slice(1));
-    if (runningVersion !== null && refusedVersion !== null && compare(runningVersion, refusedVersion) > 0) {
+    if (runningVersion !== null && refusedVersion !== null && compareVersions(runningVersion, refusedVersion) > 0) {
       try {
         removeRefused(dataDir);
       } catch (error) {
