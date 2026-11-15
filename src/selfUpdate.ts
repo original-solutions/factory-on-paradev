@@ -169,21 +169,35 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
   const stopped = yield* Deferred.make<void>();
   const { versions } = installPathsOf(options.home);
   let staged: { readonly tag: string; readonly version: string; readonly from: string } | null = null;
-  /** Tags whose staging failed; not tried again until the runner restarts. */
+  /**
+   * Tags whose staging failed; not tried again until the runner restarts. A tag held for the
+   * plugin whose read did not answer is the one exception: see `heldForPlugin`.
+   */
   const failed = new Set<string>();
   let enabled: () => boolean = () => false;
   /** Whether the off line was logged since the key was last seen on. */
   let offSaid = false;
-  /** The plugin refusals logged since start, by tag and reason, so a retry logs nothing new. */
-  const pluginSaid = new Set<string>();
+  /** The lines a held tag has logged since start, so a retry logs nothing new. */
+  const heldSaid = new Set<string>();
   /**
-   * Tags held back for this Mac's plugin and not yet past the plugin step. A failure of a step
-   * before it (a gh read, the clone) does not mark such a tag: it is retried every period until a
-   * person updates the plugin, so one flaky read in that wait must not stop it for good.
+   * Tags held back for this Mac's plugin and not yet past the plugin step. Such a tag is retried
+   * every period until a person updates the plugin, so a read that does not answer in that wait (a
+   * gh call, the clone) does not mark it. Any other failure marks it, as it marks any tag.
    */
   const heldForPlugin = new Set<string>();
-  /** Nothing is held back for the plugin any more: its item goes. */
+  /**
+   * Nothing waits for the plugin any more: its item goes. That is so when a tag passes the plugin
+   * step, when a tag is marked failed (the highest tag only is tried, so none is tried until a
+   * restart), when no tag is newer than the running version, and while `self_update` is off.
+   */
   const nothingHeld = options.attention.clear((open) => open.id === PLUGIN_UPDATE_NEEDED_ITEM_ID);
+  /** Logs `line` once since start. */
+  const warnOnce = (line: string) =>
+    Effect.suspend(() => {
+      if (heldSaid.has(line)) return Effect.void;
+      heldSaid.add(line);
+      return Effect.logWarning(line);
+    });
 
   /** `self_update` now; the first read that finds it off logs one line, until it is on again. */
   const enabledNow = Effect.suspend(() => {
@@ -256,10 +270,7 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
   const holdForPlugin = (tag: string, why: string, running: string) =>
     Effect.gen(function* () {
       const line = `update ${tag} not staged: ${why}; on this Mac run ${LOCAL_PLUGIN_FIX}; the runner stays on ${running} and tries again every 10 minutes`;
-      if (!pluginSaid.has(line)) {
-        pluginSaid.add(line);
-        yield* Effect.logWarning(line);
-      }
+      yield* warnOnce(line);
       // An open item is not raised again, so one about another tag or reason is cleared first.
       yield* options.attention.clear((open) => open.id === PLUGIN_UPDATE_NEEDED_ITEM_ID && open.message !== line);
       yield* options.attention.raise({
@@ -283,27 +294,33 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
     Effect.gen(function* () {
       const tag = `v${version}`;
       const repo = `repos/${repository.owner}/${repository.repo}`;
-      const fail = (why: string) =>
-        Effect.sync(() => {
-          if (!heldForPlugin.has(tag)) failed.add(tag);
-        }).pipe(Effect.andThen(Effect.logWarning(`update ${tag} not staged: ${why}`)));
+      /** Marks the tag and warns; `unanswered` is a read that did not answer, which a held tag waits through. */
+      const fail = (why: string, unanswered = false) =>
+        Effect.gen(function* () {
+          const line = `update ${tag} not staged: ${why}`;
+          if (unanswered && heldForPlugin.has(tag)) return yield* warnOnce(line);
+          failed.add(tag);
+          heldForPlugin.delete(tag);
+          yield* Effect.logWarning(line);
+          yield* nothingHeld;
+        });
 
       // One commit, by sha, from here on: a tag moved between the check and the clone, or a branch
       // of the tag's name, is not what was checked. An annotated tag's ref names the tag object.
       let sha = candidate.sha;
       if (candidate.annotated) {
         const peeled = yield* ghApi("tag read", `${repo}/git/tags/${sha}`, ".object.sha");
-        if ("failed" in peeled) return yield* fail(peeled.failed);
+        if ("failed" in peeled) return yield* fail(peeled.failed, true);
         sha = peeled.ok.trim();
         if (!SHA.test(sha)) return yield* fail(`tag read: the tag object of ${tag} names no commit: ${tailOf(peeled.ok)}`);
       }
       // A release is a tag on the default branch: whoever can push a tag could otherwise run any
       // commit on every runner, with the factory's login.
       const branch = yield* ghApi("default branch read", repo, ".default_branch");
-      if ("failed" in branch) return yield* fail(branch.failed);
+      if ("failed" in branch) return yield* fail(branch.failed, true);
       const defaultBranch = branch.ok.trim();
       const compared = yield* ghApi("branch check", `${repo}/compare/${sha}...${defaultBranch}`, ".status");
-      if ("failed" in compared) return yield* fail(compared.failed);
+      if ("failed" in compared) return yield* fail(compared.failed, true);
       const status = compared.ok.trim();
       if (!ON_BRANCH.has(status)) {
         return yield* fail(`${tag} (${sha}) is not on ${defaultBranch}: GitHub compares them as ${status || "nothing"}`);
@@ -311,10 +328,10 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
 
       NodeFS.mkdirSync(versions, { recursive: true });
       const clone = NodeFS.mkdtempSync(NodePath.join(versions, `${CLONE_PREFIX}${version}-`));
-      const failClone = (why: string) =>
+      const failClone = (why: string, unanswered = false) =>
         Effect.sync(() => {
           NodeFS.rmSync(clone, { recursive: true, force: true });
-        }).pipe(Effect.andThen(fail(why)));
+        }).pipe(Effect.andThen(fail(why, unanswered)));
 
       return yield* Effect.gen(function* () {
         const cloned = yield* step("git clone", {
@@ -332,7 +349,7 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
           ],
           env: { ...HARDENED_GIT_ENV, ...fetchCredentialEnv(options.ghConfigDir()) },
         });
-        if ("failed" in cloned) return yield* failClone(cloned.failed);
+        if ("failed" in cloned) return yield* failClone(cloned.failed, true);
         // The clone is the checked commit, or nothing of it runs: `--branch` takes a branch of the
         // same name over the tag, and a tag can be moved between the check and the clone.
         const head = yield* step("commit check", {
@@ -341,7 +358,7 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
           env: HARDENED_GIT_ENV,
           separateStderr: true,
         });
-        if ("failed" in head) return yield* failClone(head.failed);
+        if ("failed" in head) return yield* failClone(head.failed, true);
         if (head.ok.trim() !== sha) {
           return yield* failClone(
             `the clone's HEAD ${head.ok.trim()} is not the checked commit ${sha} of ${tag}: the tag moved, or a branch of its name was cloned`,
@@ -448,8 +465,8 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
       } catch (error) {
         return yield* Effect.logWarning(`self-update stages nothing: ${UPDATE_REFUSED_FILE} could not be read: ${messageOf(error)}`);
       }
-      if (refusedTag === `v${version}`) return;
-      if (failed.has(`v${version}`)) return;
+      // Neither tag is tried, so nothing waits for the plugin.
+      if (refusedTag === `v${version}` || failed.has(`v${version}`)) return yield* nothingHeld;
       yield* stageTag(repository, candidate, version, runningText);
     });
 
