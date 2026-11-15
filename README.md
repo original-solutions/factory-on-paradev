@@ -29,7 +29,11 @@ Scripts run with Node's built-in type stripping (`node file.ts`), so there is no
 
 ## Release and deploy
 
-A release is a tag. `make release VERSION=0.1.0` runs the gate, bumps `package.json`, commits `release: v0.1.0` on `main`, tags `v0.1.0` and pushes both. Merges to `main` are not deploys; the tag is the decision to ship.
+A release is a tag. `make release VERSION=0.1.0` runs the gate, checks the plugin with `superset plugins validate .`, bumps `package.json`, commits `release: v0.1.0` on `main` and tags `v0.1.0`. Merges to `main` are not deploys; the tag is the decision to ship.
+
+The release gives the `factory` plugin the runner's version. The release commit holds one number in `package.json`, `plugins/factory/plugin.json`, the `factory` row of `.agent-marketplace.json` and `plugins/factory/skills/build/VERSION`. When the skill changed since the previous `v*` tag, the release also sets `factory.minPluginVersion` in `package.json` to that number. Then `make release-finish VERSION=0.1.0` pushes `main` without the tag, runs `superset plugins organization sources sync original-solutions/factory-on-paradev`, checks that the organization synced the release commit with no problem and lists `factory` at the new version, and pushes the tag last. If any of that fails, no tag is on GitHub, and the output says either to run `make release-finish VERSION=0.1.0` again once the cause is fixed, or that `main` has moved on and the next release carries the change.
+
+A skill change reaches a target only through a release. The organization refuses changed content under an unchanged version, and the release is the only step that syncs it, so a merge that changes `plugins/factory/skills` waits on `main` until the next release.
 
 `make deploy` clones the highest `v*` tag, installs its runtime dependencies and runs its `factory-runner install`, which places it at `~/.local/share/factory-runner/versions/<version>/`, points `current` at it and reloads the LaunchAgent. `make deploy TAG=v0.1.0` installs that version instead, which is how to go back by hand.
 

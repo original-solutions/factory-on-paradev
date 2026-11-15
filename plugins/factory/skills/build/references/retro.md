@@ -1,6 +1,6 @@
 # Retro
 
-Load when the input is `/factory retro`. This file replaces the build steps. Nothing is built, no worktree is made, and no issue is claimed.
+Load when the input is `/factory-build retro`. This file replaces the build steps. Nothing is built, no worktree is made, and no issue is claimed.
 
 The retro reads what the factory did in a window, files at most five proposals, and writes one report. Each proposal names one number. The next retro reads that number again and says whether the change worked.
 
@@ -21,7 +21,7 @@ Run it on the strongest model in the roster. It is one session that judges many 
 
 ## 1. Numbers
 
-Input: `/factory retro [--since <AGE>]`. The default `<AGE>` is `7d`. An `<AGE>` that does not match `^([0-9]+[dhms])+$` is a stop. Do not pass it to a shell.
+Input: `/factory-build retro [--since <AGE>]`. The default `<AGE>` is `7d`. An `<AGE>` that does not match `^([0-9]+[dhms])+$` is a stop. Do not pass it to a shell.
 
 ```bash
 command -v softfac && softfac retro --help

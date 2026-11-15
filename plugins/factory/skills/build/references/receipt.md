@@ -77,7 +77,7 @@ Every receipt has `## Lessons`, including the receipt of a draft pull request op
 
 The section holds `none`, or one item for each lesson with its symptom, its cause and its default action.
 
-A lesson is about how to run `/factory` and would hold on a different repo. A fact about the repo being built, its stack or its domain is not a lesson and is left out. `none` is the usual answer.
+A lesson is about how to run `/factory-build` and would hold on a different repo. A fact about the repo being built, its stack or its domain is not a lesson and is left out. `none` is the usual answer.
 
 The receipt is the only place a run writes a lesson. `references/field-lessons.md` changes only by pull request.
 

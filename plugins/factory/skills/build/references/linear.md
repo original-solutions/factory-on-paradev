@@ -7,12 +7,12 @@ Load when the issue is in Linear. `SKILL.md` § Issue and `references/isolate.md
 The launch message is:
 
 ```text
-/factory {owner/repo} {KEY-n}
+/factory-build {owner/repo} {KEY-n}
 
 The issue is {KEY-n} in Linear team {TEAM}. Read it through the Linear API with the key in {token_file}. ...
 ```
 
-A GitHub launch is `/factory {owner/repo}#{n}`. Anything else here does not apply.
+A GitHub launch is `/factory-build {owner/repo}#{n}`. Anything else here does not apply.
 
 Every call sends the raw key as `Authorization`, with no `Bearer`. Never print the key. Never `cat` or `echo` the token file to output, and never put the key in a commit, the receipt, the PR or a log.
 

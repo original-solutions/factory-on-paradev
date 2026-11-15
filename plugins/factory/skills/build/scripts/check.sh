@@ -5,10 +5,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-bash -n install.sh
-
 [ "$(sed -n '1p' SKILL.md)" = "---" ] || { echo "SKILL.md: no frontmatter"; exit 1; }
-grep -qx 'name: factory' SKILL.md || { echo "SKILL.md: name is not factory"; exit 1; }
+grep -qx 'name: build' SKILL.md || { echo "SKILL.md: name is not build"; exit 1; }
 
 grep -qx '## Lessons' references/receipt.md || { echo "references/receipt.md: no ## Lessons heading"; exit 1; }
 
@@ -16,7 +14,7 @@ numbers="$(grep -oE '^[0-9]+\.' references/field-lessons.md | tr -d '.' || true)
 expected="$( [ -n "$numbers" ] && seq 1 "$(printf '%s\n' "$numbers" | wc -l)" || true )"
 [ "$numbers" = "$expected" ] || { echo "references/field-lessons.md: lesson numbers are not 1 to n in order"; exit 1; }
 
-grep -q '/factory retro.*references/retro\.md' SKILL.md || { echo "SKILL.md: no line routes /factory retro to references/retro.md"; exit 1; }
+grep -q '/factory-build retro.*references/retro\.md' SKILL.md || { echo "SKILL.md: no line routes /factory-build retro to references/retro.md"; exit 1; }
 [ -f references/retro.md ] || { echo "references/retro.md: missing"; exit 1; }
 for heading in '## Outcome' '## Acceptance criteria' '## Notes' '## Evidence' '## Measure'; do
   grep -qxF -- "$heading" references/retro.md || { echo "references/retro.md: the proposal has no $heading heading"; exit 1; }

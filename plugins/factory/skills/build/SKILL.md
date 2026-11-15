@@ -1,21 +1,21 @@
 ---
-name: factory
+name: build
 description: >-
   Build one GitHub or Linear issue into a draft pull request with no tracker and no
   human in the chat. Read the issue, isolate, implement with TDD,
-  persona-review, run the project gate, open a draft PR. Use for /factory,
-  factory build, build issue N, softfac session, /factory retro. Differentiator: copy of /dw
+  persona-review, run the project gate, open a draft PR. Use for /factory-build,
+  factory build, build issue N, softfac session, /factory-build retro. Differentiator: copy of /dw
   for the software factory; the factory owns issue state and the run record,
   so this skill never claims, labels, heartbeats or archives.
 ---
 
-# /factory
+# /factory-build
 
 Build one GitHub or Linear issue. Dark: nobody is in the chat. A stop is a final message, not a question.
 
 Always read `references/field-lessons.md` before acting if it exists.
 
-`/factory retro [--since <AGE>]` builds nothing. Load `references/retro.md` and follow that file in place of the steps below.
+`/factory-build retro [--since <AGE>]` builds nothing. Load `references/retro.md` and follow that file in place of the steps below.
 
 ```text
 1 Read → 2 Isolate → 3 Contract → 4 Make → 5 Check → 6 Gate → 7 Ship
@@ -55,13 +55,13 @@ gh api user --jq .login
 
 ## Issue
 
-Input: an issue number (`/factory 12`), `owner/repo#12`, an issue URL, or `owner/repo KEY-n` for a Linear issue. No issue named → stop `stuck`. Do not pick one.
+Input: an issue number (`/factory-build 12`), `owner/repo#12`, an issue URL, or `owner/repo KEY-n` for a Linear issue. No issue named → stop `stuck`. Do not pick one.
 
 ```bash
 gh issue view <n> --repo <owner/repo> --json number,title,body,author,comments,url
 ```
 
-When the launch message says the issue is in Linear, the input is `/factory owner/repo KEY-n` and the message names the team and a token file. Read the issue with the key in that file:
+When the launch message says the issue is in Linear, the input is `/factory-build owner/repo KEY-n` and the message names the team and a token file. Read the issue with the key in that file:
 
 ```bash
 curl -sS https://api.linear.app/graphql -H "Authorization: $(cat <token file>)" -H 'Content-Type: application/json' --data @- <<'EOF' | jq '.errors // .data.issue'
