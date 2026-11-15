@@ -116,13 +116,13 @@ export interface StatusReport {
   }>;
   /** The disk, load and gates the pass holds claims on, read with the report; null while idle. */
   readonly health: MachineHealth | null;
-  /** What the factory needs a person for, from the open attention items. */
+  /** What the factory needs a person for: the open attention items, then a refused update tag. */
   readonly attention: ReadonlyArray<ReportedAttention>;
   /** Open items a person dismissed: still true, so a hold one causes still holds claims. */
   readonly dismissed: ReadonlyArray<ReportedAttention>;
 }
 
-interface ReportedAttention {
+export interface ReportedAttention {
   readonly id: string;
   readonly kind: string;
   readonly repo: string | null;
@@ -287,6 +287,8 @@ export const buildStatus = (input: {
   readonly runningThreads: number | null;
   readonly attention: ReadonlyArray<AttentionItem>;
   readonly dismissed?: ReadonlyArray<AttentionItem>;
+  /** The row of a refused update tag (`readRefusedRow`), shown after the open items; none when left out. */
+  readonly refused?: ReportedAttention | null;
   /** The loop's `health`; null when idle or not read. */
   readonly health?: MachineHealth | null;
   /** The run files the last report read, kept by the caller between reports. */
@@ -368,7 +370,7 @@ export const buildStatus = (input: {
       message: problem.message,
     })),
     health: input.health ?? null,
-    attention: input.attention.map(reported),
+    attention: [...input.attention.map(reported), ...(input.refused == null ? [] : [input.refused])],
     dismissed: (input.dismissed ?? []).map(reported),
   };
 };

@@ -17,7 +17,14 @@ import {
 } from "./config.ts";
 import { printHostChecks } from "./paradev/hostsCheck.ts";
 import { lstatOrNull, readTextOrNull, writeFileWhole } from "./syncFiles.ts";
-import { installPathsOf, LABEL, LOGROTATE_LABEL, packageVersion } from "./paths.ts";
+import {
+  installPathsOf,
+  LABEL,
+  LOGROTATE_LABEL,
+  packageVersion,
+  UPDATE_PENDING_FILE,
+  UPDATE_REFUSED_FILE,
+} from "./paths.ts";
 
 export { LABEL, LOGROTATE_LABEL };
 
@@ -390,6 +397,14 @@ const placeAndLoad = async (
     if (label === LABEL) {
       offset = lstatOrNull(paths.log)?.size ?? 0;
       swapIn(env, version, staged);
+      // An install by hand starts the self-update's count and refused tag over.
+      for (const file of [UPDATE_PENDING_FILE, UPDATE_REFUSED_FILE]) {
+        try {
+          NodeFS.rmSync(NodePath.join(env.dataDir, file), { force: true });
+        } catch (error) {
+          env.err(`factory-runner: warning: ${file} was not removed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
     }
     if (!launchctl(env, ["bootstrap", domain, file])) return 1;
   }

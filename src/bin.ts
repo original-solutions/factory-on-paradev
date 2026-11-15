@@ -15,10 +15,11 @@ import * as Layer from "effect/Layer";
 
 import { runCli, USAGE } from "./cli.ts";
 import type { InstallEnv } from "./install.ts";
-import { FactoryLayer, FactoryLoop } from "./main.ts";
+import { FactoryLayer, FactoryLoop, version } from "./main.ts";
 import * as Paths from "./paths.ts";
 import { runCommand } from "./runCommand.ts";
 import { takeRunnerLock } from "./runnerLock.ts";
+import { countStart } from "./updateState.ts";
 
 /** The data dir of this process: `FACTORY_RUNNER_HOME`, else `~/.config/factory-runner`. */
 const realDataDir = (): string => Paths.dataDirOf(process.env, NodeOS.homedir(), NodePath);
@@ -47,9 +48,20 @@ const realInstallEnv = (): InstallEnv => {
   };
 };
 
-/** Takes the runner lock, then runs the factory until the process is told to stop or restarts into an update. */
+/**
+ * Counts this start of a self-installed version, or goes back from one that finished no pass; then
+ * takes the runner lock and runs the factory until the process is told to stop or restarts into an
+ * update.
+ */
 const run = Effect.gen(function* () {
   const { baseDir } = yield* Paths.FactoryPaths;
+  // First, before the lock and any layer: a version that dies before a pass ends never gets past them.
+  const start = yield* countStart({ home: NodeOS.homedir(), dataDir: baseDir, version, nowMs: Date.now });
+  if (start.kind === "exit") {
+    return yield* Effect.sync(() => {
+      process.exitCode = start.code;
+    });
+  }
   const lock = yield* Effect.acquireRelease(
     Effect.sync(() => takeRunnerLock(baseDir)),
     (taken) => Effect.sync(() => (taken.kind === "taken" ? taken.release() : undefined)),
@@ -57,6 +69,7 @@ const run = Effect.gen(function* () {
   // The effect ends rather than exiting the process, so the scope closes first; runMain leaves a
   // success's exit code to `process.exitCode`.
   if (lock.kind === "held") {
+    yield* start.giveBack;
     return yield* Effect.sync(() => {
       console.error(`factory-runner: another runner holds ${lock.path} (pid ${lock.pid})`);
       process.exitCode = 1;

@@ -14,6 +14,11 @@
  * read and before the restart. Nothing reloads the config while the runner runs, so the key counts
  * from the next start: to hold back a staged update, set it to false and restart the runner, which
  * starts the running version again (`current` has not moved) with the key off.
+ *
+ * Just before it points `current` at the update, the updater writes `update-pending.json`, and a
+ * version that then starts three times without finishing a pass goes back to the one before
+ * (`updateState.ts`). The tag gone back from is in `update-refused.json`: while it is the highest
+ * tag, nothing is staged.
  */
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -29,8 +34,15 @@ import {
   fetchCredentialEnv,
 } from "./gitHardening.ts";
 import { place, pointCurrent, stage } from "./install.ts";
-import { installPathsOf, packageVersion } from "./paths.ts";
+import { installPathsOf, packageVersion, UPDATE_REFUSED_FILE } from "./paths.ts";
 import { FactoryProcess, type RunInput } from "./process.ts";
+import {
+  readPending,
+  readRefused,
+  removePending,
+  removeRefused,
+  writePending,
+} from "./updateState.ts";
 
 /** How long after start the first tag read waits, and the wait between reads. */
 export const CHECK_INTERVAL = Duration.minutes(10);
@@ -158,7 +170,7 @@ export interface SelfUpdate {
 export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: SelfUpdateOptions) {
   const stopped = yield* Deferred.make<void>();
   const { versions } = installPathsOf(options.home);
-  let staged: { readonly tag: string; readonly version: string } | null = null;
+  let staged: { readonly tag: string; readonly version: string; readonly from: string } | null = null;
   /** Tags whose staging failed; not tried again until the runner restarts. */
   const failed = new Set<string>();
   let enabled: () => boolean = () => false;
@@ -331,7 +343,7 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
           return yield* failClone(`placing it failed: ${messageOf(error)}`);
         }
         NodeFS.rmSync(clone, { recursive: true, force: true });
-        staged = { tag, version };
+        staged = { tag, version, from: running };
         yield* Effect.logInfo(`update staged: ${tag} (running ${running}); restarting when no gate runs`);
       }).pipe(
         // A step that throws (an EMFILE from the spawn) is a failed step, not a clone left behind.
@@ -369,6 +381,14 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
       const candidate = highestTag(read.success.tail.split("\n"));
       if (candidate === null || compare(candidate.version, running) <= 0) return;
       const version = candidate.version.join(".");
+      // The highest tag only: a refused one stages nothing, not a lower tag still above the running version.
+      let refusedTag: string | null;
+      try {
+        refusedTag = readRefused(options.dataDir)?.tag ?? null;
+      } catch (error) {
+        return yield* Effect.logWarning(`self-update stages nothing: ${UPDATE_REFUSED_FILE} could not be read: ${messageOf(error)}`);
+      }
+      if (refusedTag === `v${version}`) return;
       if (failed.has(`v${version}`)) return;
       yield* stageTag(repository, candidate, version, runningText);
     });
@@ -416,16 +436,29 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
 
   const afterPass = Effect.gen(function* () {
     if (staged === null) return;
-    const { tag, version } = staged;
+    const { tag, version, from } = staged;
     if (!(yield* enabledNow)) return;
     if (options.gatesRunning() > 0 || gateLocksHeld(options.dataDir) > 0) return;
     if (yield* Deferred.isDone(stopped)) return;
+    // Counted by each start of the update, and removed by its first finished pass.
+    try {
+      writePending(options.dataDir, { from, to: version, starts: 0 });
+    } catch (error) {
+      yield* Effect.logWarning(
+        `update ${tag}: the pending start count was not written, so ${tag} cannot go back on its own: ${messageOf(error)}`,
+      );
+    }
     try {
       pointCurrent({ home: options.home }, version);
     } catch (error) {
       // The placed tree stays under versions/; the tag is not tried again until a restart.
       staged = null;
       failed.add(tag);
+      try {
+        removePending(options.dataDir);
+      } catch {
+        // A pending file names `to`, which no start runs while `current` stays put.
+      }
       return yield* Effect.logWarning(`update ${tag} not placed: pointing current at it failed: ${messageOf(error)}`);
     }
     yield* Effect.logInfo(`restarting into ${tag}`);
@@ -434,3 +467,43 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
 
   return { run, afterPass, stopped, staged: () => staged !== null && enabled() } satisfies SelfUpdate;
 });
+
+/**
+ * Run beside a pass's `pass_finished` record. The pending start count of `running` is removed: the
+ * version it restarted into has finished a pass. A refused tag below `running` is removed too: a
+ * higher version runs. A file that cannot be read is left; one that cannot be removed is a
+ * warning. Never fails.
+ */
+export const clearAfterPass = (dataDir: string, running: string): Effect.Effect<void> =>
+  Effect.suspend(() => {
+    const warnings: Array<string> = [];
+    let pending = null;
+    try {
+      pending = readPending(dataDir);
+    } catch {
+      // A start says so; a finished pass leaves it to the next restart's write.
+    }
+    if (pending !== null && pending.to === running) {
+      try {
+        removePending(dataDir);
+      } catch (error) {
+        warnings.push(`the pending update could not be removed: ${messageOf(error)}`);
+      }
+    }
+    let refused = null;
+    try {
+      refused = readRefused(dataDir);
+    } catch {
+      // `status` warns and shows no row for it, and the updater warns at each read.
+    }
+    const runningVersion = parseVersion(running);
+    const refusedVersion = refused === null ? null : parseVersion(refused.tag.slice(1));
+    if (runningVersion !== null && refusedVersion !== null && compare(runningVersion, refusedVersion) > 0) {
+      try {
+        removeRefused(dataDir);
+      } catch (error) {
+        warnings.push(`the refused tag could not be removed: ${messageOf(error)}`);
+      }
+    }
+    return Effect.forEach(warnings, (warning) => Effect.logWarning(warning), { discard: true });
+  });

@@ -321,6 +321,11 @@ class Fake implements PassWorld {
   now = T0;
   calls: Array<string> = [];
   events: Array<MachineEvent> = [];
+  /** How many machine events were recorded when each `passFinished` ran. */
+  finishedAfter: Array<number> = [];
+  passFinished = Effect.sync(() => {
+    this.finishedAfter.push(this.events.length);
+  });
 
   /** The open attention items, as the service keeps them: one per id. */
   items: Array<AttentionItem> = [];
@@ -3908,6 +3913,36 @@ describe("what the pass records", () => {
       });
       assert.deepEqual([report.runs, report.errors, report.attention], [2, 1, 0]);
       assert.ok(lines.at(-1)!.startsWith("pass done:"), lines.join("\n"));
+    }),
+  );
+
+  it.effect("a finished pass clears the self-update's start count once, beside its pass_finished record", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      yield* pass(fake, [REPO], 1);
+      assert.equal(fake.events.at(-1)?.event, "pass_finished");
+      assert.deepEqual(fake.finishedAfter, [fake.events.length]);
+    }),
+  );
+
+  it.effect("a pass that ends with errors clears the start count too, after its pass_finished record", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.watchedFails = true;
+      const { report } = yield* pass(fake, [REPO], 1);
+      assert.equal(report.errors, 1);
+      assert.equal(fake.events.at(-1)?.event, "pass_finished");
+      assert.deepEqual(fake.finishedAfter, [fake.events.length]);
+    }),
+  );
+
+  it.effect("a pass whose pass_finished record cannot be written clears the start count all the same", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.machineLogFails = true;
+      yield* pass(fake, [REPO], 1);
+      assert.deepEqual(fake.events, []);
+      assert.deepEqual(fake.finishedAfter, [0]);
     }),
   );
 

@@ -192,6 +192,60 @@ describe("status", () => {
     expect(s.outs.join("\n")).not.toContain("an old thing someone dismissed");
   });
 
+  it("adds a row for a refused update tag from its own file; one that cannot be read is a warning on stderr and no row", async () => {
+    const s = setup();
+    const file = NodePath.join(s.dataDir, "update-refused.json");
+    NodeFS.writeFileSync(file, JSON.stringify({ tag: "v0.4.0", from: "0.3.4", at: "2026-11-15T09:30:00.000Z" }));
+    NodeFS.writeFileSync(
+      NodePath.join(s.dataDir, "attention.json"),
+      JSON.stringify({
+        items: [
+          {
+            id: "a",
+            kind: "stuck",
+            repo: "rawphp/softfac",
+            issue: 10,
+            run: null,
+            message: "rawphp/softfac#10 needs a human",
+            first_seen: "2026-10-06T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    const message = "v0.4.0 could not complete a pass after its restart; running v0.3.4. A newer tag installs as usual.";
+    expect(await runCli(["status", "--json"], s.io)).toBe(0);
+    const attention = JSON.parse(s.outs.join("\n")).attention;
+    expect(attention.map((row: { id: string }) => row.id)).toEqual(["a", "update-refused"]);
+    expect(attention.slice(1)).toEqual([
+      {
+        id: "update-refused",
+        kind: "update-refused",
+        repo: null,
+        issue: null,
+        run: null,
+        message,
+        first_seen: "2026-11-15T09:30:00.000Z",
+      },
+    ]);
+    s.outs.length = 0;
+    expect(await runCli(["status"], s.io)).toBe(0);
+    expect(s.outs).toContain(`attention: ${message}`);
+    expect(s.errs).toEqual([]);
+    const warning = `factory-runner: warning: ${file} could not be read, so no refused tag is shown and self-update stages nothing: `;
+    NodeFS.writeFileSync(file, "{not json");
+    for (const args of [["status", "--json"], ["status"]]) {
+      s.outs.length = 0;
+      s.errs.length = 0;
+      expect(await runCli(args, s.io)).toBe(0);
+      expect(s.errs.length).toBe(1);
+      expect(s.errs[0]!.startsWith(warning)).toBe(true);
+      expect(s.outs.join("\n")).not.toContain("update-refused");
+    }
+    s.outs.length = 0;
+    expect(await runCli(["status", "--json"], s.io)).toBe(0);
+    expect(JSON.parse(s.outs.join("\n")).attention.map((row: { id: string }) => row.id)).toEqual(["a"]);
+  });
+
   it("warns on stderr when attention.json cannot be read, so no items is not read as nothing to do", async () => {
     const s = setup();
     const file = NodePath.join(s.dataDir, "attention.json");

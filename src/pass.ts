@@ -469,6 +469,11 @@ export interface PassWorld {
   readonly nowMs: () => number;
   /** Writes one event to the machine log. */
   readonly record: (event: MachineEvent) => Effect.Effect<void, LedgerError>;
+  /**
+   * Run beside the `pass_finished` record: the version a self-update restarted into has finished a
+   * pass, so its start count goes (`clearAfterPass` in `selfUpdate.ts`). Never fails.
+   */
+  readonly passFinished: Effect.Effect<void>;
   /** The open attention items: what the pass raises when it needs a person, and what it clears. */
   readonly attention: Pick<Attention["Service"], "list" | "raise" | "clear">;
 }
@@ -919,6 +924,7 @@ export const runPass = Effect.fn("Pass.runPass")(function* (
     `pass done: ${report.runs} runs, ${report.claimed} claimed, ${report.errors} errors, ${report.attention} need attention`,
   );
   yield* pass.record({ event: "pass_finished", data: { ...report } });
+  yield* world.passFinished;
   return report;
 });
 
