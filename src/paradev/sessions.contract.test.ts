@@ -30,7 +30,7 @@ import {
   type ParadevSessionsConfig,
 } from "./sessions.ts";
 import { isAllowed, SshError, type SshRunner } from "./ssh.ts";
-import { readLaunch, readPlacement, readThread, type ThreadRecord, writeLaunch, writePlacement, writeThread } from "./state.ts";
+import { listCloudCreates, markCloudCreate, readLaunch, readPlacement, readThread, type ThreadRecord, writeLaunch, writePlacement, writeThread } from "./state.ts";
 
 const tempDir = useTempDirs();
 
@@ -3925,6 +3925,41 @@ describe("the orphan sweep", () => {
       yield* t.run((s) => s.sweepOrphans);
       assert.deepStrictEqual(t.unused(), []);
       assert.deepStrictEqual(marksIn(t.data), []);
+    }),
+  );
+
+  it.effect("a mark a launch writes again while the sweep archives another workspace is kept, though it was old when the sweep read it", () =>
+    Effect.gen(function* () {
+      const t: Rig = rig(
+        [
+          { argv: createArgv, fail: "Request timed out" },
+          {
+            argv: listArgv,
+            fixture: "ws-list-noflag-after-cloud",
+            edit: (answer) => [
+              { ...(answer as ReadonlyArray<object>)[0], id: C6_WS, name: "fac/6-1", tags: ["factory", MINE], createdAt: ago(60 * MINUTE) },
+            ],
+          },
+          {
+            ...recorded("ws-archive-cloud-6"),
+            // The pass places the same launch again and sends its create, beside this sweep.
+            around: (answer) =>
+              markCloudCreate(t.data, LAUNCH_ID, "fac/1-1", NOW).pipe(
+                Effect.provide(NodeServices.layer),
+                Effect.orDie,
+                Effect.andThen(answer),
+              ),
+          },
+        ],
+        { config: onCloud },
+      );
+      yield* TestClock.setTime(NOW - 16 * MINUTE);
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      yield* TestClock.setTime(NOW);
+      yield* t.run((s) => s.sweepOrphans);
+      assert.deepStrictEqual(t.unused(), []);
+      const marks = yield* listCloudCreates(t.data).pipe(Effect.provide(NodeServices.layer));
+      assert.deepStrictEqual(marks.map(({ at, lastAt }) => ({ at, lastAt })), [{ at: NOW - 16 * MINUTE, lastAt: NOW }]);
     }),
   );
 

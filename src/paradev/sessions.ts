@@ -15,6 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
 import {
   configFlags,
@@ -53,6 +54,7 @@ import { type CliError, SupersetCli } from "./cli.ts";
 import { listProjects, listProjectsAt, type ParadevProject, projectAt } from "./projects.ts";
 import { shellQuote, type SshError, type SshRunner, sshRunner } from "./ssh.ts";
 import {
+  type CloudCreate,
   listCloudCreates,
   listThreads,
   markCloudCreate,
@@ -96,6 +98,11 @@ const ORPHAN_AGE_MS = 10 * MINUTE;
 const CLOUD_CREATE_TIMEOUT_MS = 5 * MINUTE;
 /** How far Paradev's clock may read behind this Mac's when a listed workspace is matched to a create mark. */
 const CLOCK_SLACK_MS = MINUTE;
+/**
+ * One writer of the create marks at a time, in the whole process: the sweep runs beside the pass,
+ * and must not remove a mark a launch is writing again.
+ */
+const marking = Semaphore.makeUnsafe(1);
 const NAME_MAX = 80;
 /** How often a cloud launch reads its workspace while it provisions, and for how long at most. */
 const CLOUD_READY_POLL_MS = 5_000;
@@ -1021,7 +1028,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       // workspace. One that failed after making its workspace has no tags and no record, so the
       // mark written first is what the orphan sweep finds it by: its name, and when it was sent.
       const name = launchBranch(request.commandId);
-      yield* local(markCloudCreate(dataDir, request.commandId, name, yield* Clock.currentTimeMillis));
+      yield* local(markCloudCreate(dataDir, request.commandId, name, yield* Clock.currentTimeMillis)).pipe(
+        marking.withPermits(1),
+      );
       const argv = [
         "workspaces", "create", ...targetFor(target).at, "--environment", placed.environmentId,
         "--machine-size", placed.machineSize, "--name", name,
@@ -1604,7 +1613,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * (a timeout, an error, a crash), or its record could not be written. A launch tags its
    * workspace within about a minute of its record or archives it, so a workspace still bare after
    * 10 minutes is in no runner's launch. A mark is removed once no create it names can still be
-   * waited for and no such workspace is listed live, whatever its age.
+   * waited for and no such workspace is listed live, whatever its age; a launch that sends its
+   * create again while a sweep runs keeps its mark.
    */
   const sweepOrphans = Effect.gen(function* () {
     const tag = yield* mine;
@@ -1658,11 +1668,14 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     }
     // A workspace still listed live keeps its mark: it is not 10 minutes old yet, its archive
     // failed, or this pass just sent it. The time is the last send's: a launch placed again sends
-    // the create again under the same mark.
-    for (const mark of marks) {
-      if (now - mark.lastAt > CLOUD_CREATE_TIMEOUT_MS + ORPHAN_AGE_MS && !waiting.has(mark.file)) {
-        yield* local(removeCloudCreate(mark));
-      }
+    // the create again under the same mark. The marks are read again, under the launch's lock: a
+    // launch placed again since the listing has written its mark, and keeps it.
+    const due = (mark: CloudCreate) =>
+      now - mark.lastAt > CLOUD_CREATE_TIMEOUT_MS + ORPHAN_AGE_MS && !waiting.has(mark.file);
+    if (marks.some(due)) {
+      yield* Effect.gen(function* () {
+        for (const mark of yield* local(listCloudCreates(dataDir))) if (due(mark)) yield* local(removeCloudCreate(mark));
+      }).pipe(marking.withPermits(1));
     }
   }).pipe(Effect.mapError(failWith("archive")));
 
