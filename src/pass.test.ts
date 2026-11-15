@@ -3925,6 +3925,27 @@ describe("what the pass records", () => {
     }),
   );
 
+  it.effect("a pass that ends with errors clears the start count too, after its pass_finished record", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.watchedFails = true;
+      const { report } = yield* pass(fake, [REPO], 1);
+      assert.equal(report.errors, 1);
+      assert.equal(fake.events.at(-1)?.event, "pass_finished");
+      assert.deepEqual(fake.finishedAfter, [fake.events.length]);
+    }),
+  );
+
+  it.effect("a pass whose pass_finished record cannot be written clears the start count all the same", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.machineLogFails = true;
+      yield* pass(fake, [REPO], 1);
+      assert.deepEqual(fake.events, []);
+      assert.deepEqual(fake.finishedAfter, [0]);
+    }),
+  );
+
   it.effect("the pass ends with a summary line", () =>
     Effect.gen(function* () {
       const fake = new Fake();

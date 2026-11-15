@@ -19,7 +19,6 @@ import {
 import { asciiLower, runIdToString } from "./ledger/runId.ts";
 import { formatTs } from "./ledger/time.ts";
 import { readTargetRows, targetNameOf, type TargetRow } from "./targets.ts";
-import { refusedRow } from "./updateState.ts";
 
 /** The settings of the machine config the status report shows. */
 export interface StatusSettings {
@@ -288,6 +287,8 @@ export const buildStatus = (input: {
   readonly runningThreads: number | null;
   readonly attention: ReadonlyArray<AttentionItem>;
   readonly dismissed?: ReadonlyArray<AttentionItem>;
+  /** The row of a refused update tag (`readRefusedRow`), shown after the open items; none when left out. */
+  readonly refused?: ReportedAttention | null;
   /** The loop's `health`; null when idle or not read. */
   readonly health?: MachineHealth | null;
   /** The run files the last report read, kept by the caller between reports. */
@@ -369,7 +370,7 @@ export const buildStatus = (input: {
       message: problem.message,
     })),
     health: input.health ?? null,
-    attention: [...input.attention.map(reported), ...[refusedRow(dataDir)].filter((row) => row !== null)],
+    attention: [...input.attention.map(reported), ...(input.refused == null ? [] : [input.refused])],
     dismissed: (input.dismissed ?? []).map(reported),
   };
 };

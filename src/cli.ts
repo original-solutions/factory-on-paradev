@@ -20,6 +20,7 @@ import { isRunner, lockHolder } from "./runnerLock.ts";
 import { retro, RETRO_USAGE } from "./retro.ts";
 import { readTextOrNull } from "./syncFiles.ts";
 import { hostNamesOf } from "./targets.ts";
+import { readRefusedRow } from "./updateState.ts";
 import {
   CONFIG_NOT_LOADED_REASON,
   buildStatus,
@@ -107,6 +108,8 @@ const status = (args: ReadonlyArray<string>, io: CliIo): number => {
   const { open, dismissed, warnings } = readAttentionFile(io.dataDir);
   // On stderr in both forms, so `--json` stays the report and a bad file is not read as no items.
   for (const warning of warnings) io.err(`factory-runner: warning: ${warning}`);
+  const refused = readRefusedRow(io.dataDir);
+  if (refused.warning !== null) io.err(`factory-runner: warning: ${refused.warning}`);
   const report = buildStatus({
     status: factoryStatus(io),
     version: packageVersion(io.packageRoot),
@@ -118,6 +121,7 @@ const status = (args: ReadonlyArray<string>, io: CliIo): number => {
     runningThreads: null,
     attention: open,
     dismissed,
+    refused: refused.row,
     health: null,
   });
   if (json) io.out(JSON.stringify(report, null, 2));

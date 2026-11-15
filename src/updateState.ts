@@ -231,23 +231,33 @@ const goBack = (options: StartOptions, pending: Pending) =>
 
 /**
  * The attention row `status` shows while a refused tag is on file, built from that file and not
- * from `attention.json`; null when there is none or it cannot be read.
+ * from `attention.json`: no row when there is no file. A file that cannot be read gives no row
+ * and a warning for `status` to print, as `readAttentionFile` does, since the updater stages
+ * nothing while it stays that way.
  */
-export const refusedRow = (dataDir: string): ReportedAttention | null => {
+export const readRefusedRow = (
+  dataDir: string,
+): { readonly row: ReportedAttention | null; readonly warning: string | null } => {
   let refused: Refused | null;
   try {
     refused = readRefused(dataDir);
-  } catch {
-    return null;
+  } catch (error) {
+    return {
+      row: null,
+      warning: `${refusedPath(dataDir)} could not be read, so no refused tag is shown and self-update stages nothing: ${messageOf(error)}`,
+    };
   }
-  if (refused === null) return null;
+  if (refused === null) return { row: null, warning: null };
   return {
-    id: "update-refused",
-    kind: "update-refused",
-    repo: null,
-    issue: null,
-    run: null,
-    message: `${refused.tag} could not complete a pass after its restart; running v${refused.from}. A newer tag installs as usual.`,
-    first_seen: formatTs(parseTs(refused.at)!),
+    row: {
+      id: "update-refused",
+      kind: "update-refused",
+      repo: null,
+      issue: null,
+      run: null,
+      message: `${refused.tag} could not complete a pass after its restart; running v${refused.from}. A newer tag installs as usual.`,
+      first_seen: formatTs(parseTs(refused.at)!),
+    },
+    warning: null,
   };
 };

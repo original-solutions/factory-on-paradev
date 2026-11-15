@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe } from "vitest";
 
 import { installPathsOf, packageVersion, UPDATE_PENDING_FILE, UPDATE_REFUSED_FILE } from "./paths.ts";
 import { LOCK_FILE } from "./runnerLock.ts";
-import { countStart, refusedRow, type Start } from "./updateState.ts";
+import { countStart, readRefusedRow, type Start } from "./updateState.ts";
 
 const NOW = Date.parse("2026-11-15T09:30:00.000Z");
 const BIN = NodePath.resolve(import.meta.dirname, "bin.ts");
@@ -227,22 +227,37 @@ describe("the status row of a refused tag", () => {
       refusedFile(f),
       JSON.stringify({ tag: "v0.2.0", from: "0.1.0", at: "2026-11-15T09:30:00Z" }),
     );
-    expect(refusedRow(f.dataDir)).toEqual({
-      id: "update-refused",
-      kind: "update-refused",
-      repo: null,
-      issue: null,
-      run: null,
-      message: "v0.2.0 could not complete a pass after its restart; running v0.1.0. A newer tag installs as usual.",
-      first_seen: "2026-11-15T09:30:00.000Z",
+    expect(readRefusedRow(f.dataDir)).toEqual({
+      row: {
+        id: "update-refused",
+        kind: "update-refused",
+        repo: null,
+        issue: null,
+        run: null,
+        message: "v0.2.0 could not complete a pass after its restart; running v0.1.0. A newer tag installs as usual.",
+        first_seen: "2026-11-15T09:30:00.000Z",
+      },
+      warning: null,
     });
   });
 
-  it("is none with no file, or one that cannot be read", () => {
+  it("is no row and no warning with no file", () => {
     const f = fixture();
-    expect(refusedRow(f.dataDir)).toBeNull();
+    expect(readRefusedRow(f.dataDir)).toEqual({ row: null, warning: null });
+  });
+
+  it("is no row and a warning for a file that is not JSON, or not a refused tag", () => {
+    const f = fixture();
+    const start = `${refusedFile(f)} could not be read, so no refused tag is shown and self-update stages nothing: `;
     NodeFS.writeFileSync(refusedFile(f), "{not json");
-    expect(refusedRow(f.dataDir)).toBeNull();
+    const cut = readRefusedRow(f.dataDir);
+    expect(cut.row).toBeNull();
+    expect(cut.warning?.startsWith(start)).toBe(true);
+    NodeFS.writeFileSync(refusedFile(f), JSON.stringify({ tag: "0.2.0" }));
+    expect(readRefusedRow(f.dataDir)).toEqual({
+      row: null,
+      warning: `${start}${refusedFile(f)} needs a vX.Y.Z "tag", an X.Y.Z "from" and a time "at"`,
+    });
   });
 });
 

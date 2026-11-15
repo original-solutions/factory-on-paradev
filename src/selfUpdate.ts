@@ -494,7 +494,7 @@ export const clearAfterPass = (dataDir: string, running: string): Effect.Effect<
     try {
       refused = readRefused(dataDir);
     } catch {
-      // `status` shows no row for it and the updater warns at each read.
+      // `status` warns and shows no row for it, and the updater warns at each read.
     }
     const runningVersion = parseVersion(running);
     const refusedVersion = refused === null ? null : parseVersion(refused.tag.slice(1));
