@@ -3946,7 +3946,6 @@ describe("cycle 1: liveness a send can trust, and what a failed cloud launch lea
         [
           { argv: argvIs("workspaces", "create", "--host", "cloud"), fixture: "ws-create-cloud" },
           { argv: argvIs("workspaces", "update", C3_WS, "--host", "cloud"), answer: { id: C3_WS } },
-        { argv: argvIs("workspaces", "update", C3_WS, "--host", "cloud"), answer: { id: C3_WS } },
           // The records folder stops taking writes once the record is in it.
           { argv: getC3, fixture: "ws-get-cloud-provisioning", edit: (answer) => (NodeFS.chmodSync(threads(), 0o555), answer) },
           { argv: archiveC3, fail: "No active organization" },
