@@ -821,12 +821,22 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     });
 
   /**
-   * Steps 3 to 5 of a cloud launch: ready, then the agent. A retry (`look`) first takes an agent
-   * of the preset an earlier attempt started. A cloud worktree gets no base check: Paradev cuts
-   * its branch from the repository's branch on GitHub. A launch that fails here is not tried
+   * The tags of a cloud launch's workspace, `factory` and `factory-<runner id>`, by which the count
+   * and the orphan sweep find it: CLI 2.0.8 refuses `--tag` on a cloud create (#87). The update
+   * replaces the tag set, so a repeat changes nothing.
+   */
+  const tagCloud = (workspaceId: string) =>
+    Effect.gen(function* () {
+      const argv = ["workspaces", "update", workspaceId, ...cloudTarget.at, "--tag", "factory", "--tag", yield* mine];
+      yield* callWithRetry(cli, argv, 30_000);
+    });
+
+  /**
+   * Steps 3 to 5 of a cloud launch: ready, then the agent. A retry (`look`) first sends the tags
+   * again and takes an agent of the preset an earlier attempt started. A cloud worktree gets no
+   * base check: Paradev cuts its branch from the repository's branch on GitHub. A launch that fails here is not tried
    * again and leaves the core no thread to archive, so the workspace is archived before the
-   * launch fails: an idle box bills. When that archive fails too, the record keeps
-   * `pendingArchive` and the orphan sweep archives it; a repeat of the launch starts nothing there.
+   * launch fails: an idle box bills ({@link giveUpCloud}).
    */
   const startCloudAgent = (record: ThreadRecord, request: LaunchRequest, look: boolean) =>
     Effect.gen(function* () {
@@ -836,6 +846,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       if (record.pendingArchive === true) {
         return yield* fail(`cloud workspace ${record.workspaceId} was given up when an earlier launch failed`);
       }
+      if (look) yield* tagCloud(record.workspaceId);
       yield* waitReady(record);
       if (look) {
         const found = yield* findAgent(record.target, record.workspaceId, record.agent, []);
@@ -843,31 +854,35 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         if (found !== null) return yield* withAgent(record, found.terminal, request);
       }
       return yield* withAgent(record, yield* createOrFind(record, request), request);
-    }).pipe(
-      Effect.catch((error) =>
-        Effect.gen(function* () {
-          const now = (yield* local(readThread(dataDir, record.workspaceId))) ?? record;
-          if (now.archivedAt !== null || now.terminals.length > 0) return yield* Effect.fail(error);
-          const archived = yield* Effect.result(archiveRecord(now));
-          if (archived._tag === "Failure") {
-            yield* save({ ...now, pendingArchive: true }).pipe(
-              Effect.catch((saveError) =>
-                Effect.logWarning(
-                  `cloud workspace ${now.workspaceId} could not be marked for the orphan sweep (${saveError.message}); archive it by hand`,
-                ),
-              ),
-            );
-          }
-          return yield* fail(
-            `${error.message}; ${
-              archived._tag === "Success"
-                ? "the workspace was archived"
-                : `archiving the workspace failed too (${archived.failure.message})`
-            }`,
-          );
-        }),
-      ),
-    );
+    }).pipe(Effect.catch((error) => giveUpCloud(record, error)));
+
+  /**
+   * A cloud launch that failed before its agent: its workspace is archived and the launch fails
+   * with `error`, saying so. When that archive fails too, the record keeps `pendingArchive` and the
+   * orphan sweep archives it; a repeat of the launch starts nothing there.
+   */
+  const giveUpCloud = <E extends { readonly message: string }>(record: ThreadRecord, error: E) =>
+    Effect.gen(function* () {
+      const now = (yield* local(readThread(dataDir, record.workspaceId))) ?? record;
+      if (now.archivedAt !== null || now.terminals.length > 0) return yield* Effect.fail(error);
+      const archived = yield* Effect.result(archiveRecord(now));
+      if (archived._tag === "Failure") {
+        yield* save({ ...now, pendingArchive: true }).pipe(
+          Effect.catch((saveError) =>
+            Effect.logWarning(
+              `cloud workspace ${now.workspaceId} could not be marked for the orphan sweep (${saveError.message}); archive it by hand`,
+            ),
+          ),
+        );
+      }
+      return yield* fail(
+        `${error.message}; ${
+          archived._tag === "Success"
+            ? "the workspace was archived"
+            : `archiving the workspace failed too (${archived.failure.message})`
+        }`,
+      );
+    });
 
   const noAgentYet = (record: ThreadRecord) =>
     fail(`workspace ${record.workspaceId} has a terminal with no ${record.agent} agent in it, after ${agentPollDelaysMs.length + 1} looks`);
@@ -982,22 +997,26 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   /**
    * A launch in Paradev Cloud. The create takes no `--branch` (Paradev names the branch
-   * `superset/<name slug>-<id8>`) and no `--agent`, and answers a workspace still provisioning.
-   * The name is the launch branch, so the branch Paradev picks carries the issue and attempt.
+   * `superset/<name slug>-<id8>`), no `--agent` and no `--tag`, and answers a workspace still
+   * provisioning. The name is the launch branch, so the branch Paradev picks carries the issue and attempt.
    */
   const launchCloud = (request: LaunchRequest, placed: Extract<LaunchTarget, { readonly kind: "cloud" }>) =>
     Effect.gen(function* () {
       if (!isSafeBranchName(request.baseRef)) return yield* fail(`the base ${request.baseRef} is not a plain branch name`);
       const target: Target = { kind: "cloud", environmentId: placed.environmentId };
       // 1. Not retried: a cloud create is not idempotent by branch, so a repeat makes a second
-      // workspace. One that failed after making its workspace is left to the orphan sweep.
+      // workspace. One that failed after making its workspace has no tags yet, so the orphan
+      // sweep cannot see it.
       const argv = [
         "workspaces", "create", ...targetFor(target).at, "--environment", placed.environmentId,
         "--machine-size", placed.machineSize, "--name", launchBranch(request.commandId),
-        "--base-branch", request.baseRef, "--tag", "factory", "--tag", yield* mine,
+        "--base-branch", request.baseRef,
       ];
       const created = yield* decodeAnswer(CloudCreated, yield* call(cli, argv, 300_000), argv);
       if (!isPlainId(created.id)) return yield* fail(`cloud workspace id ${created.id} is not plain`);
+      // The tags at once: until they are on, a crash leaves a workspace the sweep cannot see. A
+      // failed update is the launch's failure once the record is written, so its workspace is archived.
+      const tagging = yield* Effect.result(tagCloud(created.id));
 
       // 2. The record and the launch file at once: only the launch file stops a second create.
       const record: ThreadRecord = {
@@ -1018,6 +1037,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       yield* local(writeLaunch(dataDir, request.commandId, record.threadId));
 
       // 3 to 5.
+      if (tagging._tag === "Failure") return yield* giveUpCloud(record, tagging.failure);
       return yield* startCloudAgent(record, request, false);
     });
 
