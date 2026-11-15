@@ -37,7 +37,7 @@ The skill lands as `~/.agents/skills/factory-factory/`, a copy of the plugin's `
    - The source did not sync by itself in the 75 s after a push. Whether it ever does was not waited for.
    - Pointing the source back at the default branch and syncing took the organization back to `0.1.0`, and `install --update` plus a restart took the Trilogy Mac back with it.
 
-8. **`validate`.** `plugins validate .` answering `[]` with exit 0 means no problems. A broken `plugin.json` exits 1 with the problem on stderr. `--strict` exits 1 with `factory: 0.1.0 has no factory@0.1.0 tag yet`. The organization route reads a branch, so that tag is not needed.
+8. **`validate`.** `plugins validate .` answering `[]` with exit 0 means no problems. A broken `plugin.json` exits 1 with the problem on stderr. `--strict` exits 1 with `factory: 0.1.0 has no factory@0.1.0 tag yet`. The organization route reads a branch, so that tag is not needed. Only the passing answer is kept as a fixture (`plugins-validate.json`): `cli.contract.test.ts` maps every failing fixture to a runner error kind, and the runner never calls `validate`.
 
 9. **The sandbox's CLI has no `plugins install` and no `plugins marketplace add`.** Both answer `Unknown command` (`plugins-cloud-term-install-read.json`). Nothing can be installed at launch.
 
