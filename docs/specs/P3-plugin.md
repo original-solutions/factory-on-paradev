@@ -80,13 +80,14 @@ When `git diff --quiet <previous v* tag> -- plugins/factory/skills ':!plugins/fa
 `make release` then, in this order:
 
 1. Before `npm version`, `superset plugins validate .`, which exits 1 on a manifest it cannot read.
-2. `git push origin main`, which sends the release commit without its tag. Today the target pushes both at once.
-3. `superset plugins organization sources sync original-solutions/factory-on-paradev`, then reads `organization sources list` and `organization list`. The release fails, with the text Paradev gave, when `syncProblems` is not empty, when the source's `syncedSha` is not the release commit, or when the organization's `factory` is not at the new version.
-4. `git push origin v<version>`, only after step 3 passes.
+2. `make release-finish VERSION=<version>`, a target of its own that runs steps 3 to 5 from one script, so a person can run it again.
+3. `git push origin main`, which sends the release commit without its tag, unless `origin/main` already holds that commit. Today the target pushes both at once.
+4. `superset plugins organization sources sync original-solutions/factory-on-paradev`, then reads `organization sources list` and `organization list`. The release fails, with the text Paradev gave, when `syncProblems` is not empty, when the source's `syncedSha` is not the commit the local tag `v<version>` points at, or when the organization's `factory` is not at the new version.
+5. `git push origin v<version>`, only after step 4 passes.
 
-Self-update reads tags, so no runner sees a release before the organization holds its plugin. A release that fails at step 3 has its commit on `main` and no tag on GitHub. The target prints the sync and the tag push, for a person to run once the cause is fixed.
+Self-update reads tags, so no runner sees a release before the organization holds its plugin. A release that fails at step 4 has its commit on `main` and no tag on GitHub. The target prints one command for a person to run once the cause is fixed, `make release-finish VERSION=<version>`. It never prints the sync or the tag push by themselves, so the tag cannot go out past the `syncedSha` check.
 
-A `syncedSha` that is not the release commit means a merge reached `main` between step 2 and the sync, and the organization now holds that text under the release's version. It takes no other content under that version (finding 5), so the tag stays unpushed and the next release replaces the text under a new version. Until then the rule on a skill change below covers the targets that got it.
+A `syncedSha` that is not the release commit means a merge reached `main` between step 3 and the sync, or before a second run of `release-finish`, and the organization now holds that text under the release's version. It takes no other content under that version (finding 5), so the tag stays unpushed and the next release replaces the text under a new version. Until then the rule on a skill change below covers the targets that got it.
 
 The `VERSION` file changes in every release, so every release is new content under a new version, which is what the organization's sync asks for. Between releases a merge that changes the skill does not reach any target: a sync of `main` at that point is refused with `its content changed but its version is still x`, and the organization keeps the last release's text. So a skill change reaches a target only at a release.
 
@@ -115,6 +116,8 @@ superset plugins install factory@organization && launchctl kickstart -k gui/$(id
 superset plugins organization sources sync original-solutions/factory-on-paradev
 ```
 
+The cloud fix syncs `main` as it is, with no `syncedSha` check. It is for an organization whose source was removed or never synced. Run it only while `main` is at a release commit that has its tag on GitHub. With a later merge or an untagged release commit on `main`, the fix is `make release-finish` or the next release.
+
 A host service restart does not stop that host's agents (P2, H5), and the spike restarted the Trilogy Mac's four times.
 
 Placement today drops a host on `notReady` and drops this Mac only when the load or disk check holds claims (`dropReason` in `src/paradev/placement.ts`). #95 gives the local reading the same `notReady` field and the same line in `dropReason`.
@@ -141,7 +144,7 @@ The step holds every release after the one that carries it. It cannot hold that 
 
 #98, by hand, after the three checks are live:
 
-1. On both Macs, remove `~/.agents/skills/factory` and `~/EA/skills/factory` (V3).
+1. On both Macs, remove `~/.agents/skills/factory` and `~/EA/skills/factory` (V3), and `~/.agents/skills/factory-factory` where it is there. The spike's 0.1.0 landed it on the Trilogy Mac, and no later install lands that name, since #94 renames the skill. Nothing shows that Paradev removes a landed folder whose skill is gone.
 2. Delete `.claude/skills/factory` from the spike repo's `main`.
 3. Replace `rawphp/factory`'s README with a pointer to this repo, and archive it.
 
@@ -149,7 +152,7 @@ The step holds every release after the one that carries it. It cannot hold that 
 
 ## Tests
 
-Contract tests replay the spike's fixtures, as P1's and P2's do: the organization's listing with `factory` missing, old and current (`plugins-org-list-after.json`, `plugins-org-list-after-bump.json`), the account's listing (`plugins-list-update-available.json`), a source with a sync problem, and a source whose `syncedSha` is another commit. Unit tests cover the version comparison (`0.3.10` against `0.3.9`), the `VERSION` read when the file is missing, empty and current, the equal version fields, the `version` script with and without a skill change since the previous tag, the local `notReady` drop and its cadence, the first message's skill name, self-update's refusal, its skipped stage on a failed read and the same tag staged at the next check once the plugin is new enough, and the `plugin-update-needed` item raised once and cleared when the tag passes the step, also when `npm ci` then fails.
+Contract tests replay the spike's fixtures, as P1's and P2's do: the organization's listing with `factory` missing, old and current (`plugins-org-list-after.json`, `plugins-org-list-after-bump.json`), the account's listing (`plugins-list-update-available.json`), a source with a sync problem, and a source whose `syncedSha` is another commit. The script behind `make release-finish` runs under a test with a stubbed `git` and `superset`, so `npm run check` still needs no CLI: for a sync problem, another `syncedSha` and an organization's version that is not the new one, `git push origin v<version>` is never called, and when step 4 passes it is the last call. Unit tests cover the version comparison (`0.3.10` against `0.3.9`), the `VERSION` read when the file is missing, empty and current, the equal version fields, the `version` script with and without a skill change since the previous tag, the local `notReady` drop and its cadence, the first message's skill name, self-update's refusal, its skipped stage on a failed read and the same tag staged at the next check once the plugin is new enough, and the `plugin-update-needed` item raised once and cleared when the tag passes the step, also when `npm ci` then fails.
 
 The live smoke is the exit criterion. It runs the three cases once per target with the runner installed, as #58 and #59 did, after #98. One more case per Mac: remove `~/.agents/skills/factory-build`, see the target drop out with `plugin-not-ready` or `host-not-ready`, restart the service or the app, and see the target return within 5 minutes with no config reload.
 
