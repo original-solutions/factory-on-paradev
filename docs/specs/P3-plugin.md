@@ -53,7 +53,7 @@ Proposed 2026-11-15. V1 and V2 are Tom's answers. V3 and V5 follow the review of
 | V2 | What ends the phase | The three smoke cases on all three targets with the other copies gone (Goal) |
 | V3 | Which copy is the source, and what happens to `~/EA/skills/factory` | `plugins/factory/skills/factory` in this repo is the source. `rawphp/factory` takes no more changes, and its README points here. `~/EA/skills/factory` stays, as a link to the installed plugin's skill folder once S3 shows that path. `~/.claude/skills/factory` and `~/.agents/skills/factory` already link to it, so chat sessions in Claude, Grok, Cursor and Codex keep `/factory` and read the same text the runner's agents do. A Paradev plugin alone would be invisible to the last three |
 | V4 | The plugin's version | The runner's. One number in `package.json`, `plugins/factory/plugin.json` and `.agent-marketplace.json`, written in the release commit (Release). The runner needs the installed plugin at `minPluginVersion` or newer. That number lives in `package.json` as `factory.minPluginVersion`, and the release sets it: to the new version when anything under `plugins/factory/skills` differs from the previous tag, and not at all otherwise (Release). A pull request cannot write it, because the number it would need does not exist until `npm version` runs. So a release that changes skill text needs that text on every target, and a release that changes none stops no target. Versions compare as three numbers, since `0.3.10` sorts below `0.3.9` as text |
-| V5 | Who installs and updates the plugin | A person, on every machine, with the commands the check prints. The runner never installs. Self-update refuses a tag whose `factory.minPluginVersion` is newer than the installed plugin, stays on the running version, and logs the two commands (Self-update). So no unattended update lands and then drops this Mac |
+| V5 | Who installs and updates the plugin | A person, on every machine, with the commands the check prints. The runner never installs. Self-update refuses a tag whose `factory.minPluginVersion` is newer than the installed plugin, stays on the running version, and raises an attention item with the two commands (Self-update). So once a runner with that step is running, no unattended update lands and then drops this Mac. The step cannot hold the release that first carries it, so that one release has a rule of its own (Self-update) |
 | V6 | How a host is checked | One more line in `hosts check`, read over SSH from the host's `~/.paradev/plugins/installed_plugins.json`, which on this Mac lists `{ name, marketplace, version }` per plugin. No Paradev login is needed over SSH `[Spike: S5]`. A file that is missing or does not parse fails the host |
 | V7 | How a cloud sandbox gets the plugin | (a) if the spike shows the launching user's install is already in the sandbox. This Mac's check is then the cloud check, because the runner's Paradev login is the launching user, and cloud is no candidate while this Mac's check fails. Else (c): the launch installs it in the sandbox through a helper terminal before `agents create`, the X3 pattern. (b), the org syncing this repo as a plugin source with `factory` set to `installed`, is in bounds only when that can be set for the sandbox alone. The help text offers `--member`, `--admin` and `--owner`, which are people, so on what is known (b) is out `[Spike: S6]`. If neither (a) nor (c) works, the cloud part of P3 stops and comes back to Tom |
 | V8 | What the first message calls the skill | `/factory`, unless Paradev names a plugin's skill another way, in which case `launchBody` uses the recorded name `[Spike: S3]` |
@@ -66,7 +66,7 @@ Hands-on, on CLI 2.0.8 or whatever is installed that day. Fixtures go to `spike/
 | # | Question | How |
 |---|---|---|
 | S1 | Does the marketplace validate, and what does `[]` mean? | `plugins validate .`, then `--strict`, then again with a broken `plugin.json` |
-| S2 | Is publish how an install gets the plugin, what does it write, and what tag does it name? | `plugins install` from a `marketplace add` of this repo with nothing published, then `plugins publish factory` on a branch. Record whether the first install worked, every file publish changes, the tag, and whether an install reads the default branch or a tag. A tag that matches `v*` would be picked up by `make deploy` and by self-update, which both read the highest `v*` tag |
+| S2 | Is publish how an install gets the plugin, what does it write, and what tag does it name? | `plugins install` from a `marketplace add` of this repo with nothing published, then `plugins publish factory` on a branch. Record whether the first install worked, every file publish changes, the tag, whether an install reads the default branch or a tag, and whether `marketplace add` can name a tag or a branch. A tag that matches `v*` would be picked up by `make deploy` and by self-update, which both read the highest `v*` tag |
 | S3 | Where does an install put the skill, and under what name? | `plugins marketplace add original-solutions/factory-on-paradev`, `plugins install factory@factory-on-paradev`, then the files it wrote and `/factory` in a Paradev terminal on this Mac |
 | S4 | With the old link still there, which copy does a session load? | A marker line in one copy, then ask the session to quote it |
 | S5 | How does a host get the plugin, and how is its version read? | The plugin commands take no `--host`. Does the account's install reach the Trilogy Mac after `plugins sync` there, or must `install` run on it? Then read `installed_plugins.json` over SSH. Also record what `~/.claude/skills/factory` is on that Mac today |
@@ -80,12 +80,14 @@ S7 matters for V3. If an update moves the skill folder, the `~/EA/skills/factory
 
 `npm version` refuses a dirty tree, so the plugin's version cannot be written before it runs. `package.json` gains a `version` script, which npm runs after it bumps `package.json` and before it commits. The script writes the new number to `plugins/factory/plugin.json` and to the `factory` row of `.agent-marketplace.json` and stages both files, so all three land in the one release commit that the `v*` tag points at. When `git diff --quiet <previous v* tag> -- plugins/factory/skills` reports a difference, the script also sets `factory.minPluginVersion` to the new number. That is how a release binds the skill text it ships: the runner of that release refuses the plugin of the one before. `git diff --quiet` exits 1 when the skill differs, and the script reads that exit as the answer and carries on. An exit above 1 stops the release.
 
-#94 writes the first `factory.minPluginVersion` by hand, equal to the version already in `package.json`. What a pull request cannot do after that is invent the next number.
+#94 writes the first `factory.minPluginVersion` by hand, equal to the version already in `package.json`. In the same commit it sets `plugins/factory/plugin.json` and the `factory` row of `.agent-marketplace.json` to that version. Both say 0.1.0 today and `package.json` says 0.3.4, so without that #94's own test of equal version fields fails. What a pull request cannot do after that is invent the next number.
 
 `make release` then, between `npm version` and the push:
 
 1. `superset plugins validate . --strict` on the release commit `[Spike: S1]`. A failure stops before anything is pushed, and the target prints how to undo the local commit and tag.
-2. Publish, only if S2 shows an install gets the plugin from a published version. It finishes before the `v*` tag is pushed, so no runner sees a release whose plugin is not there yet. If S2 shows that `marketplace add` of this repo is the install path, there is no publish step. If publish names a tag of its own, it must not match `v*`.
+2. Publish, only if S2 shows an install gets the plugin from a published version. It finishes before the `v*` tag is pushed, so no runner sees a release whose plugin is not there yet. If S2 shows that `marketplace add` of this repo is the install path and that it reads a release, there is no publish step. If publish names a tag of its own, it must not match `v*`.
+
+An install gives the text of a release commit, whichever path S2 finds. `main` takes skill changes between releases under the version of the last one. An install that read `main` would pass the version check with text no released runner was built for, and two machines on one version could hold different text. So if `marketplace add` of this repo reads the default branch, that is not the install path. The marketplace source then names a ref that only `make release` moves, or the plugin is published `[Spike: S2]`. If Paradev offers neither, the release part of P3 stops and comes back to Tom.
 
 `npm run check` stays free of the CLI, since `.github/workflows/check.yml` runs it where no Paradev is installed. It gains one test: the three version fields are equal, and `factory.minPluginVersion` is no newer than them. After a release that changed the skill the four numbers are equal, so it still passes.
 
@@ -102,7 +104,7 @@ The rule: the `factory` plugin from the `factory-on-paradev` marketplace is inst
 
 Under (a) the runner never looks inside the sandbox. If the plugin is missing there all the same, `/factory` is an unknown command, the session ends with no result line, and the core handles it as it handles any turn that ends without one. That is a claimed run, not a failed launch, and nothing is archived early.
 
-Placement today drops a host on `notReady` and drops this Mac only when the load or disk check holds claims (`dropReason` in `src/paradev/placement.ts`). #95 gives the local reading the same `notReady` field and the same line in `dropReason`.
+Placement today drops a host on `notReady` and drops this Mac only when the load or disk check holds claims (`dropReason` in `src/paradev/placement.ts`). #95 gives the local reading the same `notReady` field and the same line in `dropReason`. `targetRow` in the same file works out `ready` for this Mac from `held` alone, so #95 changes that too, to `held === null && notReady === null`. Otherwise `factory-runner status` shows this Mac as ready beside a not-ready reason.
 
 The fix a failed version check prints:
 
@@ -111,13 +113,21 @@ superset plugins marketplace add original-solutions/factory-on-paradev
 superset plugins install factory@factory-on-paradev --update
 ```
 
+If S2 settles on a ref for the marketplace source, the first command names it.
+
 The fix a second copy prints is its own line, naming the path it found: `rm <path>` for a folder or a link that points elsewhere, or for the EA link, `ln -sfn <the install's skill folder> ~/EA/skills/factory`.
 
 `factory-runner status` shows the failure as the target's `reason`. The belt says only which check failed, as it does for a host check. `BeltV2` does not change. No new config keys.
 
 ### Self-update
 
-Self-update clones a newer tag, smokes it and places it under `versions/`. One step is added after the clone and before it is placed: read the clone's `factory.minPluginVersion` and this Mac's installed plugin version. When the installed one is older, the tag is not staged. The runner stays on its version and logs one line with the tag, the version it needs and the two commands above. A read that fails skips the stage the same way. The next ten-minute check looks again, so the update goes through by itself once a person has updated the plugin. It raises no attention item. `plugin-not-ready` belongs to the version check, which placement reads to drop this Mac, and the running version does not need the newer plugin, so this Mac keeps taking runs.
+Self-update clones a newer tag, installs and smokes it and places it under `versions/`. One step is added after the clone's commit check and before `npm ci`: read the clone's `factory.minPluginVersion` and this Mac's installed plugin version. When the installed one is older, the tag is not staged. The runner removes the clone, stays on its version and logs one line with the tag, the version it needs and the two commands above. A read that fails skips the stage the same way.
+
+The refusal does not mark the tag. Every other step that stops a stage goes through `fail` in `stageTag`, which adds the tag to the `failed` set, and `check` skips a tag in that set until the runner restarts. The plugin step returns without `fail`. So the next ten-minute check looks again, and the update goes through by itself once a person has updated the plugin. A refused check costs one shallow clone, since the step comes before `npm ci` and the smoke. The runner logs the line once per tag and reason while it runs, not every ten minutes.
+
+A log line alone leaves this Mac on the old runner for as long as nobody reads the log, and every later release waits behind the refused one. So the refusal raises one attention item, `plugin-update-needed`, with the tag, the version it needs and the two commands. A failed read raises it with what the read said. The item goes when that tag is staged or a newer tag passes the step. It is not `plugin-not-ready`, and placement does not read it. The running version does not need the newer plugin, so this Mac keeps taking runs.
+
+The step holds every release after the one that carries it. It cannot hold that one, because the runner that stages #95's release was built before the step. So #95 goes out in a release that changes nothing under `plugins/factory/skills`. Its `minPluginVersion` is then an earlier release's, the one that carried #94, and that plugin can already be installed. Before #95's tag is pushed, a person runs the two commands on this Mac and reads the installed version. If that is missed, the new runner's own check drops this Mac with `plugin-not-ready` until someone runs them.
 
 ### A repo that carries the skill
 
@@ -145,7 +155,7 @@ Neither waits on the spike.
 
 ## Tests
 
-Contract tests replay the spike's fixtures, as P1's and P2's do: the plugin row parsed from `plugins list`, the host's `installed_plugins.json` when it is missing, unreadable, old and current, and the cloud path V7 settles on. Unit tests cover the version comparison (`0.3.10` against `0.3.9`), the equal version fields, the local `notReady` drop and its cadence, the first message's skill name, self-update's refusal and its skipped stage on a failed read, the version script with and without a skill change since the previous tag, the link test of V9, and the launch refusal on a base commit that holds the skill, on all three launch paths. The cloud contract test's git call list becomes the one bare fetch and the `ls-tree`.
+Contract tests replay the spike's fixtures, as P1's and P2's do: the plugin row parsed from `plugins list`, the host's `installed_plugins.json` when it is missing, unreadable, old and current, and the cloud path V7 settles on. Unit tests cover the version comparison (`0.3.10` against `0.3.9`), the equal version fields, the local `notReady` drop and its cadence, the first message's skill name, self-update's refusal, its skipped stage on a failed read and the same tag staged at the next check once the plugin is new enough, the `plugin-update-needed` item raised once and cleared by the stage, the local row's `ready`, the version script with and without a skill change since the previous tag, the link test of V9, and the launch refusal on a base commit that holds the skill, on all three launch paths. The cloud contract test's git call list becomes the one bare fetch and the `ls-tree`.
 
 The live smoke is the exit criterion. It runs the three cases once per target with the runner installed, as #58 and #59 did, after #99. One more case per Mac: uninstall the plugin, see the target drop out with `plugin-not-ready` or `host-not-ready`, install it, and see the target return within 5 minutes with no config reload.
 
@@ -166,7 +176,7 @@ Filed 2026-11-15 on `original-solutions/factory-on-paradev`, all `factory:propos
 | #99 | feat: a second copy of the skill fails the check, on a machine and in a repo | #98 | factory, S |
 | #100 | test: live smoke on all three targets with the plugin as the only copy | #99, #93 | hands-on |
 
-#95 waits for #94 because a check that merges before any installable plugin exists drops this Mac with a fix nobody can run. The README's install steps go in with #95. #95 also waits for #76, which changes `src/selfUpdate.ts`.
+#95 waits for #94 because a check that merges before any installable plugin exists drops this Mac with a fix nobody can run. The README's install steps go in with #95. #95 also waits for #76, which changes `src/selfUpdate.ts`. #95's release changes no skill text, and the plugin is on this Mac before its tag is pushed (Self-update).
 
 ## Dates
 
