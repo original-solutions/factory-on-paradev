@@ -16,7 +16,10 @@ build:
 # release-finish then pushes main, syncs the organization's plugin source and pushes the tag last.
 release: build
 	test -n "$(VERSION)" || { echo "usage: make release VERSION=0.1.0"; exit 2; }
+	echo "$(VERSION)" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' || { echo "VERSION is three numbers, such as 0.1.0"; exit 2; }
 	test "$$(git rev-parse --abbrev-ref HEAD)" = main || { echo "release from main"; exit 2; }
+	git fetch --quiet origin main
+	test "$$(git rev-parse HEAD)" = "$$(git rev-parse origin/main)" || { echo "main is not origin/main: pull first"; exit 2; }
 	superset plugins validate .
 	npm version "$(VERSION)" -m "release: v%s"
 	$(MAKE) release-finish VERSION="$(VERSION)"
