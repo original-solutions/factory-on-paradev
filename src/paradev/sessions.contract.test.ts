@@ -3242,7 +3242,7 @@ describe("launch in the cloud", () => {
     }),
   );
 
-  it.live("a launch whose ready wait and archive both fail leaves the sweep a workspace it finds by the tags the update sent", () =>
+  it.live("a launch whose ready wait and archive both fail leaves its tagged, pendingArchive workspace to the sweep", () =>
     Effect.gen(function* () {
       const t: Rig = rig(
         [
@@ -3263,6 +3263,19 @@ describe("launch in the cloud", () => {
       assert.include(logs[0], "its launch failed, and so did that launch's archive");
       const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
       assert.isNotNull(saved!.archivedAt);
+    }),
+  );
+
+  it.live("a runner id that cannot be read fails the launch before the create, with no record and no launch file", () =>
+    Effect.gen(function* () {
+      const t = rig([], { config: onCloud });
+      const idFile = NodePath.join(t.data, "paradev", "runner-id");
+      NodeFS.rmSync(idFile);
+      NodeFS.mkdirSync(idFile); // a directory: the read fails, and it is not a missing file
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.strictEqual(error.operation, "launch");
+      assert.deepStrictEqual(t.calls, []);
+      assert.deepStrictEqual(written(t.data), []);
     }),
   );
 
