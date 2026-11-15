@@ -247,7 +247,8 @@ export const hostLaunchMessage = (
 /**
  * `launchMessage` for a session placed in Paradev Cloud. The sandbox acts on GitHub as the Paradev
  * GitHub App through its own `GH_TOKEN`, where `gh api user` answers 403 and the repo's
- * `permissions` object reads all false, so the message has no login check and names no login: the
+ * `permissions` object reads all false, so the message has no login check and names no login of the
+ * runner or of a host: the
  * session proves it can push with the factory skill's push dry run instead.
  */
 export const cloudLaunchMessage = (

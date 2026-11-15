@@ -136,7 +136,9 @@ export const earlierRuns = Effect.fn("RunnerStart.earlierRuns")(function* (
 /**
  * The Paradev GitHub App as a pull request listing names its author: `gh pr list --json author`
  * prints it, and `openPullRequestsClosing` gives a Bot's login the same `app/` form. No user login
- * has a `/`, so no person matches it.
+ * has a `/`, so no user account matches it; but every Paradev Cloud pull request on the repo has
+ * this author, a person's made in a cloud workspace included, and counts as the run's own, as a
+ * person's pull request under a host login does.
  */
 export const CLOUD_APP_LOGIN = "app/superset-app";
 
