@@ -291,6 +291,10 @@ interface FakeParadev {
    * line it answers the call fails with, or null for the usual empty list.
    */
   cloudList?: Effect.Effect<string | null>;
+  /** What `plugins organization list` answers: the organization's plugins, factory at a version any runner takes. */
+  orgPlugins: unknown;
+  /** What `plugins list` answers: the runner's account, with the organization's factory plugin installed. */
+  accountPlugins: unknown;
   readonly calls: Array<ReadonlyArray<string>>;
 }
 
@@ -309,6 +313,8 @@ const newParadev = (projects: ReadonlyArray<FakeProject> = [A_B_PROJECT, C_D_PRO
   projects: [...projects],
   down: null,
   schema: (answer) => answer,
+  orgPlugins: [{ name: "factory", version: "99.0.0", marketplace: "organization-x" }],
+  accountPlugins: [{ name: "factory", version: "99.0.0", marketplace: "organization-x", status: "installed" }],
   calls: [],
 });
 
@@ -338,6 +344,10 @@ const paradevAnswer = (paradev: FakeParadev, argv: ReadonlyArray<string>): RunRe
       return paradev.hostsList === undefined
         ? reply(1, "", "Error: PARADEV_OFFLINE: host service is not running\n")
         : reply(0, JSON.stringify(paradev.hostsList));
+    case "plugins organization list":
+      return reply(0, JSON.stringify(paradev.orgPlugins));
+    case "plugins list":
+      return reply(0, JSON.stringify(paradev.accountPlugins));
     // The orphan sweep's listing: no cloud workspace.
     case "workspaces list --host cloud":
       return reply(0, "[]");
@@ -4739,6 +4749,72 @@ describe("liveWorld: the hosts", () => {
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  describe("cloud's plugin check", () => {
+    const cloudBlock = "cloud:\n  proxy: https://proxy.example\n";
+    const named = `gh_config_dir: /gh\nmax_concurrent_runs: 1\nmin_free_gib: 0\n${cloudBlock}repos:\n  - repo: a/b\n    path: /b\n    cloud: edad9805-e48d-40f3-a06c-e19a4105f974\n${PARADEV_BLOCK}`;
+    const guarded = { proxyGet: () => Effect.succeed(401) };
+    const pluginCalls = (paradev: FakeParadev) =>
+      paradev.calls.map((argv) => argv.join(" ")).filter((call) => call.startsWith("plugins "));
+    const cloudRow = (factoryDir: string) => readTargetRows(factoryDir).find((row) => row.kind === "cloud");
+
+    it.effect("the pass reads both lists, and an organization with no factory plugin drops cloud with the release's fix", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const paradev = newParadev();
+          paradev.orgPlugins = [];
+          const { loop, factoryDir } = yield* started(named, noGhProcess, guarded, paradev);
+          yield* idleAfter(loop, factoryDir, 1);
+          yield* waitUntil("the cloud row", () => cloudRow(factoryDir) !== undefined);
+          assert.deepStrictEqual(pluginCalls(paradev), ["plugins organization list", "plugins list"]);
+          const row = cloudRow(factoryDir)!;
+          assert.isFalse(row.ready);
+          assert.include(row.reason ?? "", `make release-finish VERSION=${version}`);
+          assert.notInclude(row.reason ?? "", "sources sync");
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect("a plugin that is not installed on the account drops cloud with the install", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const paradev = newParadev();
+          paradev.accountPlugins = [];
+          const { loop, factoryDir } = yield* started(named, noGhProcess, guarded, paradev);
+          yield* idleAfter(loop, factoryDir, 1);
+          yield* waitUntil("the cloud row", () => cloudRow(factoryDir) !== undefined);
+          assert.include(cloudRow(factoryDir)!.reason ?? "", "superset plugins install factory@organization");
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect("with the plugin in the organization and installed, cloud is ready", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const paradev = newParadev();
+          const { loop, factoryDir } = yield* started(named, noGhProcess, guarded, paradev);
+          yield* idleAfter(loop, factoryDir, 1);
+          yield* waitUntil("the cloud row", () => cloudRow(factoryDir) !== undefined);
+          assert.deepStrictEqual(
+            { ready: cloudRow(factoryDir)!.ready },
+            { ready: true },
+          );
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect("without a cloud block the runner makes neither call", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const paradev = newParadev();
+          const { loop, factoryDir } = yield* started(configFor([["a/b", "/b"]], "/gh"), noGhProcess, {}, paradev);
+          yield* idleAfter(loop, factoryDir, 1);
+          yield* onePassMore(loop, factoryDir);
+          assert.deepStrictEqual(pluginCalls(paradev), []);
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+  });
 
   it("this Mac's live plugin check holds the landed VERSION against this runner's own factory.minPluginVersion", () => {
     const { factory } = JSON.parse(NodeFS.readFileSync(NodePath.resolve(import.meta.dirname, "../package.json"), "utf8")) as {

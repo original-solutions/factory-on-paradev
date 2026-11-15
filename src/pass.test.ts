@@ -37,6 +37,7 @@ import { useTempDirs } from "./ledger/testSupport.ts";
 import { formatTs } from "./ledger/time.ts";
 import {
   checkHosts,
+  checkCloudPlugin,
   checkLocalPlugin,
   HOST_READY_RECHECK_EVERY_MS,
   HOST_RECHECK_EVERY_MS,
@@ -261,6 +262,17 @@ class Fake implements PassWorld {
     this.calls.push("checkLocalPlugin");
     return this.localPluginAnswer;
   };
+  cloudPlugin: { notReady: string | null; checkedAt: number | null } = {
+    notReady: "not checked yet since the config load",
+    checkedAt: null,
+  };
+  /** What cloud's plugin check answers: why it fails, null when it passes. */
+  cloudPluginAnswer: string | null = null;
+  checkCloudPlugin = () =>
+    Effect.sync(() => {
+      this.calls.push("checkCloudPlugin");
+      return this.cloudPluginAnswer;
+    });
   /** What `hosts check` answers per host id; every line ok otherwise. */
   checks: Record<string, ReadonlyArray<CheckLine>> = {};
   /** The hosts whose check never answers. */
@@ -7117,6 +7129,73 @@ describe("this Mac's plugin check", () => {
       const items = notReady(fake);
       assert.equal(items.length, 1);
       assert.include(items[0]!.message, "is 0.3.3, older than the 0.3.4 this runner needs");
+    }),
+  );
+});
+
+describe("cloud's plugin check", () => {
+  const OLD = "the organization's factory plugin is 0.1.0, older than the 0.1.1 this runner needs; run make release-finish VERSION=0.3.5";
+  const checked = (fake: Fake) => fake.calls.filter((call) => call === "checkCloudPlugin").length;
+
+  it.effect("the pass itself does not run it", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.ready[REPO] = [1];
+      yield* pass(fake, [REPO], 5);
+      assert.equal(checked(fake), 0);
+    }),
+  );
+
+  it.effect("a world starts not checked; a failing check is not ready and raises no item", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      assert.deepEqual(fake.cloudPlugin, { notReady: "not checked yet since the config load", checkedAt: null });
+      fake.cloudPluginAnswer = OLD;
+      yield* checkCloudPlugin(fake);
+      assert.deepEqual(fake.cloudPlugin, { notReady: OLD, checkedAt: fake.now });
+      assert.deepEqual(fake.items, []);
+    }),
+  );
+
+  it.effect("a passing check leaves cloud ready", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      yield* checkCloudPlugin(fake);
+      assert.deepEqual(fake.cloudPlugin, { notReady: null, checkedAt: fake.now });
+    }),
+  );
+
+  it.effect("a failing check runs again after five minutes, not before", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.cloudPluginAnswer = OLD;
+      yield* checkCloudPlugin(fake);
+      fake.now += HOST_RECHECK_EVERY_MS - 1;
+      fake.cloudPluginAnswer = null;
+      yield* checkCloudPlugin(fake);
+      assert.equal(checked(fake), 1);
+      assert.equal(fake.cloudPlugin.notReady, OLD);
+      fake.now += 1;
+      yield* checkCloudPlugin(fake);
+      assert.equal(checked(fake), 2);
+      assert.equal(fake.cloudPlugin.notReady, null);
+    }),
+  );
+
+  it.effect("a passing check runs again after an hour, not before, and a plugin that went is not ready", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      yield* checkCloudPlugin(fake);
+      fake.now += HOST_READY_RECHECK_EVERY_MS - 1;
+      fake.cloudPluginAnswer = OLD;
+      yield* checkCloudPlugin(fake);
+      assert.equal(checked(fake), 1);
+      assert.equal(fake.cloudPlugin.notReady, null);
+      fake.now += 1;
+      yield* checkCloudPlugin(fake);
+      assert.equal(checked(fake), 2);
+      assert.equal(fake.cloudPlugin.notReady, OLD);
+      assert.deepEqual(fake.items, []);
     }),
   );
 });

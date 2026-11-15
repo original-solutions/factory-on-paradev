@@ -1465,7 +1465,7 @@ describe("feedback: the step", () => {
         assert.strictEqual(req.commandId, `softfac:${RUN}:feedback:1`);
         assert.strictEqual(req.baseRef, "t3code/abc");
         assert.strictEqual(req.pullRequestUrl, URL12);
-        assert.ok(req.message.startsWith("/factory rawphp/softfac#10"), req.message);
+        assert.ok(req.message.startsWith("/factory-build rawphp/softfac#10"), req.message);
         assert.ok(req.message.includes(URL12), req.message);
         assert.ok(req.message.includes("git push origin HEAD:t3code/abc"), req.message);
         assert.ok(req.message.includes("Do not open another pull request."), req.message);

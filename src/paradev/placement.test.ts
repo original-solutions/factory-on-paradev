@@ -33,6 +33,7 @@ const cloud = (over: Partial<Extract<Candidate, { kind: "cloud" }>> = {}): Candi
   machineSize: "small",
   slots: { running: 0, max: 2 },
   proxy: null,
+  notReady: null,
   ...over,
 });
 
@@ -272,5 +273,21 @@ describe("targetRow", () => {
     });
     const down = targetRow(cloud({ proxy: "the proxy check failed: down" }));
     assert.deepStrictEqual({ ready: down.ready, reason: down.reason }, { ready: false, reason: "the proxy check failed: down" });
+  });
+
+  it("drops cloud while its plugin check fails, and the row says why", () => {
+    const reason = "the organization has no factory plugin; run make release-finish VERSION=0.3.5";
+    const candidate = cloud({ notReady: reason });
+    const row = targetRow(candidate);
+    assert.deepStrictEqual({ ready: row.ready, reason: row.reason }, { ready: false, reason: `not ready: ${reason}` });
+    assert.deepStrictEqual(
+      choosePlacement([candidate]).dropped.map((drop) => drop.reason),
+      [`not ready: ${reason}`],
+    );
+  });
+
+  it("names the proxy first when cloud fails both checks", () => {
+    const row = targetRow(cloud({ proxy: "the proxy check failed: down", notReady: "plugin" }));
+    assert.deepStrictEqual({ ready: row.ready, reason: row.reason }, { ready: false, reason: "the proxy check failed: down" });
   });
 });

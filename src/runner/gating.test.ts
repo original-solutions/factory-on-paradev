@@ -5730,7 +5730,7 @@ describe("regate: a failed re-gate of a ready pull request", () => {
       assert.strictEqual(req.projectId, "proj-1");
       assert.strictEqual(req.title, "rawphp/softfac#10 Build step");
       assert.deepStrictEqual(req.model, { instanceId: "claudeAgent", model: "claude-opus-5-5" });
-      assert.ok(req.message.startsWith("/factory rawphp/softfac#10"), req.message);
+      assert.ok(req.message.startsWith("/factory-build rawphp/softfac#10"), req.message);
       assert.ok(req.message.includes(URL12), req.message);
       assert.ok(req.message.includes("git push origin HEAD:t3code/abc"), req.message);
       assert.ok(req.message.includes("Do not open another pull request."), req.message);

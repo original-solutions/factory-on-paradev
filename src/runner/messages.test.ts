@@ -43,10 +43,10 @@ const BRANCH_WORDS =
   "Stay on the branch the worktree was launched on: never run `git checkout -b`, `git switch -c` or any command that creates or switches branches, and push the current branch with `git push -u origin HEAD`, unless told below to push to a named branch.";
 
 describe("launchMessage", () => {
-  it("invokes /factory and says nobody is in the chat", () => {
+  it("invokes /factory-build and says nobody is in the chat", () => {
     assert.strictEqual(
       launchMessage("rawphp/softfac", 10, "rawphp"),
-      `/factory rawphp/softfac#10\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${BRANCH_WORDS}\n\n${IDENTITY_WORDS}`,
+      `/factory-build rawphp/softfac#10\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${BRANCH_WORDS}\n\n${IDENTITY_WORDS}`,
     );
   });
 
@@ -58,7 +58,7 @@ describe("launchMessage", () => {
     });
     assert.strictEqual(
       message,
-      `/factory rawphp/softfac#10\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${BRANCH_WORDS}\n\nThe pull request https://github.com/rawphp/softfac/pull/12 of this issue passed the gate, and the gate failed when it ran again. The worktree holds that pull request's branch at its tip on origin. Fix the failure below from there and push your commits to the same branch with \`git push origin HEAD:t3code/abc\`, so the same pull request is updated. Do not open another pull request.\n\n${IDENTITY_WORDS}`,
+      `/factory-build rawphp/softfac#10\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${BRANCH_WORDS}\n\nThe pull request https://github.com/rawphp/softfac/pull/12 of this issue passed the gate, and the gate failed when it ran again. The worktree holds that pull request's branch at its tip on origin. Fix the failure below from there and push your commits to the same branch with \`git push origin HEAD:t3code/abc\`, so the same pull request is updated. Do not open another pull request.\n\n${IDENTITY_WORDS}`,
     );
   });
 
@@ -102,7 +102,7 @@ describe("hostLaunchMessage", () => {
     const host = hostLaunchMessage("rawphp/softfac", 10, "tomkaczocha");
     assert.strictEqual(
       host,
-      `/factory rawphp/softfac#10\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${BRANCH_WORDS}\n\n${HOST_IDENTITY_WORDS}`,
+      `/factory-build rawphp/softfac#10\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${BRANCH_WORDS}\n\n${HOST_IDENTITY_WORDS}`,
     );
     const local = launchMessage("rawphp/softfac", 10, "tomkaczocha");
     assert.strictEqual(
@@ -138,7 +138,7 @@ describe("cloudLaunchMessage", () => {
     const cloud = cloudLaunchMessage("rawphp/softfac", 10);
     assert.strictEqual(
       cloud,
-      `/factory rawphp/softfac#10\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${BRANCH_WORDS}\n\n${CLOUD_IDENTITY_WORDS}`,
+      `/factory-build rawphp/softfac#10\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${BRANCH_WORDS}\n\n${CLOUD_IDENTITY_WORDS}`,
     );
     const local = launchMessage("rawphp/softfac", 10, "tomkaczocha");
     assert.strictEqual(
@@ -181,7 +181,7 @@ describe("launchMessage: a resumed run", () => {
     branch: "t3code/abc",
     after,
   });
-  const PREFIX = `/factory acme/widgets#42\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${BRANCH_WORDS}\n\n`;
+  const PREFIX = `/factory-build acme/widgets#42\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${BRANCH_WORDS}\n\n`;
   const PUSH_WORDS =
     "Push your commits to that branch with `git push origin HEAD:t3code/abc`. If a pull request for this issue is already open on it, that pull request is updated. Do not open another pull request.";
 
