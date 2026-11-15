@@ -4634,6 +4634,24 @@ describe("the cloud count, one workspace at a time (#85)", () => {
         // Only tagged workspaces are read: no snapshot of the untagged one.
         assert.deepStrictEqual(t.calls.filter((argv) => argv[0] === "snapshot" && argv.includes("cloud")), []);
       }
+      // Two live records, the tagged one and an untagged one, in either order of the records: null, not 1.
+      for (const [first, second] of [[C3_WS, OTHER_WS], [OTHER_WS, C3_WS]] as const) {
+        const t = rig(
+          [localStep, bareCloud, listOf({ id: C3_WS, tags: ["factory", MINE] }, { id: OTHER_WS, tags: [] }), snapshotAt(C3_WS)],
+          { config: { cloud: true } },
+        );
+        yield* seed(t.data, record({ threadId: `local:${L5_WS}`, workspaceId: L5_WS, terminals: [L5_DEAD] }));
+        for (const ws of [first, second]) {
+          yield* seed(
+            t.data,
+            ws === C3_WS ? cloudRecord() : cloudRecord({ threadId: `cloud:${OTHER_WS}`, workspaceId: OTHER_WS, terminals: [OTHER_TERM] }),
+          );
+        }
+        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "cloud" }, running: null },
+        ]);
+      }
     }),
   );
 
