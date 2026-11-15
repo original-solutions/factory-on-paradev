@@ -81,6 +81,10 @@ interface Answers {
   cloneUnreadable: boolean;
   /** The clone's `factory.minPluginVersion`; null for a package.json with none. */
   minPlugin: string | null;
+  /** How `git clone` ends: a clone, an exit 128 with nothing cloned, or a spawn that throws. */
+  clone: "ok" | "fail" | "throw";
+  /** Whether the clone's commit check (`rev-parse HEAD`) answers. */
+  head: "ok" | "fail";
 }
 
 interface Fixture {
@@ -131,6 +135,8 @@ const fixture = (underVersions = true): Fixture => {
       compare: "ahead",
       cloneUnreadable: false,
       minPlugin: null,
+      clone: "ok",
+      head: "ok",
     },
     logs: [],
     items: [],
@@ -192,12 +198,15 @@ const fakeProcess = (f: Fixture) =>
         if (input.command === "git") {
           const args = input.args ?? [];
           if (args.includes("rev-parse")) {
+            if (f.answers.head === "fail") return result(128, "", "fatal: not a git repository");
             const dir = args[args.indexOf("-C") + 1]!;
             const { version } = JSON.parse(NodeFS.readFileSync(NodePath.join(dir, "package.json"), "utf8")) as {
               version: string;
             };
             return result(0, `${f.answers.tagAtHead ? commitSha(version) : OTHER_SHA}\n`);
           }
+          if (f.answers.clone === "throw") throw new Error("EMFILE: too many open files");
+          if (f.answers.clone === "fail") return result(128, "", "fatal: unable to access 'https://github.com/o/r.git/'");
           const tag = args[args.indexOf("--branch") + 1]!;
           fakeClone(args.at(-1)!, tag.slice(1), f.answers.minPlugin);
           if (f.answers.cloneUnreadable) NodeFS.chmodSync(NodePath.join(args.at(-1)!, "src", "bin.ts"), 0o000);
@@ -782,6 +791,85 @@ describe("self-update", () => {
         yield* TestClock.adjust(TEN_MINUTES);
         expect(commands(f)).toEqual([...REFUSED, "gh", "gh", "gh", "gh", "gh", "gh", ...STAGING]);
         expect(versionDirs(f)).toEqual(["0.1.0", "0.2.0"]);
+        expect(updateItems(f)).toEqual([]);
+      }),
+    );
+  });
+
+  describe("a held tag waits through every read that did not answer, and is tried again", () => {
+    const reads: ReadonlyArray<readonly [string, (a: Answers) => void, (a: Answers) => void]> = [
+      ["the tag object read", (a) => void (a.peel = "fail"), (a) => void (a.peel = "ok")],
+      ["the default branch read", (a) => void (a.defaultBranch = "fail"), (a) => void (a.defaultBranch = "main")],
+      ["the compare", (a) => void (a.compare = "fail"), (a) => void (a.compare = "ahead")],
+      ["the clone", (a) => void (a.clone = "fail"), (a) => void (a.clone = "ok")],
+      ["a clone whose spawn throws", (a) => void (a.clone = "throw"), (a) => void (a.clone = "ok")],
+      ["the commit check", (a) => void (a.head = "fail"), (a) => void (a.head = "ok")],
+    ];
+    for (const [name, breakIt, mendIt] of reads) {
+      it.effect(name, () => {
+        const f = fixture();
+        f.answers.refs = ["refs/tags/v0.2.0"];
+        f.answers.tagObject = "tag";
+        f.answers.minPlugin = "0.2.0";
+        landPlugin(f, "0.1.0");
+        return withUpdater(f, true, () =>
+          Effect.gen(function* () {
+            yield* TestClock.adjust(TEN_MINUTES);
+            expect(updateItems(f)).toHaveLength(1);
+            breakIt(f.answers);
+            yield* TestClock.adjust(TEN_MINUTES);
+            expect(versionDirs(f)).toEqual(["0.1.0"]);
+            expect(updateItems(f)).toHaveLength(1);
+            mendIt(f.answers);
+            landPlugin(f, "0.2.0");
+            yield* TestClock.adjust(TEN_MINUTES);
+            expect(versionDirs(f)).toEqual(["0.1.0", "0.2.0"]);
+            expect(updateItems(f)).toEqual([]);
+          }),
+        );
+      });
+    }
+  });
+
+  describe("a held tag that fails a check, not a read, is marked like any other, and its item goes", () => {
+    const checks: ReadonlyArray<readonly [string, (a: Answers) => void, string]> = [
+      ["a clone that is not the checked commit", (a) => void (a.tagAtHead = false), "is not the checked commit"],
+      ["a tag object that names no commit", (a) => void (a.peel = "garbage"), "names no commit"],
+    ];
+    for (const [name, breakIt, said] of checks) {
+      it.effect(name, () => {
+        const f = fixture();
+        f.answers.refs = ["refs/tags/v0.2.0"];
+        f.answers.tagObject = "tag";
+        f.answers.minPlugin = "0.2.0";
+        landPlugin(f, "0.1.0");
+        return withUpdater(f, true, () =>
+          Effect.gen(function* () {
+            yield* TestClock.adjust(TEN_MINUTES);
+            expect(updateItems(f)).toHaveLength(1);
+            breakIt(f.answers);
+            yield* TestClock.adjust(TEN_MINUTES);
+            expect(loud(f).at(-1)!.text).toContain(said);
+            expect(updateItems(f)).toEqual([]);
+            // Marked: the next period reads the tags and nothing else.
+            const before = f.calls.length;
+            yield* TestClock.adjust(TEN_MINUTES);
+            expect(commands(f).slice(before)).toEqual(["gh"]);
+          }),
+        );
+      });
+    }
+  });
+
+  it.effect("an item an earlier start left goes when the highest tag is the refused one", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    writeRefused(f, "v0.2.0");
+    f.items.push({ id: "plugin-update-needed", kind: "attention", repo: null, issue: null, run: null, message: "update v0.2.0 not staged: ..." });
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual(["gh"]);
         expect(updateItems(f)).toEqual([]);
       }),
     );
