@@ -865,6 +865,14 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       return yield* withAgent(record, yield* createOrFind(record, request), request);
     }).pipe(Effect.catch((error) => giveUpCloud(record, error)));
 
+  /** What a failed cloud launch's error says of the archive of its workspace. */
+  const archiveSaid = (
+    archived: { readonly _tag: "Success" } | { readonly _tag: "Failure"; readonly failure: { readonly message: string } },
+  ) =>
+    archived._tag === "Success"
+      ? "the workspace was archived"
+      : `archiving the workspace failed too (${archived.failure.message})`;
+
   /**
    * A cloud launch that failed before its agent: its workspace is archived and the launch fails
    * with `error`, saying so. When that archive fails too, the record keeps `pendingArchive` and the
@@ -884,13 +892,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
           ),
         );
       }
-      return yield* fail(
-        `${error.message}; ${
-          archived._tag === "Success"
-            ? "the workspace was archived"
-            : `archiving the workspace failed too (${archived.failure.message})`
-        }`,
-      );
+      return yield* fail(`${error.message}; ${archiveSaid(archived)}`);
     });
 
   const noAgentYet = (record: ThreadRecord) =>
@@ -1050,13 +1052,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         // No retry reaches this workspace without both files, so it is archived here. When that
         // fails too, the sweep archives it: by its record, or with no record by the create mark.
         const archived = yield* Effect.result(cloudTarget.archiveWorkspace(created.id));
-        return yield* fail(
-          `${kept.failure.message}; ${
-            archived._tag === "Success"
-              ? "the workspace was archived"
-              : `archiving the workspace failed too (${archived.failure.message})`
-          }`,
-        );
+        return yield* fail(`${kept.failure.message}; ${archiveSaid(archived)}`);
       }
 
       // 3 to 5, the tags first: the record is what finds the workspace until they are on.
@@ -1603,10 +1599,12 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * each; a workspace that fails to archive is one warning, and the rest go on.
    *
    * A workspace with neither this runner's tag nor a record is archived only when a create mark
-   * proves it: it carries the name a cloud create of this runner sent, and was created no earlier
-   * than that send. That create made its workspace and never answered with it (a timeout, an
-   * error, a crash), or its record could not be written. A mark is removed once no create it names
-   * can still be waited for and no such workspace is left.
+   * proves it: it has no tag at all, carries the name a cloud create of this runner sent, and was
+   * created no earlier than that send. That create made its workspace and never answered with it
+   * (a timeout, an error, a crash), or its record could not be written. A launch tags its
+   * workspace within about a minute of its record or archives it, so a workspace still bare after
+   * 10 minutes is in no runner's launch. A mark is removed once no create it names can still be
+   * waited for and no such workspace is listed live, whatever its age.
    */
   const sweepOrphans = Effect.gen(function* () {
     const tag = yield* mine;
@@ -1616,6 +1614,14 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     const waiting = new Set<string>();
     for (const row of rows) {
       if (row.status === "deleted" || !isPlainId(row.id)) continue;
+      // Only a workspace with no tag at all: one that carries any tag has been through a launch's
+      // update, this runner's or another's, and a mark's name alone does not make it this runner's.
+      const mark =
+        (row.tags ?? []).length > 0
+          ? undefined
+          : marks.find((m) => m.name === row.name && Date.parse(row.createdAt) >= m.at - CLOCK_SLACK_MS);
+      // Before the age check: a workspace Paradev made late is listed young when its mark is old.
+      if (mark !== undefined) waiting.add(mark.file);
       if (!(now - Date.parse(row.createdAt) > ORPHAN_AGE_MS)) continue;
       if (yield* local(threadFileExists(dataDir, row.id))) {
         const record = yield* local(readThread(dataDir, row.id));
@@ -1637,9 +1643,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         continue;
       }
       const tagged = hasTag(row.tags, tag);
-      const mark = marks.find((m) => m.name === row.name && Date.parse(row.createdAt) >= m.at - CLOCK_SLACK_MS);
       if (!tagged && mark === undefined) continue;
-      if (mark !== undefined) waiting.add(mark.file);
       const proof = tagged ? `tagged ${tag}` : "untagged, named by a cloud create this runner sent";
       yield* cloudTarget.archiveWorkspace(row.id).pipe(
         Effect.andThen(
@@ -1652,7 +1656,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         ),
       );
     }
-    // A workspace still listed live keeps its mark: its archive failed, or this pass just sent it.
+    // A workspace still listed live keeps its mark: it is not 10 minutes old yet, its archive
+    // failed, or this pass just sent it.
     for (const mark of marks) {
       if (now - mark.at > CLOUD_CREATE_TIMEOUT_MS + ORPHAN_AGE_MS && !waiting.has(mark.file)) {
         yield* local(removeCloudCreate(mark));

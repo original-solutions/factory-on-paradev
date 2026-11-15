@@ -3831,6 +3831,9 @@ describe("the orphan sweep", () => {
       { ...untagged, id: LOST, createdAt: ago(11 * MINUTE), ...over },
       { ...untagged, id: OLDER, createdAt: ago(71 * MINUTE) }, // the name, from before this runner's create: not its own
       { ...untagged, id: "abe2d3c4-0000-4000-8000-000000000014", name: "fac/2-1", createdAt: ago(11 * MINUTE) }, // no create of this runner sent that name
+      // Another runner's launch of the same issue and attempt: the same name, and its own tags.
+      { ...untagged, id: "ace2d3c4-0000-4000-8000-000000000015", tags: ["factory", "factory-ffffffff-0000-4000-8000-00000000ffff"], createdAt: ago(11 * MINUTE) },
+      { ...untagged, id: "ade2d3c4-0000-4000-8000-000000000016", tags: [{ name: "kept" }], createdAt: ago(11 * MINUTE) }, // any tag at all: not bare
     ];
   };
   const archiveLost = { argv: ["workspaces", "archive", LOST, "--host", "cloud"], answer: { deleted: [LOST], notFound: [], failed: [], warnings: [] } };
@@ -3887,6 +3890,32 @@ describe("the orphan sweep", () => {
       assert.strictEqual(logs.length, 1, logs.join("\n"));
       assert.include(logs[0], `could not archive the orphaned cloud workspace ${LOST}`);
       assert.strictEqual(marksIn(t.data).length, 1);
+    }),
+  );
+
+  it.effect("a workspace Paradev made late keeps its mark while it is under 10 minutes old, and is archived once it is over", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fail: "Request timed out" },
+          { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows({ createdAt: ago(9 * MINUTE) }) },
+          { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows({ createdAt: ago(9 * MINUTE) }) },
+          archiveLost,
+        ],
+        { config: onCloud },
+      );
+      // The create was sent 16 minutes ago; the workspace it made is listed as 9 minutes old.
+      yield* TestClock.setTime(NOW - 16 * MINUTE);
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      yield* TestClock.setTime(NOW);
+      yield* t.run((s) => s.sweepOrphans);
+      assert.isUndefined(t.calls.find(argvIs("workspaces", "archive")));
+      assert.strictEqual(marksIn(t.data).length, 1);
+      yield* TestClock.setTime(NOW + 2 * MINUTE);
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.include(logs[0], `archived cloud workspace ${LOST} (fac/1-1): untagged`);
     }),
   );
 
