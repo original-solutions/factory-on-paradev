@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "plugins",
+    "validate",
+    "/tmp/p3-spike.4TWZ/nover",
+    "--json"
+  ],
+  "exit": 1,
+  "startedAt": 1794737278276,
+  "durationMs": 152,
+  "stderr": "Error: Could not read the tags in /tmp/p3-spike.4TWZ/nover: fatal: not a git repository (or any of the parent directories): .git\n"
+}

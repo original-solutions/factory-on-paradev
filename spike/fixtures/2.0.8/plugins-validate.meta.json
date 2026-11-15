@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "plugins",
+    "validate",
+    ".",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794737277664,
+  "durationMs": 159,
+  "stderr": ""
+}

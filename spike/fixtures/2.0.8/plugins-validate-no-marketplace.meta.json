@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "plugins",
+    "validate",
+    "/tmp/p3-spike.4TWZ/empty",
+    "--json"
+  ],
+  "exit": 1,
+  "startedAt": 1794737278484,
+  "durationMs": 139,
+  "stderr": "Error: No .agent-marketplace.json found in /tmp/p3-spike.4TWZ/empty or any parent directory.\n"
+}
