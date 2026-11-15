@@ -78,7 +78,7 @@ import {
   ThreadNotFoundError,
   type FactorySessions,
 } from "./sessions.ts";
-import { TARGETS_FILE } from "./targets.ts";
+import { readTargetRows, TARGETS_FILE } from "./targets.ts";
 import { MARKER } from "./tracker/github.ts";
 
 /**
@@ -416,7 +416,8 @@ const runtimeLayer = (
   process: FactoryProcess["Service"],
   options: RuntimeOptions = {},
 ) =>
-  factoryRuntime({ readLoad: idleLoad, ...options }).pipe(
+  // This Mac's plugin check passes unless a test says otherwise: the real one reads HOME.
+  factoryRuntime({ readLoad: idleLoad, checkLocalPlugin: () => null, ...options }).pipe(
     Layer.provide(Layer.succeed(Paths.FactoryPaths, paths)),
     Layer.provide(Layer.succeed(FactoryProcess, process)),
     Layer.provide(noAgents),
@@ -4616,6 +4617,40 @@ describe("liveWorld: the hosts", () => {
         assert.deepStrictEqual(
           writes.at(-1)!.runs.map((entry) => [entry.id, entry.target, entry.workspaceId]),
           [[runIdToString(run), "mini", "ws-7"]],
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("this Mac's plugin check runs before a world's first pass: a failure raises plugin-not-ready and is the local row's reason, and a reload checks again", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const MISSING = "the factory plugin is not on this Mac: /home/me/.agents/skills/factory-build/VERSION is missing";
+        let answer: string | null = MISSING;
+        const worlds: Array<PassWorld> = [];
+        const { loop, factoryDir, attention } = yield* started(configFor([["a/b", "/b"]], "/gh"), noGhProcess, {
+          checkLocalPlugin: () => answer,
+          onWorld: (world) => worlds.push(world),
+        });
+        yield* idleAfter(loop, factoryDir, 1);
+        assert.strictEqual(worlds[0]!.localPlugin.notReady, MISSING);
+        const items = (yield* attention.list()).filter((item) => item.id === "plugin-not-ready");
+        assert.strictEqual(items.length, 1);
+        assert.include(items[0]!.message, "superset plugins install factory@organization, then restart the Paradev app");
+        const local = () => readTargetRows(factoryDir).find((row) => row.kind === "local");
+        yield* waitUntil("the local row", () => local() !== undefined);
+        assert.deepStrictEqual(
+          { ready: local()!.ready, reason: local()!.reason },
+          { ready: false, reason: `not ready: ${MISSING}` },
+        );
+        answer = null;
+        yield* loop.reload;
+        assert.strictEqual(worlds.length, 2);
+        yield* idleAfter(loop, factoryDir, 2);
+        assert.strictEqual(worlds[1]!.localPlugin.notReady, null);
+        assert.deepStrictEqual(
+          (yield* attention.list()).filter((item) => item.id === "plugin-not-ready"),
+          [],
         );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),

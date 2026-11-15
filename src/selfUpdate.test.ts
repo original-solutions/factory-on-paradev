@@ -10,7 +10,9 @@ import * as Logger from "effect/Logger";
 import * as TestClock from "effect/testing/TestClock";
 import { afterAll, beforeAll, describe } from "vitest";
 
+import type { NewItem } from "./attention.ts";
 import { installPathsOf, UPDATE_PENDING_FILE, UPDATE_REFUSED_FILE } from "./paths.ts";
+import { landedPluginPath } from "./plugin.ts";
 import { FactoryProcess, type RunInput, type RunResult } from "./process.ts";
 import { clearAfterPass, makeSelfUpdate, repositoryOf } from "./selfUpdate.ts";
 import { CONFIG_NOT_LOADED_REASON } from "./status.ts";
@@ -77,6 +79,8 @@ interface Answers {
   compare: string | "fail";
   /** Whether a file of the clone cannot be read, so copying it into `versions/` fails. */
   cloneUnreadable: boolean;
+  /** The clone's `factory.minPluginVersion`; null for a package.json with none. */
+  minPlugin: string | null;
 }
 
 interface Fixture {
@@ -86,6 +90,8 @@ interface Fixture {
   readonly calls: Array<RunInput>;
   readonly answers: Answers;
   readonly logs: Array<{ readonly level: string; readonly text: string }>;
+  /** The open attention items, one per id. */
+  items: Array<NewItem>;
 }
 
 /**
@@ -124,14 +130,23 @@ const fixture = (underVersions = true): Fixture => {
       defaultBranch: "main",
       compare: "ahead",
       cloneUnreadable: false,
+      minPlugin: null,
     },
     logs: [],
+    items: [],
   };
 };
 
 /** A clone of the tag: what `git clone` would leave, with entries install does not carry. */
-const fakeClone = (dir: string, version: string) => {
-  write(NodePath.join(dir, "package.json"), JSON.stringify({ version, repository: "github:o/r" }));
+const fakeClone = (dir: string, version: string, minPlugin: string | null) => {
+  write(
+    NodePath.join(dir, "package.json"),
+    JSON.stringify({
+      version,
+      repository: "github:o/r",
+      ...(minPlugin === null ? {} : { factory: { minPluginVersion: minPlugin } }),
+    }),
+  );
   write(NodePath.join(dir, "package-lock.json"), "{}\n");
   write(NodePath.join(dir, "src", "bin.ts"), `// ${version}\n`);
   write(NodePath.join(dir, "scripts", "rotate-log.sh"), "#!/bin/bash\n");
@@ -184,7 +199,7 @@ const fakeProcess = (f: Fixture) =>
             return result(0, `${f.answers.tagAtHead ? commitSha(version) : OTHER_SHA}\n`);
           }
           const tag = args[args.indexOf("--branch") + 1]!;
-          fakeClone(args.at(-1)!, tag.slice(1));
+          fakeClone(args.at(-1)!, tag.slice(1), f.answers.minPlugin);
           if (f.answers.cloneUnreadable) NodeFS.chmodSync(NodePath.join(args.at(-1)!, "src", "bin.ts"), 0o000);
           return result(0);
         }
@@ -238,6 +253,16 @@ const withUpdater = <A, E>(
         execPath: EXEC_PATH,
         ghConfigDir: () => GH_DIR,
         gatesRunning: () => f.answers.gates,
+        attention: {
+          raise: (item) =>
+            Effect.sync(() => {
+              if (!f.items.some((open) => open.id === item.id)) f.items.push(item);
+            }),
+          clear: (matches) =>
+            Effect.sync(() => {
+              f.items = f.items.filter((item) => !matches({ ...item, firstSeenMs: 0 }));
+            }),
+        },
       });
       yield* Effect.forkScoped(update.run(() => f.answers.enabled), { startImmediately: true });
       return yield* body(update);
@@ -253,6 +278,14 @@ const versionPath = (f: Fixture, version: string) => NodePath.join(installPathsO
 const STAGING = ["gh", "gh", "gh", "git", "git", "npm", EXEC_PATH];
 const OFF_LINE = "self-update off: self_update is false";
 const pendingOf = (f: Fixture) => JSON.parse(NodeFS.readFileSync(NodePath.join(f.dataDir, UPDATE_PENDING_FILE), "utf8"));
+/** Lands the factory plugin at `version` in the fixture's HOME, as Paradev copies the skill. */
+const landPlugin = (f: Fixture, version: string) => write(landedPluginPath(f.home), `${version}\n`);
+/** This Mac's fix, as the refusal prints it. */
+const FIX = "on this Mac run superset plugins install factory@organization, then restart the Paradev app";
+const updateItems = (f: Fixture) => f.items.filter((item) => item.id === "plugin-update-needed");
+/** The clone, tag check: the staging stops before npm ci. */
+const REFUSED = ["gh", "gh", "gh", "git", "git"];
+
 const writeRefused = (f: Fixture, tag: string) =>
   write(
     NodePath.join(f.dataDir, UPDATE_REFUSED_FILE),
@@ -607,6 +640,119 @@ describe("self-update", () => {
         expect(loud(f).map((log) => log.level)).toEqual(["Warn", "Warn"]);
         expect(loud(f)[1]!.text).toContain("the machine config does not load");
         expect(versionDirs(f)).toEqual(["0.1.0"]);
+      }),
+    );
+  });
+
+  it.effect("a tag that needs a newer plugin than this Mac's is not staged, raises one item, and is staged once the plugin is new enough", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.minPlugin = "0.2.0";
+    landPlugin(f, "0.1.9");
+    const line = `update v0.2.0 not staged: it needs the factory plugin 0.2.0 or newer, and this Mac has 0.1.9; ${FIX}; the runner stays on 0.1.0 and tries again every 10 minutes`;
+    return withUpdater(f, true, (update) =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        // Stopped after the commit check, before npm ci: the clone is gone and current stays.
+        expect(commands(f)).toEqual(REFUSED);
+        expect(versionDirs(f)).toEqual(["0.1.0"]);
+        expect(currentTarget(f)).toBe(versionPath(f, "0.1.0"));
+        expect(update.staged()).toBe(false);
+        expect(loud(f)).toEqual([{ level: "Warn", text: line }]);
+        expect(updateItems(f)).toEqual([
+          { id: "plugin-update-needed", kind: "attention", repo: null, issue: null, run: null, message: line },
+        ]);
+        // The tag is not marked: the next check tries it again, and says nothing new.
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual([...REFUSED, ...REFUSED]);
+        expect(loud(f)).toHaveLength(1);
+        expect(updateItems(f)).toHaveLength(1);
+        // A person updates the plugin: the next check stages the tag and the item goes.
+        landPlugin(f, "0.2.0");
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual([...REFUSED, ...REFUSED, ...STAGING]);
+        expect(versionDirs(f)).toEqual(["0.1.0", "0.2.0"]);
+        expect(updateItems(f)).toEqual([]);
+        yield* update.afterPass;
+        expect(currentTarget(f)).toBe(versionPath(f, "0.2.0"));
+      }),
+    );
+  });
+
+  it.effect("a failed read of this Mac's plugin or the tag's minimum skips the stage the same way, and says what the read said", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.minPlugin = "0.2.0";
+    const missing = `update v0.2.0 not staged: it needs the factory plugin 0.2.0 or newer, and the factory plugin is not on this Mac: ${landedPluginPath(f.home)} is missing; ${FIX}; the runner stays on 0.1.0 and tries again every 10 minutes`;
+    const garbled = `update v0.2.0 not staged: its package.json has factory.minPluginVersion "two", not a version; ${FIX}; the runner stays on 0.1.0 and tries again every 10 minutes`;
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual(REFUSED);
+        expect(versionDirs(f)).toEqual(["0.1.0"]);
+        expect(loud(f)).toEqual([{ level: "Warn", text: missing }]);
+        expect(updateItems(f).map((item) => item.message)).toEqual([missing]);
+        // Another reason for the same tag is a new line, and replaces the item.
+        landPlugin(f, "0.2.0");
+        f.answers.minPlugin = "two";
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual([...REFUSED, ...REFUSED]);
+        expect(versionDirs(f)).toEqual(["0.1.0"]);
+        expect(loud(f).map((log) => log.text)).toEqual([missing, garbled]);
+        expect(updateItems(f).map((item) => item.message)).toEqual([garbled]);
+      }),
+    );
+  });
+
+  it.effect("a tag that needs no newer plugin than this Mac's is staged as before", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.minPlugin = "0.1.10";
+    landPlugin(f, "0.1.10");
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual(STAGING);
+        expect(versionDirs(f)).toEqual(["0.1.0", "0.2.0"]);
+        expect(f.items).toEqual([]);
+      }),
+    );
+  });
+
+  it.effect("a tag whose package.json has no factory.minPluginVersion is staged as today, with no plugin on this Mac", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.minPlugin = null;
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(NodeFS.existsSync(landedPluginPath(f.home))).toBe(false);
+        expect(commands(f)).toEqual(STAGING);
+        expect(versionDirs(f)).toEqual(["0.1.0", "0.2.0"]);
+        expect(f.items).toEqual([]);
+      }),
+    );
+  });
+
+  it.effect("the item goes once the tag passes the plugin step, and does not come back when npm ci then fails", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.minPlugin = "0.2.0";
+    landPlugin(f, "0.1.0");
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(updateItems(f)).toHaveLength(1);
+        landPlugin(f, "0.2.0");
+        f.answers.npm = "fail";
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual([...REFUSED, ...REFUSED, "npm"]);
+        expect(updateItems(f)).toEqual([]);
+        expect(loud(f).at(-1)!.text).toContain("npm ci");
+        // A failed npm ci marks the tag as before: it is not tried again, and the item stays gone.
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual([...REFUSED, ...REFUSED, "npm", "gh"]);
+        expect(updateItems(f)).toEqual([]);
       }),
     );
   });

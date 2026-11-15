@@ -173,7 +173,7 @@ describe("beltPayload", () => {
     assert.deepStrictEqual(
       belt.runner.targets.map((target) => target.reason),
       [
-        "this Mac's load or disk check holds claims; factory-runner status says why",
+        "this Mac's load, disk or plugin check failed; factory-runner status says why",
         "its hosts check failed; factory-runner status says why",
         "its proxy check has not passed; factory-runner status says why",
       ],

@@ -37,6 +37,7 @@ import { useTempDirs } from "./ledger/testSupport.ts";
 import { formatTs } from "./ledger/time.ts";
 import {
   checkHosts,
+  checkLocalPlugin,
   HOST_READY_RECHECK_EVERY_MS,
   HOST_RECHECK_EVERY_MS,
   HOST_UNREACHABLE_PASSES,
@@ -250,6 +251,16 @@ class Fake implements PassWorld {
   hostLoads = new Map<string, Load | null>();
   hostsNotReady = new Map<string, string>();
   hostCheckedAt = new Map<string, number>();
+  localPlugin: { notReady: string | null; checkedAt: number | null } = {
+    notReady: "not checked yet since the config load",
+    checkedAt: null,
+  };
+  /** What this Mac's plugin check answers: why it fails, null when it passes. */
+  localPluginAnswer: string | null = null;
+  checkLocalPlugin = () => {
+    this.calls.push("checkLocalPlugin");
+    return this.localPluginAnswer;
+  };
   /** What `hosts check` answers per host id; every line ok otherwise. */
   checks: Record<string, ReadonlyArray<CheckLine>> = {};
   /** The hosts whose check never answers. */
@@ -7016,6 +7027,99 @@ describe("the host checks", () => {
   );
 });
 
+describe("this Mac's plugin check", () => {
+  const MISSING = "the factory plugin is not on this Mac: /Users/me/.agents/skills/factory-build/VERSION is missing";
+  const notReady = (fake: Fake) => fake.items.filter((item) => item.id === "plugin-not-ready");
+  const checked = (fake: Fake) => fake.calls.filter((call) => call === "checkLocalPlugin").length;
+
+  it.effect("the pass itself does not run it", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.ready[REPO] = [1];
+      yield* pass(fake, [REPO], 5);
+      assert.equal(checked(fake), 0);
+    }),
+  );
+
+  it.effect("a world starts not checked; a failing check is not ready with one item that prints this Mac's fix", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      assert.deepEqual(fake.localPlugin, { notReady: "not checked yet since the config load", checkedAt: null });
+      fake.localPluginAnswer = MISSING;
+      yield* checkLocalPlugin(fake);
+      assert.deepEqual(fake.localPlugin, { notReady: MISSING, checkedAt: fake.now });
+      const items = notReady(fake);
+      assert.equal(items.length, 1);
+      assert.deepInclude(items[0]!, { kind: "attention", repo: null, issue: null, run: null });
+      assert.equal(
+        items[0]!.message,
+        `this Mac takes no run: ${MISSING}; run superset plugins install factory@organization, then restart the Paradev app (checked again every 5 minutes)`,
+      );
+    }),
+  );
+
+  it.effect("a passing check leaves this Mac ready with no item", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      yield* checkLocalPlugin(fake);
+      assert.deepEqual(fake.localPlugin, { notReady: null, checkedAt: fake.now });
+      assert.deepEqual(notReady(fake), []);
+    }),
+  );
+
+  it.effect("a failing check runs again after five minutes, and clears its item when it passes", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.localPluginAnswer = MISSING;
+      yield* checkLocalPlugin(fake);
+      fake.now += HOST_RECHECK_EVERY_MS - 1;
+      fake.localPluginAnswer = null;
+      yield* checkLocalPlugin(fake);
+      assert.equal(checked(fake), 1);
+      assert.equal(fake.localPlugin.notReady, MISSING);
+      fake.now += 1;
+      yield* checkLocalPlugin(fake);
+      assert.equal(checked(fake), 2);
+      assert.equal(fake.localPlugin.notReady, null);
+      assert.deepEqual(notReady(fake), []);
+    }),
+  );
+
+  it.effect("a passing check runs again after an hour, and a plugin that went is not ready", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      yield* checkLocalPlugin(fake);
+      fake.now += HOST_READY_RECHECK_EVERY_MS - 1;
+      fake.localPluginAnswer = MISSING;
+      yield* checkLocalPlugin(fake);
+      assert.equal(checked(fake), 1);
+      assert.equal(fake.localPlugin.notReady, null);
+      fake.now += 1;
+      yield* checkLocalPlugin(fake);
+      assert.equal(checked(fake), 2);
+      assert.equal(fake.localPlugin.notReady, MISSING);
+      assert.equal(notReady(fake).length, 1);
+    }),
+  );
+
+  it.effect("another reason replaces the open item; the same reason keeps it", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.localPluginAnswer = MISSING;
+      yield* checkLocalPlugin(fake);
+      const first = notReady(fake)[0]!;
+      fake.now += HOST_RECHECK_EVERY_MS;
+      yield* checkLocalPlugin(fake);
+      assert.deepEqual(notReady(fake), [first]);
+      fake.now += HOST_RECHECK_EVERY_MS;
+      fake.localPluginAnswer = "the factory plugin on this Mac is 0.3.3, older than the 0.3.4 this runner needs";
+      yield* checkLocalPlugin(fake);
+      const items = notReady(fake);
+      assert.equal(items.length, 1);
+      assert.include(items[0]!.message, "is 0.3.3, older than the 0.3.4 this runner needs");
+    }),
+  );
+});
 
 describe("the cloud proxy check", () => {
   const PROXY = "https://proxy.example.ts.net:8443";

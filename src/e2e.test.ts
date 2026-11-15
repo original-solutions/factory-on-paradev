@@ -826,6 +826,8 @@ const scenario = (spec: Spec) =>
         gateRemoteBase: `file://${remotes}`,
         // The host's own load would hold the claim on a busy machine, such as the gate's.
         readLoad: () => ({ oneMinute: 0, cores: 1 }),
+        // This Mac's plugin has landed: the real check reads HOME.
+        checkLocalPlugin: () => null,
         // The base fetch reads the same remote; the adapter's waits are cut to test speed.
         sessions: {
           remoteBase: `file://${remotes}`,
@@ -1234,6 +1236,7 @@ const placementRun = (spec: PlacementSpec) =>
       const factory = factoryRuntime({
         gateRemoteBase: `file://${remotes}`,
         readLoad: () => spec.load,
+        checkLocalPlugin: () => null,
         ssh,
         proxyGet: () => Effect.succeed(spec.proxyStatus ?? 401),
         sessions: {

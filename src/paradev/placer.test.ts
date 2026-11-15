@@ -68,6 +68,8 @@ const setup = (
     counts?: ReadonlyArray<TargetCount>;
     hostLoad?: Load | null;
     notReady?: ReadonlyMap<string, string>;
+    /** Why this Mac's plugin check failed; none by default. */
+    localNotReady?: string;
     /** Effect run before `running` answers: a slow read. */
     slowRead?: Effect.Effect<void>;
   } = {},
@@ -87,6 +89,7 @@ const setup = (
     repoOfProject: (id) => BY_PROJECT[id] ?? null,
     hostLoads: new Map<string, Load | null>([["h1", options.hostLoad === undefined ? quiet : options.hostLoad]]),
     hostsNotReady: () => options.notReady ?? new Map(),
+    localNotReady: () => options.localNotReady ?? null,
     readLoad: () => {
       reads.load += 1;
       return quiet;
@@ -163,6 +166,42 @@ describe("placer", () => {
       const second = yield* t.placer.place(request("mac", 2)).pipe(Effect.flip);
       assert.instanceOf(second, NoTargetHasRoom);
       assert.strictEqual(t.reads.running, 1);
+    }),
+  );
+
+  it.effect("a repo with no hosts and no cloud is refused while this Mac's plugin check fails, even when local.max_runs reaches the core's cap", () =>
+    Effect.gen(function* () {
+      for (const t of [
+        setup({ machine: machine({ local: { maxRuns: 4 } }), localNotReady: "the factory plugin is not on this Mac" }),
+        setup({ localNotReady: "the factory plugin is not on this Mac" }),
+      ]) {
+        t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
+        const error = yield* t.placer.place(request("mac")).pipe(Effect.flip);
+        assert.instanceOf(error, NoTargetHasRoom);
+        assert.deepStrictEqual(drops(t.events), [
+          { repo: "acme/mac", target: "local", reason: "not ready: the factory plugin is not on this Mac" },
+        ]);
+      }
+    }),
+  );
+
+  it.effect("this Mac is dropped while its plugin check fails, and a host takes the launch", () =>
+    Effect.gen(function* () {
+      const t = setup({ localNotReady: "the factory plugin is not on this Mac" });
+      t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
+      assert.deepStrictEqual(yield* t.placer.place(request("hosted")), {
+        kind: "host",
+        machineId: "h1",
+        path: "/srv/hosted",
+      });
+      assert.deepStrictEqual(drops(t.events), [
+        { repo: "acme/hosted", target: "local", reason: "not ready: the factory plugin is not on this Mac" },
+      ]);
+      const [row] = yield* t.placer.targets;
+      assert.deepStrictEqual(
+        { ready: row!.ready, reason: row!.reason },
+        { ready: false, reason: "not ready: the factory plugin is not on this Mac" },
+      );
     }),
   );
 
