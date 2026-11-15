@@ -1085,7 +1085,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     if (terminal === undefined) return { ...place, archived: false, ...noRun } satisfies ThreadStatus;
 
     const notFound = () => new ThreadNotFoundError({ threadId });
-    const { run, completedAt } = yield* explainRun(record, terminal);
+    const { run, completedAt, alive } = yield* explainRun(record, terminal);
     const message = ENDED.has(run)
       ? yield* readMessage(record, terminal).pipe(Effect.catchIf(isNotFound, () => Effect.fail(notFound())))
       : null;
@@ -1097,6 +1097,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       runStartedAt: record.turns.at(-1)?.at ?? null,
       runCompletedAt: completedAt,
       lastAssistantMessage: message,
+      ...(alive === false && { agentDied: true as const }),
     } satisfies ThreadStatus;
   }, (effect) =>
     effect.pipe(

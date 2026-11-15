@@ -368,6 +368,8 @@ export const RESULT_LINE_REMINDED = "result-line-reminded";
 export const INTERRUPTION_SENT = "interruption-sent";
 /** The ledger step written once the resume of a `session_rate_limited` line was sent: `rate-limited-sent <run ordinal>`. */
 export const RATE_LIMITED_SENT = "rate-limited-sent";
+/** The ledger step written once a run whose agent process died was sent the resume message: `agent-died-resumed <k>`, `k` the ordinal of that run. */
+export const AGENT_DIED_RESUMED = "agent-died-resumed";
 /** The ledger step that waits for a run newer than `k` (a forwarded comment); read here for the steps that write it. */
 export const FORWARD_WAIT = "forward-wait";
 /** The ledger step written when every message sent under a `forward-wait <k>` was refused by T3, so no run was started and the wait is over: `forward-wait-cancelled <k>`. */
@@ -555,6 +557,8 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
           reminding = remindingRun;
           awaitRun(remindingRun, true);
         }
+        const diedRun = stepNumber(step, AGENT_DIED_RESUMED);
+        if (diedRun !== null) awaitRun(diedRun, true);
         const forwardRun = stepNumber(step, FORWARD_WAIT);
         const command = entry.cause?.command;
         if (forwardRun !== null) {
