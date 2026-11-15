@@ -902,7 +902,13 @@ export const advance = (
       // A run whose agent process died is resumed, once for each run: the step waits for the
       // newer run the resume starts (`sessionBusy`). A send cut short before the step is made
       // again under the same command id, which the session takes once.
-      if (status.run === "interrupted" && status.agentDied === true && result.kind !== "done") {
+      // A run with no ordinal cannot be waited for, so it is paused as it always was.
+      if (
+        status.run === "interrupted" &&
+        status.agentDied === true &&
+        status.runOrdinal !== null &&
+        result.kind !== "done"
+      ) {
         const sent = yield* ctx.sessions
           .send(
             threadId,

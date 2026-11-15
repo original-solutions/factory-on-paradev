@@ -117,8 +117,9 @@ export interface ThreadStatus extends Thread {
   /** The text of the last assistant message of that same run; `null` when the run has none. */
   readonly lastAssistantMessage: string | null;
   /**
-   * `true` when `run` is `interrupted` because the liveness check found no agent process: the
-   * agent died mid-run and no person stopped it. Absent otherwise.
+   * `true` when `run` is `interrupted` because the liveness check found no agent process, or
+   * because a resume of such an agent closed its terminal and has not landed: the agent died
+   * mid-run and no person stopped it. Absent otherwise.
    */
   readonly agentDied?: true;
 }

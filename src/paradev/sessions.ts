@@ -1097,7 +1097,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       runStartedAt: record.turns.at(-1)?.at ?? null,
       runCompletedAt: completedAt,
       lastAssistantMessage: message,
-      ...(alive === false && { agentDied: true as const }),
+      // A resume this adapter began for a dead agent closed its terminal and has not landed: the
+      // closed terminal reads `exited`, and the agent is still the dead one, not a person's stop.
+      ...((alive === false || (run === "interrupted" && record.pendingResume != null)) && {
+        agentDied: true as const,
+      }),
     } satisfies ThreadStatus;
   }, (effect) =>
     effect.pipe(
