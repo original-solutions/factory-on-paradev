@@ -42,7 +42,7 @@ The billing page, read on 2026-11-15 after the smoke: Team plan, `GB-hours used:
 
 The smoke's own share comes from the ledgers: the three workspaces lived 3 min 13 s, 59 s and 5 min 6 s, 9 min 18 s in all, on a small machine (2 vCPU, 4 GB). That is about 0.6 GB-hours, or 37 GB-minutes, and about 0.2 GB-hours for a run that ends `FACTORY-DONE`. At that rate the plan's 1,200 GB-hours cover about 5,500 such runs a month, and a run past the pool would cost about one cent.
 
-The recommendation on the plan is still to be added.
+Recommendation, decided by Tom on 2026-11-15: keep the Team plan for now. The smoke passed, a run costs about 0.2 GB-hours of a 1,200 GB-hour pool, and cloud is only the overflow when neither Mac has room. Whether that overflow is needed is not known until clockwork has run on both Macs for a week (issue 60), so the plan is looked at again then.
 
 ## Found on the way
 
