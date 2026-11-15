@@ -54,6 +54,13 @@ export const layer = Layer.effect(
   }),
 );
 
+/**
+ * The data dir's record of a restart into a self-installed version, until that version finishes a
+ * pass, and of the tag a runner went back from: `updateState.ts`. `install` removes both.
+ */
+export const UPDATE_PENDING_FILE = "update-pending.json";
+export const UPDATE_REFUSED_FILE = "update-refused.json";
+
 /** The launchd label of the runner agent. */
 export const LABEL = "io.github.original-solutions.factory-runner";
 /** The launchd label of the agent that rotates the runner's log. */

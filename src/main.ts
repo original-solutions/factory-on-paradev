@@ -52,7 +52,7 @@ import { readLowestFreeSpace, type FreeSpace } from "./disk.ts";
 import { overload, readLoad, type Load } from "./load.ts";
 import { checkHost, type CliCall } from "./paradev/hostsCheck.ts";
 import { liveSshSpawn, type SshSpawn } from "./paradev/ssh.ts";
-import { makeSelfUpdate, type SelfUpdate, type SelfUpdateOptions } from "./selfUpdate.ts";
+import { clearAfterPass, makeSelfUpdate, type SelfUpdate, type SelfUpdateOptions } from "./selfUpdate.ts";
 import * as Gate from "./gate.ts";
 import { guardLogStreams } from "./logStreams.ts";
 import { FactoryGate, clearGateLocks, gateLockFile } from "./gate.ts";
@@ -880,6 +880,7 @@ export const liveWorld = (
     nowMs: clock,
     machineName: host,
     attention,
+    passFinished: clearAfterPass(dataDir, version),
     record: (event: MachineEvent) =>
       ledger(() => {
         const log = MachineLog.open(dataDir, { clock });

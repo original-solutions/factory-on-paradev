@@ -19,6 +19,7 @@ import {
 import { asciiLower, runIdToString } from "./ledger/runId.ts";
 import { formatTs } from "./ledger/time.ts";
 import { readTargetRows, targetNameOf, type TargetRow } from "./targets.ts";
+import { refusedRow } from "./updateState.ts";
 
 /** The settings of the machine config the status report shows. */
 export interface StatusSettings {
@@ -116,7 +117,7 @@ export interface StatusReport {
   }>;
   /** The disk, load and gates the pass holds claims on, read with the report; null while idle. */
   readonly health: MachineHealth | null;
-  /** What the factory needs a person for, from the open attention items. */
+  /** What the factory needs a person for: the open attention items, then a refused update tag. */
   readonly attention: ReadonlyArray<ReportedAttention>;
   /** Open items a person dismissed: still true, so a hold one causes still holds claims. */
   readonly dismissed: ReadonlyArray<ReportedAttention>;
@@ -368,7 +369,7 @@ export const buildStatus = (input: {
       message: problem.message,
     })),
     health: input.health ?? null,
-    attention: input.attention.map(reported),
+    attention: [...input.attention.map(reported), ...[refusedRow(dataDir)].filter((row) => row !== null)],
     dismissed: (input.dismissed ?? []).map(reported),
   };
 };
