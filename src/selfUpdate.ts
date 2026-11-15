@@ -34,12 +34,11 @@ import {
   fetchCredentialEnv,
 } from "./gitHardening.ts";
 import { place, pointCurrent, stage } from "./install.ts";
-import { installPathsOf, packageVersion } from "./paths.ts";
+import { installPathsOf, packageVersion, UPDATE_REFUSED_FILE } from "./paths.ts";
 import { FactoryProcess, type RunInput } from "./process.ts";
 import {
   readPending,
   readRefused,
-  REFUSED_FILE,
   removePending,
   removeRefused,
   writePending,
@@ -387,7 +386,7 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
       try {
         refusedTag = readRefused(options.dataDir)?.tag ?? null;
       } catch (error) {
-        return yield* Effect.logWarning(`self-update stages nothing: ${REFUSED_FILE} could not be read: ${messageOf(error)}`);
+        return yield* Effect.logWarning(`self-update stages nothing: ${UPDATE_REFUSED_FILE} could not be read: ${messageOf(error)}`);
       }
       if (refusedTag === `v${version}`) return;
       if (failed.has(`v${version}`)) return;

@@ -123,7 +123,7 @@ export interface StatusReport {
   readonly dismissed: ReadonlyArray<ReportedAttention>;
 }
 
-interface ReportedAttention {
+export interface ReportedAttention {
   readonly id: string;
   readonly kind: string;
   readonly repo: string | null;
