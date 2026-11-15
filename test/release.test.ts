@@ -444,12 +444,14 @@ esac
 
   it("fails, with the rerun command and no tag push, when a superset call never answers", () => {
     const started = Date.now();
-    const out = finish("hang", { origin: OLD, ancestor: false, hang: true, env: { RELEASE_FINISH_CALL_TIMEOUT_MS: "500" } });
+    // Long enough that every stub that answers does so on a loaded machine (a gate runs under nice
+    // beside other suites); only the `sources list` that sleeps 30 s reaches it.
+    const out = finish("hang", { origin: OLD, ancestor: false, hang: true, env: { RELEASE_FINISH_CALL_TIMEOUT_MS: "4000" } });
 
     expect(out.status).toBe(1);
     expect(Date.now() - started).toBeLessThan(20_000);
     expect(synced(out.calls)).toBe(true);
-    expect(out.stderr).toContain("superset plugins organization sources list --json did not answer within 0.5 s");
+    expect(out.stderr).toContain("superset plugins organization sources list --json did not answer within 4 s");
     expect(out.stderr).toContain(`make release-finish VERSION=${VERSION}`);
     expectNoTagPush(out.calls);
   });
