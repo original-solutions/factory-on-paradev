@@ -1657,9 +1657,10 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       );
     }
     // A workspace still listed live keeps its mark: it is not 10 minutes old yet, its archive
-    // failed, or this pass just sent it.
+    // failed, or this pass just sent it. The time is the last send's: a launch placed again sends
+    // the create again under the same mark.
     for (const mark of marks) {
-      if (now - mark.at > CLOUD_CREATE_TIMEOUT_MS + ORPHAN_AGE_MS && !waiting.has(mark.file)) {
+      if (now - mark.lastAt > CLOUD_CREATE_TIMEOUT_MS + ORPHAN_AGE_MS && !waiting.has(mark.file)) {
         yield* local(removeCloudCreate(mark));
       }
     }

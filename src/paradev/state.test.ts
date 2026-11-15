@@ -219,18 +219,18 @@ describe("placement files", () => {
 describe("cloud create marks", () => {
   const dir = (data: string) => NodePath.join(data, "paradev", "cloud-creates");
 
-  it.effect("a mark holds the name and the time of the first send, lists back, and is removed once", () =>
+  it.effect("a mark holds the name and the times of the first and the last send, lists back, and is removed once", () =>
     Effect.gen(function* () {
       const data = tempDir("state");
       assert.deepStrictEqual(yield* listCloudCreates(data), []);
       yield* markCloudCreate(data, "launch-1", "fac/1-1", 1000);
-      // A second send under the same command id keeps the first time.
+      // A second send under the same command id keeps the first time and takes its own as the last.
       yield* markCloudCreate(data, "launch-1", "fac/1-1", 2000);
       yield* markCloudCreate(data, "launch-2", "fac/2-1", 3000);
       const marks = [...(yield* listCloudCreates(data))].sort((a, b) => a.at - b.at);
-      assert.deepStrictEqual(marks.map(({ name, at }) => ({ name, at })), [
-        { name: "fac/1-1", at: 1000 },
-        { name: "fac/2-1", at: 3000 },
+      assert.deepStrictEqual(marks.map(({ name, at, lastAt }) => ({ name, at, lastAt })), [
+        { name: "fac/1-1", at: 1000, lastAt: 2000 },
+        { name: "fac/2-1", at: 3000, lastAt: 3000 },
       ]);
       yield* removeCloudCreate(marks[0]!);
       yield* removeCloudCreate(marks[0]!);

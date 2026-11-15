@@ -3893,6 +3893,70 @@ describe("the orphan sweep", () => {
     }),
   );
 
+  it.effect("a create sent again under the same command id keeps its mark until 15 minutes after the last send, and still finds the first send's workspace", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fail: "Request timed out" },
+          { argv: createArgv, fail: "Request timed out" },
+          { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows({ status: "deleted" }) },
+          // Listed at last: the workspace the first send made, 27 minutes old.
+          { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows({ createdAt: ago(11 * MINUTE) }) },
+          archiveLost,
+          { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows({ status: "deleted" }) },
+        ],
+        { config: onCloud },
+      );
+      yield* TestClock.setTime(NOW - 11 * MINUTE);
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      // The same launch, placed again 12 minutes later: its create may still be answering.
+      yield* TestClock.setTime(NOW + MINUTE);
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      // Over 15 minutes after the first send, under 15 after the last: the mark stays.
+      yield* TestClock.setTime(NOW + 5 * MINUTE);
+      yield* t.run((s) => s.sweepOrphans);
+      assert.strictEqual(marksIn(t.data).length, 1);
+      yield* TestClock.setTime(NOW + 16 * MINUTE);
+      yield* t.run((s) => s.sweepOrphans);
+      assert.strictEqual(t.calls.filter(argvIs("workspaces", "archive")).length, 1);
+      assert.strictEqual(marksIn(t.data).length, 1);
+      // Over 15 minutes after the last send, and nothing listed live: the mark goes.
+      yield* TestClock.setTime(NOW + 17 * MINUTE);
+      yield* t.run((s) => s.sweepOrphans);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual(marksIn(t.data), []);
+    }),
+  );
+
+  it.effect("an untagged workspace with a record is swept by its record: archived with no agent and no launch file, left alone with an agent", () =>
+    Effect.gen(function* () {
+      const untaggedRecorded = (answer: unknown) => {
+        const [row] = answer as ReadonlyArray<Record<string, unknown>>;
+        const untagged = { ...row, tags: [], createdAt: ago(60 * MINUTE) };
+        return [{ ...untagged, id: NO_AGENT }, { ...untagged, id: C3_WS }];
+      };
+      const t = rig([
+        { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: untaggedRecorded },
+        { argv: ["workspaces", "archive", NO_AGENT, "--host", "cloud"], answer: { deleted: [NO_AGENT], notFound: [], failed: [], warnings: [] } },
+      ]);
+      // C3's record has an agent. NO_AGENT's has none, and no launch file names it.
+      yield* seed(
+        t.data,
+        cloudRecord(),
+        cloudRecord({ threadId: `cloud:${NO_AGENT}`, workspaceId: NO_AGENT, launchCommandId: NO_AGENT_LAUNCH, terminals: [], turns: [] }),
+      );
+      yield* TestClock.setTime(NOW);
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual(t.calls.filter(argvIs("workspaces", "archive")).map((argv) => argv[2]), [NO_AGENT]);
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.include(logs[0], `archived cloud workspace ${NO_AGENT}`);
+      assert.include(logs[0], "no agent, and no launch file names its record");
+      const live = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNull(live!.archivedAt);
+    }),
+  );
+
   it.effect("a workspace Paradev made late keeps its mark while it is under 10 minutes old, and is archived once it is over", () =>
     Effect.gen(function* () {
       const t = rig(
