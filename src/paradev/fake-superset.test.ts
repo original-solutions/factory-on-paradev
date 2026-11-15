@@ -75,3 +75,18 @@ it.effect("a step's fail answers exit 1 with the CLI's Error line", () =>
     assert.strictEqual(result.tail, "");
   }),
 );
+
+it.effect("refuses --tag on a cloud create as CLI 2.0.8 does, and takes it on workspaces update", () =>
+  Effect.gen(function* () {
+    const update = ["workspaces", "update", "w1", "--host", "cloud", "--tag", "factory"];
+    const fake = fakeSuperset([{ argv: update, answer: { id: "w1" } }]);
+    const [refused, tagged] = yield* Effect.all([
+      ask(["workspaces", "create", "--host", "cloud", "--name", "fac/1-1", "--tag", "factory", "--json"]),
+      ask([...update, "--json"]),
+    ]).pipe(Effect.provide(fake.layer));
+    assert.strictEqual(refused.exitCode, 1);
+    assert.strictEqual(refused.stderrTail, "Error: --tag does not apply to a cloud workspace\n");
+    assert.strictEqual(tagged.exitCode, 0);
+    assert.deepStrictEqual(fake.unused(), []);
+  }),
+);

@@ -2894,8 +2894,12 @@ describe("launch in the cloud", () => {
   };
   const createArgv = [
     "workspaces", "create", "--host", "cloud", "--environment", ENV, "--machine-size", "small",
-    "--name", "fac/1-1", "--base-branch", "main", "--tag", "factory", "--tag", `factory-${RUNNER}`,
+    "--name", "fac/1-1", "--base-branch", "main",
   ];
+  /** The tags go on after the create: CLI 2.0.8 refuses `--tag` on a cloud create (#87). */
+  const updateArgv = ["workspaces", "update", C3_WS, "--host", "cloud", "--tag", "factory", "--tag", `factory-${RUNNER}`];
+  /** Its answer was not recorded; the adapter reads nothing but the exit code. */
+  const tagged: Step = { argv: updateArgv, answer: { id: C3_WS, tags: ["factory", `factory-${RUNNER}`] } };
   const getArgv = ["workspaces", "get", C3_WS, "--host", "cloud"];
 
   it.live("a cloud launch starts the agent with cloudMessage, whatever hostMessage says", () =>
@@ -2903,6 +2907,7 @@ describe("launch in the cloud", () => {
       const t = rig(
         [
           { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
           { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
         ],
@@ -2919,6 +2924,7 @@ describe("launch in the cloud", () => {
       const t = rig(
         [
           { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
           { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
         ],
@@ -2930,12 +2936,13 @@ describe("launch in the cloud", () => {
     }),
   );
 
-  it.live("creates with no --branch or --agent, records before the ready poll, starts the agent once ready, keeps Paradev's branch", () =>
+  it.live("creates with no --branch, --agent or --tag, records before the ready poll, starts the agent once ready, keeps Paradev's branch", () =>
     Effect.gen(function* () {
       const recordedFirst: Array<string> = [];
       const t: Rig = rig(
         [
           { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
           {
             argv: getArgv,
             fixture: "ws-get-cloud-provisioning",
@@ -2980,6 +2987,7 @@ describe("launch in the cloud", () => {
       const t = rig(
         [
           { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
           { argv: getArgv, fixture: "ws-get-cloud-provisioning" },
           { argv: ["workspaces", "archive", C3_WS, "--host", "cloud"], fixture: "ws-archive-cloud" },
         ],
@@ -3004,10 +3012,11 @@ describe("launch in the cloud", () => {
     }),
   );
 
-  it.live("a retry after the record waits for ready and takes the agent an earlier attempt started, with no create", () =>
+  it.live("a retry after the record tags the workspace again, waits for ready and takes the agent an earlier attempt started, with no create", () =>
     Effect.gen(function* () {
       const t = rig(
         [
+          tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
           recorded("snapshot-cloud"),
         ],
@@ -3018,6 +3027,8 @@ describe("launch in the cloud", () => {
       const launched = yield* t.run((s) => s.launch(request()));
       assert.strictEqual(launched.threadId, `cloud:${C3_WS}`);
       assert.deepStrictEqual(t.unused(), []);
+      // The same update again, before the ready poll: it replaces the tag set, so a second send changes nothing.
+      assert.deepStrictEqual(t.calls.slice(0, 2), [updateArgv, getArgv]);
       const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
       assert.deepStrictEqual(saved!.terminals, [C3_TERM]);
     }),
@@ -3035,6 +3046,7 @@ describe("launch in the cloud", () => {
     Effect.gen(function* () {
       const t = rig(
         [
+          tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
           noAgentSnapshot,
           noAgentSnapshot,
@@ -3050,6 +3062,7 @@ describe("launch in the cloud", () => {
         String(error.cause),
         `workspace ${C3_WS} has a terminal with no claude agent in it, after 3 looks; the workspace was archived`,
       );
+      assert.deepStrictEqual(t.calls[0], updateArgv);
       assert.deepStrictEqual(t.unused(), []);
       assert.strictEqual(t.calls.filter(argvIs("workspaces", "archive")).length, 1);
       assert.isUndefined(t.calls.find(argvIs("agents", "create")));
@@ -3063,6 +3076,7 @@ describe("launch in the cloud", () => {
       const t = rig(
         [
           { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
           { argv: argvIs("agents", "create", "--host", "cloud"), fail: "Request timed out" },
           noAgentSnapshot,
@@ -3100,6 +3114,120 @@ describe("launch in the cloud", () => {
       assert.deepStrictEqual(t.unused(), []);
       assert.strictEqual(t.calls.length, 1);
       assert.deepStrictEqual(written(t.data), []);
+    }),
+  );
+
+  /** The tags the launch's `workspaces update` sent. */
+  const tagsSent = (calls: ReadonlyArray<ReadonlyArray<string>>): ReadonlyArray<string> => {
+    const update = calls.find(argvIs("workspaces", "update")) ?? [];
+    return update.flatMap((arg, i) => (update[i - 1] === "--tag" ? [arg] : []));
+  };
+  /** `workspaces list --host cloud` with the launch's workspace, its tags the plain strings the update sent. */
+  const listedAsTagged = (calls: () => ReadonlyArray<ReadonlyArray<string>>, over: Record<string, unknown> = {}): Step => ({
+    argv: ["workspaces", "list", "--host", "cloud"],
+    fixture: "ws-list-noflag-after-cloud",
+    edit: (answer) => [{ ...(answer as ReadonlyArray<object>)[0], id: C3_WS, tags: tagsSent(calls()), ...over }],
+  });
+
+  it.live("a launch tags its workspace with both tags after the create and before its record, and the count finds it by them", () =>
+    Effect.gen(function* () {
+      const recordAtUpdate: Array<boolean> = [];
+      const t: Rig = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          {
+            ...tagged,
+            around: (answer) =>
+              Effect.sync(() =>
+                recordAtUpdate.push(NodeFS.existsSync(NodePath.join(t.data, "paradev", "threads", `${C3_WS}.json`))),
+              ).pipe(Effect.andThen(answer)),
+          },
+          { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
+          { argv: ["snapshot"], fixture: "snapshot-local-after-resume" },
+          listedAsTagged(() => t.calls),
+          {
+            argv: ["snapshot", "--host", "cloud", "--workspace", C3_WS],
+            fixture: "snapshot-cloud",
+            edit: snapshotOf(C3_WS, [{ id: C6_RESUMED, title: "", agent: { id: "claude", state: "working" } }]),
+          },
+        ],
+        { config: { ...onCloud, cloud: true } },
+      );
+      yield* t.run((s) => s.launch(request()));
+      assert.deepStrictEqual(t.calls.slice(0, 3), [createArgv, updateArgv, getArgv]);
+      assert.deepStrictEqual(recordAtUpdate, [false]);
+      assert.deepStrictEqual(tagsSent(t.calls), ["factory", `factory-${RUNNER}`]);
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 0 },
+        { target: { kind: "cloud" }, running: 1 },
+      ]);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("an update that fails archives the workspace it just created and fails the launch with the update's error", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          { argv: updateArgv, fail: "tags are not allowed here" },
+          { argv: archiveArgv, fixture: "ws-archive-cloud" },
+        ],
+        { config: onCloud },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.strictEqual(error.operation, "launch");
+      assert.include(String(error.cause), "tags are not allowed here; the workspace was archived");
+      assert.deepStrictEqual(t.calls, [createArgv, updateArgv, archiveArgv]);
+      assert.deepStrictEqual(t.unused(), []);
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNotNull(saved!.archivedAt);
+      assert.deepStrictEqual(saved!.terminals, []);
+      assert.strictEqual(yield* readLaunch(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)), `cloud:${C3_WS}`);
+    }),
+  );
+
+  it.live("an update that fails, then an archive that fails, leaves pendingArchive on the record and fails the launch", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          { argv: updateArgv, fail: "tags are not allowed here" },
+          { argv: archiveArgv, fail: "boom" },
+        ],
+        { config: onCloud },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), "tags are not allowed here; archiving the workspace failed too (");
+      assert.deepStrictEqual(t.unused(), []);
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isTrue(saved!.pendingArchive);
+      assert.isNull(saved!.archivedAt);
+    }),
+  );
+
+  it.live("a launch whose ready wait and archive both fail leaves the sweep a workspace it finds by the tags the update sent", () =>
+    Effect.gen(function* () {
+      const t: Rig = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
+          { argv: getArgv, fixture: "ws-get-cloud-provisioning" },
+          { argv: archiveArgv, fail: "boom" },
+          listedAsTagged(() => t.calls, { createdAt: new Date(Date.now() - 60 * MINUTE).toISOString() }),
+          { argv: archiveArgv, fixture: "ws-archive-cloud" },
+        ],
+        { config: { ...onCloud, cloudReadyMaxMs: 0 } },
+      );
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.include(logs[0], `archived cloud workspace ${C3_WS}`);
+      assert.include(logs[0], "its launch failed, and so did that launch's archive");
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNotNull(saved!.archivedAt);
     }),
   );
 
@@ -3773,6 +3901,7 @@ describe("cycle 1: liveness a send can trust, and what a failed cloud launch lea
     rig(
       [
         { argv: argvIs("workspaces", "create", "--host", "cloud"), fixture: "ws-create-cloud" },
+        { argv: argvIs("workspaces", "update", C3_WS, "--host", "cloud"), answer: { id: C3_WS } },
         ...after,
       ],
       { config: { place: () => Effect.succeed({ kind: "cloud", environmentId: ENV, machineSize: "small" } as const), cloudReadyPollMs: 1 } },
@@ -3816,6 +3945,8 @@ describe("cycle 1: liveness a send can trust, and what a failed cloud launch lea
       const t: Rig = rig(
         [
           { argv: argvIs("workspaces", "create", "--host", "cloud"), fixture: "ws-create-cloud" },
+          { argv: argvIs("workspaces", "update", C3_WS, "--host", "cloud"), answer: { id: C3_WS } },
+        { argv: argvIs("workspaces", "update", C3_WS, "--host", "cloud"), answer: { id: C3_WS } },
           // The records folder stops taking writes once the record is in it.
           { argv: getC3, fixture: "ws-get-cloud-provisioning", edit: (answer) => (NodeFS.chmodSync(threads(), 0o555), answer) },
           { argv: archiveC3, fail: "No active organization" },

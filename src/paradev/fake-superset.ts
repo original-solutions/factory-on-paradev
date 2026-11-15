@@ -3,7 +3,8 @@
  * A scripted `superset` for tests. It stands in for {@link FactoryProcess}, so `cli.ts` runs as it
  * does for real, and answers each call from `spike/fixtures/2.0.8/`: the fixture's stdout, and the
  * exit code and stderr from its `.meta.json`. A call no step of the script expects is a defect,
- * which fails the test.
+ * which fails the test. Like CLI 2.0.8, it refuses `--tag` on a cloud create, whatever the script
+ * says: the tags go on with `workspaces update` (#87).
  */
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -69,6 +70,13 @@ const matches = (match: ArgvMatch, argv: ReadonlyArray<string>): boolean =>
     ? match(argv)
     : match.length === argv.length && match.every((arg, i) => arg === argv[i]);
 
+/** A cloud `workspaces create` with a `--tag`, which CLI 2.0.8 refuses. */
+const isTaggedCloudCreate = (argv: ReadonlyArray<string>): boolean =>
+  argv[0] === "workspaces" &&
+  argv[1] === "create" &&
+  argv.includes("--tag") &&
+  argv.some((arg, i) => arg === "--host" && argv[i + 1] === "cloud");
+
 /**
  * Each call takes the first step not yet used whose argv matches; a step answers once.
  * `calls` holds every argv seen, `--json` stripped; `unused` the steps no call took.
@@ -80,6 +88,7 @@ export const fakeSuperset = (script: ReadonlyArray<Step>) => {
     Effect.suspend(() => {
       const argv = stripJson(input.args ?? []);
       calls.push(argv);
+      if (isTaggedCloudCreate(argv)) return answerOf({ argv, fail: "--tag does not apply to a cloud workspace" });
       const at = left.findIndex((step) => matches(step.argv, argv));
       if (at === -1) {
         return Effect.die(new Error(`fake superset: unexpected argv ${JSON.stringify(argv)}`));
