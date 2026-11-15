@@ -9,9 +9,9 @@ import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
 import { afterAll, beforeAll, describe } from "vitest";
 
-import { installPathsOf, packageVersion } from "./paths.ts";
+import { installPathsOf, packageVersion, UPDATE_PENDING_FILE, UPDATE_REFUSED_FILE } from "./paths.ts";
 import { LOCK_FILE } from "./runnerLock.ts";
-import { countStart, PENDING_FILE, REFUSED_FILE, refusedRow, type Start } from "./updateState.ts";
+import { countStart, refusedRow, type Start } from "./updateState.ts";
 
 const NOW = Date.parse("2026-11-15T09:30:00.000Z");
 const BIN = NodePath.resolve(import.meta.dirname, "bin.ts");
@@ -47,16 +47,16 @@ const fixture = (): Fixture => {
   return { home, dataDir, logs: [] };
 };
 
-const pendingFile = (f: Fixture) => NodePath.join(f.dataDir, PENDING_FILE);
-const refusedFile = (f: Fixture) => NodePath.join(f.dataDir, REFUSED_FILE);
+const pendingFile = (f: Fixture) => NodePath.join(f.dataDir, UPDATE_PENDING_FILE);
+const refusedFile = (f: Fixture) => NodePath.join(f.dataDir, UPDATE_REFUSED_FILE);
 const writePendingFile = (f: Fixture, pending: object) => NodeFS.writeFileSync(pendingFile(f), JSON.stringify(pending));
 const pendingOf = (f: Fixture) => JSON.parse(NodeFS.readFileSync(pendingFile(f), "utf8"));
 const currentTarget = (f: Fixture) => NodeFS.readlinkSync(installPathsOf(f.home).current);
 const versionPath = (f: Fixture, version: string) => NodePath.join(installPathsOf(f.home).versions, version);
 const loud = (f: Fixture) => f.logs.filter((log) => log.level !== "Debug" && log.level !== "Trace");
 
-const start = (f: Fixture, version = "0.2.0"): Effect.Effect<Start> =>
-  countStart({ home: f.home, dataDir: f.dataDir, version, nowMs: () => NOW }).pipe(
+const start = (f: Fixture, version = "0.2.0", lockHeld = false): Effect.Effect<Start> =>
+  countStart({ home: f.home, dataDir: f.dataDir, version, nowMs: () => NOW, lockHeld: () => lockHeld }).pipe(
     Effect.provide(
       Logger.layer(
         [
@@ -108,7 +108,7 @@ describe("the start count of a self-installed version", () => {
     }),
   );
 
-  it.effect("writes the refused file before it moves current: a current that cannot move exits 1 and tries again next start", () =>
+  it.effect("writes the refused file before it moves current; a current that cannot move takes it back and starts as usual", () =>
     Effect.gen(function* () {
       const f = fixture();
       writePendingFile(f, { from: "0.1.0", to: "0.2.0", starts: 3 });
@@ -120,15 +120,33 @@ describe("the start count of a self-installed version", () => {
       } finally {
         NodeFS.chmodSync(share, 0o755);
       }
-      expect(first).toEqual({ kind: "exit", code: 1 });
-      expect(NodeFS.existsSync(refusedFile(f))).toBe(true);
+      // Never an exit with current still on v0.2.0: launchd would only run this check again.
+      expect(first.kind).toBe("run");
       expect(currentTarget(f)).toBe(versionPath(f, "0.2.0"));
+      // `status` must not say v0.1.0 runs; the next start tries the go-back again.
+      expect(NodeFS.existsSync(refusedFile(f))).toBe(false);
       expect(pendingOf(f).starts).toBe(3);
       expect(loud(f)).toHaveLength(1);
-      expect(loud(f)[0]!.text).toContain("cannot go back from v0.2.0: pointing current at versions/0.1.0 failed");
+      expect(loud(f)[0]!.text).toMatch(
+        new RegExp(
+          `^cannot go back from v0\\.2\\.0: pointing current at versions/0\\.1\\.0 failed: .*; removed the ${UPDATE_REFUSED_FILE} written for it$`,
+        ),
+      );
 
       expect(yield* start(f)).toEqual({ kind: "exit", code: 0 });
       expect(currentTarget(f)).toBe(versionPath(f, "0.1.0"));
+    }),
+  );
+
+  it.effect("at three starts with a live runner holding the lock, it neither goes back nor counts: the lock turns it away", () =>
+    Effect.gen(function* () {
+      const f = fixture();
+      writePendingFile(f, { from: "0.1.0", to: "0.2.0", starts: 3 });
+      expect((yield* start(f, "0.2.0", true)).kind).toBe("run");
+      expect(currentTarget(f)).toBe(versionPath(f, "0.2.0"));
+      expect(pendingOf(f)).toEqual({ from: "0.1.0", to: "0.2.0", starts: 3 });
+      expect(NodeFS.existsSync(refusedFile(f))).toBe(false);
+      expect(loud(f)).toEqual([]);
     }),
   );
 
@@ -142,7 +160,7 @@ describe("the start count of a self-installed version", () => {
       expect(NodeFS.existsSync(pendingFile(f))).toBe(false);
       expect(loud(f)).toHaveLength(1);
       expect(loud(f)[0]!.text).toMatch(
-        new RegExp(`^${GONE_BACK}; v0\\.2\\.0 can be staged again, since ${REFUSED_FILE} was not written: `),
+        new RegExp(`^${GONE_BACK}; v0\\.2\\.0 can be staged again, since ${UPDATE_REFUSED_FILE} was not written: `),
       );
     }),
   );
@@ -259,9 +277,8 @@ describe("bin.ts run and the start count", () => {
     expect(NodeFS.existsSync(NodePath.join(f.dataDir, LOCK_FILE))).toBe(false);
   });
 
-  it("a start that finds the lock held exits 1 and is not counted", () => {
+  it("a start that finds the lock held exits 1 and is not counted, nor goes back at three starts", () => {
     const f = fixture();
-    writePendingFile(f, { from: "0.1.0", to: RUNNING, starts: 1 });
     // A live process whose command line is a runner's: the lock is held, not stale.
     const holder = NodeChildProcess.spawn(
       process.execPath,
@@ -270,12 +287,26 @@ describe("bin.ts run and the start count", () => {
     );
     try {
       NodeFS.writeFileSync(NodePath.join(f.dataDir, LOCK_FILE), `${holder.pid}\n`);
-      const done = runBin(f);
-      expect(done.status).toBe(1);
-      expect(done.stderr).toContain("another runner holds");
-      expect(pendingOf(f)).toEqual({ from: "0.1.0", to: RUNNING, starts: 1 });
+      for (const starts of [1, 3]) {
+        writePendingFile(f, { from: "0.1.0", to: RUNNING, starts });
+        const done = runBin(f);
+        expect(done.status).toBe(1);
+        expect(done.stderr).toContain("another runner holds");
+        expect(pendingOf(f)).toEqual({ from: "0.1.0", to: RUNNING, starts });
+        expect(currentTarget(f)).toBe(versionPath(f, "0.2.0"));
+      }
     } finally {
       holder.kill();
     }
+  });
+
+  it("counts the start before it takes the lock, so a start that throws taking it still counts", () => {
+    const f = fixture();
+    writePendingFile(f, { from: "0.1.0", to: RUNNING, starts: 1 });
+    // A folder where the lock file goes: taking the lock throws.
+    NodeFS.mkdirSync(NodePath.join(f.dataDir, LOCK_FILE));
+    const done = runBin(f);
+    expect(done.status).not.toBe(0);
+    expect(pendingOf(f)).toEqual({ from: "0.1.0", to: RUNNING, starts: 2 });
   });
 });

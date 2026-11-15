@@ -10,11 +10,10 @@ import * as Logger from "effect/Logger";
 import * as TestClock from "effect/testing/TestClock";
 import { afterAll, beforeAll, describe } from "vitest";
 
-import { installPathsOf } from "./paths.ts";
+import { installPathsOf, UPDATE_PENDING_FILE, UPDATE_REFUSED_FILE } from "./paths.ts";
 import { FactoryProcess, type RunInput, type RunResult } from "./process.ts";
 import { clearAfterPass, makeSelfUpdate, repositoryOf } from "./selfUpdate.ts";
 import { CONFIG_NOT_LOADED_REASON } from "./status.ts";
-import { PENDING_FILE, REFUSED_FILE } from "./updateState.ts";
 
 const EXEC_PATH = "/opt/node/bin/node";
 const GH_DIR = "/gh/factory";
@@ -253,10 +252,10 @@ const versionPath = (f: Fixture, version: string) => NodePath.join(installPathsO
 /** The three `gh` reads of a staging (the tags, the default branch, the compare) and its clone, tag check, install and smoke. */
 const STAGING = ["gh", "gh", "gh", "git", "git", "npm", EXEC_PATH];
 const OFF_LINE = "self-update off: self_update is false";
-const pendingOf = (f: Fixture) => JSON.parse(NodeFS.readFileSync(NodePath.join(f.dataDir, PENDING_FILE), "utf8"));
+const pendingOf = (f: Fixture) => JSON.parse(NodeFS.readFileSync(NodePath.join(f.dataDir, UPDATE_PENDING_FILE), "utf8"));
 const writeRefused = (f: Fixture, tag: string) =>
   write(
-    NodePath.join(f.dataDir, REFUSED_FILE),
+    NodePath.join(f.dataDir, UPDATE_REFUSED_FILE),
     JSON.stringify({ tag, from: "0.1.0", at: "2026-11-15T08:00:00.000Z" }),
   );
 
@@ -846,7 +845,7 @@ describe("self-update", () => {
         // The placed tree stays, the tag is marked, and the next period reads the tags again.
         expect(versionDirs(f)).toEqual(["0.1.0", "0.2.0"]);
         // No start runs v0.2.0, so nothing is left to count one.
-        expect(NodeFS.existsSync(NodePath.join(f.dataDir, PENDING_FILE))).toBe(false);
+        expect(NodeFS.existsSync(NodePath.join(f.dataDir, UPDATE_PENDING_FILE))).toBe(false);
         yield* TestClock.adjust(TEN_MINUTES);
         expect(commands(f)).toEqual([...STAGING, "gh"]);
         yield* update.afterPass;
@@ -862,7 +861,7 @@ describe("self-update", () => {
       Effect.gen(function* () {
         yield* TestClock.adjust(TEN_MINUTES);
         // Not before the restart: a staged update writes nothing to the data dir.
-        expect(NodeFS.existsSync(NodePath.join(f.dataDir, PENDING_FILE))).toBe(false);
+        expect(NodeFS.existsSync(NodePath.join(f.dataDir, UPDATE_PENDING_FILE))).toBe(false);
         yield* update.afterPass;
         expect(currentTarget(f)).toBe(versionPath(f, "0.2.0"));
         expect(pendingOf(f)).toEqual({ from: "0.1.0", to: "0.2.0", starts: 0 });
@@ -875,7 +874,7 @@ describe("self-update", () => {
     const f = fixture();
     f.answers.refs = ["refs/tags/v0.2.0"];
     // A folder where the file goes: the write's rename over it fails.
-    NodeFS.mkdirSync(NodePath.join(f.dataDir, PENDING_FILE), { recursive: true });
+    NodeFS.mkdirSync(NodePath.join(f.dataDir, UPDATE_PENDING_FILE), { recursive: true });
     return withUpdater(f, true, (update) =>
       Effect.gen(function* () {
         yield* TestClock.adjust(TEN_MINUTES);
@@ -922,7 +921,7 @@ describe("self-update", () => {
   it.effect("a refused file that cannot be read is one warning, and nothing is staged", () => {
     const f = fixture();
     f.answers.refs = ["refs/tags/v0.2.0"];
-    write(NodePath.join(f.dataDir, REFUSED_FILE), "{not json");
+    write(NodePath.join(f.dataDir, UPDATE_REFUSED_FILE), "{not json");
     return withUpdater(f, true, (update) =>
       Effect.gen(function* () {
         yield* TestClock.adjust(TEN_MINUTES);
@@ -930,7 +929,7 @@ describe("self-update", () => {
         expect(update.staged()).toBe(false);
         expect(loud(f)).toHaveLength(1);
         expect(loud(f)[0]!.level).toBe("Warn");
-        expect(loud(f)[0]!.text).toContain(`self-update stages nothing: ${REFUSED_FILE} could not be read`);
+        expect(loud(f)[0]!.text).toContain(`self-update stages nothing: ${UPDATE_REFUSED_FILE} could not be read`);
       }),
     );
   });
@@ -984,10 +983,10 @@ describe("self-update", () => {
 describe("a finished pass and the self-update's files", () => {
   const dataDirWith = (pending: object | null, refusedTag: string | null) => {
     const dataDir = NodeFS.mkdtempSync(NodePath.join(tmp, "data-"));
-    if (pending !== null) write(NodePath.join(dataDir, PENDING_FILE), JSON.stringify(pending));
+    if (pending !== null) write(NodePath.join(dataDir, UPDATE_PENDING_FILE), JSON.stringify(pending));
     if (refusedTag !== null) {
       write(
-        NodePath.join(dataDir, REFUSED_FILE),
+        NodePath.join(dataDir, UPDATE_REFUSED_FILE),
         JSON.stringify({ tag: refusedTag, from: "0.1.0", at: "2026-11-15T08:00:00.000Z" }),
       );
     }
@@ -999,11 +998,11 @@ describe("a finished pass and the self-update's files", () => {
     Effect.gen(function* () {
       const mine = dataDirWith({ from: "0.1.0", to: "0.2.0", starts: 2 }, null);
       yield* clearAfterPass(mine, "0.2.0");
-      expect(has(mine, PENDING_FILE)).toBe(false);
+      expect(has(mine, UPDATE_PENDING_FILE)).toBe(false);
       // Written for the next tag, staged during a long first pass: its restart has not happened.
       const next = dataDirWith({ from: "0.2.0", to: "0.3.0", starts: 0 }, null);
       yield* clearAfterPass(next, "0.2.0");
-      expect(has(next, PENDING_FILE)).toBe(true);
+      expect(has(next, UPDATE_PENDING_FILE)).toBe(true);
     }),
   );
 
@@ -1011,26 +1010,26 @@ describe("a finished pass and the self-update's files", () => {
     Effect.gen(function* () {
       const below = dataDirWith(null, "v0.9.0");
       yield* clearAfterPass(below, "0.10.0");
-      expect(has(below, REFUSED_FILE)).toBe(false);
+      expect(has(below, UPDATE_REFUSED_FILE)).toBe(false);
       const same = dataDirWith(null, "v0.2.0");
       yield* clearAfterPass(same, "0.2.0");
-      expect(has(same, REFUSED_FILE)).toBe(true);
+      expect(has(same, UPDATE_REFUSED_FILE)).toBe(true);
       const above = dataDirWith(null, "v0.10.0");
       yield* clearAfterPass(above, "0.9.0");
-      expect(has(above, REFUSED_FILE)).toBe(true);
+      expect(has(above, UPDATE_REFUSED_FILE)).toBe(true);
     }),
   );
 
   it.effect("leaves files it cannot read, and says nothing", () => {
     const logs: Array<string> = [];
     const dataDir = NodeFS.mkdtempSync(NodePath.join(tmp, "data-"));
-    write(NodePath.join(dataDir, PENDING_FILE), "{not json");
-    write(NodePath.join(dataDir, REFUSED_FILE), "{not json");
+    write(NodePath.join(dataDir, UPDATE_PENDING_FILE), "{not json");
+    write(NodePath.join(dataDir, UPDATE_REFUSED_FILE), "{not json");
     return clearAfterPass(dataDir, "0.2.0").pipe(
       Effect.tap(() =>
         Effect.sync(() => {
-          expect(has(dataDir, PENDING_FILE)).toBe(true);
-          expect(has(dataDir, REFUSED_FILE)).toBe(true);
+          expect(has(dataDir, UPDATE_PENDING_FILE)).toBe(true);
+          expect(has(dataDir, UPDATE_REFUSED_FILE)).toBe(true);
           expect(logs).toEqual([]);
         }),
       ),

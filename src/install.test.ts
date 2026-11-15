@@ -435,6 +435,11 @@ describe("install", () => {
     expect(await install(rotateFails)).toBe(1);
     expect(files.map((file) => NodeFS.existsSync(file))).toEqual([true, true]);
     expect(NodeFS.existsSync(current)).toBe(false);
+    // So does one whose point of current fails: a folder in the link's place cannot be replaced.
+    write(NodePath.join(current, "in-the-way"), "x\n");
+    await expect(install(env)).rejects.toThrow();
+    expect(files.map((file) => NodeFS.existsSync(file))).toEqual([true, true]);
+    NodeFS.rmSync(current, { recursive: true });
 
     expect(await install(env)).toBe(0);
     expect(files.map((file) => NodeFS.existsSync(file))).toEqual([false, false]);

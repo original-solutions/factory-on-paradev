@@ -196,9 +196,27 @@ describe("status", () => {
     const s = setup();
     const file = NodePath.join(s.dataDir, "update-refused.json");
     NodeFS.writeFileSync(file, JSON.stringify({ tag: "v0.4.0", from: "0.3.4", at: "2026-11-15T09:30:00.000Z" }));
+    NodeFS.writeFileSync(
+      NodePath.join(s.dataDir, "attention.json"),
+      JSON.stringify({
+        items: [
+          {
+            id: "a",
+            kind: "stuck",
+            repo: "rawphp/softfac",
+            issue: 10,
+            run: null,
+            message: "rawphp/softfac#10 needs a human",
+            first_seen: "2026-10-06T00:00:00Z",
+          },
+        ],
+      }),
+    );
     const message = "v0.4.0 could not complete a pass after its restart; running v0.3.4. A newer tag installs as usual.";
     expect(await runCli(["status", "--json"], s.io)).toBe(0);
-    expect(JSON.parse(s.outs.join("\n")).attention).toEqual([
+    const attention = JSON.parse(s.outs.join("\n")).attention;
+    expect(attention.map((row: { id: string }) => row.id)).toEqual(["a", "update-refused"]);
+    expect(attention.slice(1)).toEqual([
       {
         id: "update-refused",
         kind: "update-refused",
@@ -215,7 +233,7 @@ describe("status", () => {
     s.outs.length = 0;
     NodeFS.writeFileSync(file, "{not json");
     expect(await runCli(["status", "--json"], s.io)).toBe(0);
-    expect(JSON.parse(s.outs.join("\n")).attention).toEqual([]);
+    expect(JSON.parse(s.outs.join("\n")).attention.map((row: { id: string }) => row.id)).toEqual(["a"]);
   });
 
   it("warns on stderr when attention.json cannot be read, so no items is not read as nothing to do", async () => {

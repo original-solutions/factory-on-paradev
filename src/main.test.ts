@@ -53,6 +53,7 @@ import {
   regateWords,
   type LiveShared,
   type RuntimeOptions,
+  version,
 } from "./main.ts";
 import { readFixture } from "./paradev/fake-superset.ts";
 import { AgentProcess } from "./paradev/sessions.ts";
@@ -1800,6 +1801,34 @@ describe("liveWorld", () => {
       assert.deepStrictEqual(yield* world.checkProxy(), { kind: "open" });
       assert.deepStrictEqual(yield* world.checkProxy(), { kind: "down", reason: "answered HTTP 503" });
       assert.deepStrictEqual(asked, ["https://proxy.example.ts.net/v1/models", "https://proxy.example.ts.net/v1/models"]);
+    }),
+  );
+
+  it.effect("a finished pass removes the self-update's pending start count of this version, and only that", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make();
+      const worldOver = (dataDir: string) =>
+        liveWorld(
+          machine,
+          dataDir,
+          {} as never,
+          NodeServices.layer,
+          {} as never,
+          () => NOW,
+          "mac-mini",
+          noAttention,
+          { gate: { run: () => Effect.die("no gate") }, wake: Effect.void, scope },
+        );
+      const mine = tempDir();
+      const pending = NodePath.join(mine, Paths.UPDATE_PENDING_FILE);
+      NodeFS.writeFileSync(pending, JSON.stringify({ from: "0.0.1", to: version, starts: 2 }));
+      yield* worldOver(mine).passFinished;
+      assert.strictEqual(NodeFS.existsSync(pending), false);
+      const other = tempDir();
+      const next = NodePath.join(other, Paths.UPDATE_PENDING_FILE);
+      NodeFS.writeFileSync(next, JSON.stringify({ from: version, to: "999.0.0", starts: 0 }));
+      yield* worldOver(other).passFinished;
+      assert.strictEqual(NodeFS.existsSync(next), true);
     }),
   );
 
