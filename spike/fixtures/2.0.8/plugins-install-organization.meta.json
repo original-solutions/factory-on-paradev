@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "plugins",
+    "install",
+    "factory@organization",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794738252092,
+  "durationMs": 1968,
+  "stderr": "[agent-setup] Bundled plugin missing at /$bunfs/templates/plugin; skipping managed skills\n"
+}

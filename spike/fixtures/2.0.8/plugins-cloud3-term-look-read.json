@@ -1,0 +1,6 @@
+{
+  "terminalId": "57ccc43b-8375-492b-b33f-f4e0cfeb6e17",
+  "cols": 120,
+  "rows": 32,
+  "text": "❯ tail -3 ~/.agents/skills/factory-factory/SKILL.md; grep -A2 \"\\\"factory\\\"\" ~/.paradev/plugins/installed_plugins.json | \nhead -4; echo P3\"\"-LOOK3-DONE\n- Never merge. Never deploy.\n\n<!-- P3-SPIKE-MARKER-0.1.1 -->\n                        \"name\": \"factory\",\n                        \"version\": \"0.1.1\",\n                        \"installPath\": \"/home/ubuntu/.paradev/plugins/cache/organization-fef625a4-1dbc-451b-b0e1-1c285c6\n1a68e/factory/0.1.1\",\nP3-LOOK3-DONE\n❯ "
+}

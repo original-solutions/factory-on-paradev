@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "plugins",
+    "organization",
+    "list",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794738474302,
+  "durationMs": 454,
+  "stderr": ""
+}

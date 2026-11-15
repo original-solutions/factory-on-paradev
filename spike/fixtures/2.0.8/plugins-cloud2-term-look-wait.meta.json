@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "terminals",
+    "wait",
+    "--host",
+    "cloud",
+    "--workspace",
+    "33811b30-508f-45d5-934e-6d55c792da32",
+    "--terminal",
+    "0aa0caa4-21b0-452c-85d7-815af1a437cf",
+    "--match",
+    "P3-LOOK2-DONE",
+    "--timeout",
+    "90",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794738283477,
+  "durationMs": 959,
+  "stderr": ""
+}

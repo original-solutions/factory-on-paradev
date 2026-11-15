@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "plugins",
+    "organization",
+    "sources",
+    "add",
+    "original-solutions/factory-on-paradev",
+    "--ref",
+    "spike/92-plugin-update",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794738456117,
+  "durationMs": 984,
+  "stderr": ""
+}

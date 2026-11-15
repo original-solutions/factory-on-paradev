@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "plugins",
+    "marketplace",
+    "remove",
+    "factory-on-paradev",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794738321685,
+  "durationMs": 453,
+  "stderr": ""
+}

@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "terminals",
+    "create",
+    "--host",
+    "cloud",
+    "--workspace",
+    "a9170bb4-3f58-4301-a980-d8ec9ceaae65",
+    "--command",
+    "tail -3 ~/.agents/skills/factory-factory/SKILL.md; grep -A2 \"\\\"factory\\\"\" ~/.paradev/plugins/installed_plugins.json | head -4; echo P3\"\"-LOOK3-DONE",
+    "--json"
+  ],
+  "exit": 0,
+  "startedAt": 1794738657226,
+  "durationMs": 770,
+  "stderr": ""
+}
