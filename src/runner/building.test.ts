@@ -46,6 +46,7 @@ import {
   type AdvanceOutcome,
   type BuildingContext,
 } from "./building.ts";
+import { INTERRUPTION_MESSAGE } from "./messages.ts";
 import { readProgress } from "./progress.ts";
 import { runProject } from "./run.ts";
 import { interruptible } from "./testSupport.ts";
@@ -1549,6 +1550,73 @@ describe("advance: a run a person stopped", () => {
       const rig = rigFor();
       setStatus(rig, "interrupted", DONE_MESSAGE);
       assert.strictEqual((yield* advanceIn(rig)).kind, "ready-for-gate");
+    }),
+  );
+});
+
+describe("advance: a run whose agent process died", () => {
+  const resumeCall = (k: number) =>
+    `send thread-1 softfac:rawphp__softfac__10__1:agent-died:${k} ${INTERRUPTION_MESSAGE}`;
+  const died = (rig: Rig, runOrdinal = 1) =>
+    setStatus(rig, "interrupted", "I was about to", { runOrdinal, agentDied: true });
+
+  it.effect("is sent the resume message once for each run, never paused, nothing on the issue", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      died(rig);
+      assert.deepStrictEqual(yield* advanceIn(rig), { kind: "agent-resumed" });
+      assert.deepStrictEqual(sends(rig), [resumeCall(1)]);
+      assert.deepStrictEqual(linesOf(rig).slice(STARTED.length), [
+        { event: "step_changed", data: { step: "agent-died-resumed 1" } },
+      ]);
+      assert.deepStrictEqual(lastCause(rig), { step: "advance", reason: "agent-died-resumed" });
+      // A second pass on the same run waits for the newer run the resume starts.
+      const bytes = bytesOf(rig);
+      assert.deepStrictEqual(yield* advanceIn(rig), { kind: "running" });
+      assert.strictEqual(bytesOf(rig), bytes);
+      assert.deepStrictEqual(sends(rig), [resumeCall(1)]);
+      // The resumed run dies too: the next liveness reading resumes it again.
+      died(rig, 2);
+      assert.deepStrictEqual(yield* advanceIn(rig), { kind: "agent-resumed" });
+      assert.deepStrictEqual(sends(rig), [resumeCall(1), resumeCall(2)]);
+      assert.ok(!linesOf(rig).some((line) => line.event === "session_paused"));
+      assert.deepStrictEqual(rig.gh, []);
+    }),
+  );
+
+  it.effect("whose send fails writes nothing, and the next call sends again under the same id", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      died(rig);
+      rig.world.sendFailure = { error: sessionsFailure("send"), delivered: false };
+      const bytes = bytesOf(rig);
+      assert.strictEqual((yield* Effect.flip(advanceIn(rig)))._tag, "FactorySessionsError");
+      assert.strictEqual(bytesOf(rig), bytes);
+      assert.deepStrictEqual(yield* advanceIn(rig), { kind: "agent-resumed" });
+      assert.deepStrictEqual(sends(rig), [resumeCall(1), resumeCall(1)]);
+    }),
+  );
+
+  it.effect("whose thread is gone at the send is the pass's to decide", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      died(rig);
+      rig.world.sendFailure = {
+        error: new ThreadNotFoundError({ threadId: "thread-1" }),
+        delivered: false,
+      };
+      const bytes = bytesOf(rig);
+      assert.deepStrictEqual(yield* advanceIn(rig), { kind: "ended-badly", what: "thread-gone" });
+      assert.strictEqual(bytesOf(rig), bytes);
+    }),
+  );
+
+  it.effect("is read as done when its last message says so", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      setStatus(rig, "interrupted", DONE_MESSAGE, { agentDied: true });
+      assert.strictEqual((yield* advanceIn(rig)).kind, "ready-for-gate");
+      assert.deepStrictEqual(sends(rig), []);
     }),
   );
 });

@@ -1400,6 +1400,8 @@ describe("status: the rest of the mapping table", () => {
     Effect.gen(function* () {
       const status = yield* statusWith([explained("exited", "Stop"), read]);
       assert.deepInclude(status, { run: "interrupted", runCompletedAt: IDLE_AT });
+      // Not the liveness check's verdict: the core pauses it as a person's stop.
+      assert.isUndefined(status.agentDied);
     }),
   );
 
@@ -1464,6 +1466,8 @@ describe("status of a dead agent (the liveness check)", () => {
     Effect.gen(function* () {
       const { status, lookups, worktreePath } = yield* dead(false);
       assert.strictEqual(status.run, "interrupted");
+      // The core resumes a dead agent: no person stopped it.
+      assert.isTrue(status.agentDied);
       assert.deepStrictEqual(lookups, [["claude-bin", worktreePath]]);
     }),
   );
@@ -1472,6 +1476,7 @@ describe("status of a dead agent (the liveness check)", () => {
     Effect.gen(function* () {
       const { status, lookups } = yield* dead(true);
       assert.strictEqual(status.run, "running");
+      assert.isUndefined(status.agentDied);
       assert.strictEqual(lookups.length, 1);
     }),
   );

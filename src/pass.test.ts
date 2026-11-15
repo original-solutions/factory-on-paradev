@@ -4562,6 +4562,7 @@ describe("following a building run", () => {
   const advanceLines: ReadonlyArray<readonly [AdvanceOutcome, string]> = [
     [{ kind: "running" }, "session still running"],
     [{ kind: "reminded" }, "session ended without a result line, sent it a reminder"],
+    [{ kind: "agent-resumed" }, "the session's agent process was gone, sent it the resume message"],
     [
       { kind: "paused" },
       "session stopped by hand, waiting for an instructor's comment on the pull request or the issue",
