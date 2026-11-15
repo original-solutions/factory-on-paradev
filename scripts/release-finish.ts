@@ -1,6 +1,7 @@
 // `make release-finish VERSION=x`: the end of a release, after `npm version` made the commit and the
 // local tag vX (docs/specs/P3-plugin.md, "Release", steps 3 to 5). It is the only place that syncs the
 // organization's plugin source and the only place that pushes a tag, and a person can run it again.
+// Every git and superset call has 60 s to answer, so a stalled one fails with the rerun command.
 //
 // 3. Push the commit vX points at to main, without the tag, then stop unless origin/main is that commit.
 // 4. Sync the organization's source, wait for the sync to land, and stop when it reports an error or a
@@ -12,6 +13,8 @@ const SOURCE = "original-solutions/factory-on-paradev";
 // `sources sync` answers before the sync lands: the spike saw the source's syncedAt move 1 to 3 s later.
 const SYNC_WAIT_MS = Number(process.env.RELEASE_FINISH_SYNC_WAIT_MS ?? 90_000);
 const POLL_MS = 1_000;
+// No git or superset call may hold the release: one that has not answered by then is killed and fails.
+const CALL_TIMEOUT_MS = Number(process.env.RELEASE_FINISH_CALL_TIMEOUT_MS ?? 60_000);
 
 const version = process.argv[2] ?? "";
 if (!/^\d+\.\d+\.\d+$/.test(version)) {
@@ -28,7 +31,13 @@ const fail = (message: string, advice = `Fix the cause, then run: ${rerun}`): ne
   process.exit(1);
 };
 
-const run = (command: string, ...args: Array<string>) => spawnSync(command, args, { encoding: "utf8" });
+const run = (command: string, ...args: Array<string>) => {
+  const out = spawnSync(command, args, { encoding: "utf8", timeout: CALL_TIMEOUT_MS });
+  if ((out.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+    fail(`${command} ${args.join(" ")} did not answer within ${CALL_TIMEOUT_MS / 1000} s`);
+  }
+  return out;
+};
 
 const output = (out: ReturnType<typeof run>) => out.error?.message ?? (out.stderr || out.stdout || "").trim();
 

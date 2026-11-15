@@ -205,15 +205,85 @@ describe("make release", () => {
     expect(recipe("release-finish").join("\n")).toContain("scripts/release-finish.ts");
   });
 
-  it("refuses, before npm version, a VERSION that is not three numbers and a main that is not origin/main", () => {
-    const body = recipe("release").join("\n");
-    const version = body.indexOf("npm version");
-    expect(body.indexOf("[0-9]+\\.[0-9]+\\.[0-9]+")).toBeGreaterThanOrEqual(0);
-    expect(body.indexOf("[0-9]+\\.[0-9]+\\.[0-9]+")).toBeLessThan(version);
-    expect(body.indexOf("git fetch --quiet origin main")).toBeGreaterThanOrEqual(0);
-    expect(body.indexOf("git fetch --quiet origin main")).toBeLessThan(version);
-    expect(body.indexOf("git rev-parse origin/main")).toBeGreaterThanOrEqual(0);
-    expect(body.indexOf("git rev-parse origin/main")).toBeLessThan(version);
+  /** Runs the real recipe in a folder of its own, with every command it calls stubbed, and returns the calls. */
+  const release = (name: string, version: string, git: { branch?: string; head?: string; origin?: string } = {}) => {
+    const dir = NodePath.join(tmp, `make-${name}`);
+    const bin = NodePath.join(dir, "bin");
+    NodeFS.mkdirSync(bin, { recursive: true });
+    NodeFS.copyFileSync(NodePath.join(root, "Makefile"), NodePath.join(dir, "Makefile"));
+    const log = `printf '%s ' "$(basename "$0")" "$@" >> ${JSON.stringify(NodePath.join(dir, "calls"))}; printf '\\n' >> ${JSON.stringify(NodePath.join(dir, "calls"))}`;
+    for (const command of ["npm", "superset", "node"]) {
+      NodeFS.writeFileSync(NodePath.join(bin, command), `#!/usr/bin/env bash\n${log}\n`, { mode: 0o755 });
+    }
+    NodeFS.writeFileSync(
+      NodePath.join(bin, "git"),
+      `#!/usr/bin/env bash
+${log}
+case "$*" in
+  "rev-parse --abbrev-ref HEAD") echo ${git.branch ?? "main"} ;;
+  "rev-parse HEAD") echo ${git.head ?? "aaaa"} ;;
+  "rev-parse origin/main") echo ${git.origin ?? "aaaa"} ;;
+  "fetch --quiet origin main") ;;
+  *) echo "unexpected git $*" >&2; exit 99 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    // npm sets NODE to its own node for the scripts it runs, and the Makefile's `NODE ?= node` would take it.
+    const { NODE: _node, ...env } = process.env;
+    const out = NodeChildProcess.spawnSync("make", ["release", `VERSION=${version}`], {
+      cwd: dir,
+      encoding: "utf8",
+      env: { ...env, PATH: `${bin}:${process.env.PATH}`, MAKEFLAGS: "", MAKELEVEL: "" },
+    });
+    const calls = NodeFS.existsSync(NodePath.join(dir, "calls"))
+      ? NodeFS.readFileSync(NodePath.join(dir, "calls"), "utf8").split("\n").filter(Boolean).map((l) => l.trim())
+      : [];
+    return { status: out.status, output: out.stdout + out.stderr, calls };
+  };
+  const bumped = (calls: Array<string>) => calls.some((c) => c.startsWith("npm version"));
+
+  it("runs the gate, checks main against origin, validates, bumps, then finishes", () => {
+    const out = release("ok", "0.1.1");
+
+    expect(out.status, out.output).toBe(0);
+    expect(out.calls).toEqual([
+      "npm ci",
+      "npm run check",
+      "git rev-parse --abbrev-ref HEAD",
+      "git fetch --quiet origin main",
+      "git rev-parse HEAD",
+      "git rev-parse origin/main",
+      "superset plugins validate .",
+      "npm version 0.1.1 -m release: v%s",
+      "node scripts/release-finish.ts 0.1.1",
+    ]);
+  });
+
+  it.each(["1.2", "v0.1.1", "0.1.1-rc.1", "0.1"])("refuses VERSION=%s, which is not three numbers, before npm version", (version) => {
+    const out = release(`version-${version}`, version);
+
+    expect(out.status).not.toBe(0);
+    expect(out.output).toContain("VERSION is three numbers");
+    expect(bumped(out.calls)).toBe(false);
+  });
+
+  it("refuses a branch that is not main before npm version", () => {
+    const out = release("branch", "0.1.1", { branch: "fix/x" });
+
+    expect(out.status).not.toBe(0);
+    expect(out.output).toContain("release from main");
+    expect(bumped(out.calls)).toBe(false);
+  });
+
+  it("refuses a main that is not origin/main, after a fetch and before npm version", () => {
+    const out = release("stale", "0.1.1", { head: "aaaa", origin: "bbbb" });
+
+    expect(out.status).not.toBe(0);
+    expect(out.output).toContain("main is not origin/main");
+    expect(out.calls).toContain("git fetch --quiet origin main");
+    expect(bumped(out.calls)).toBe(false);
+    expect(out.calls.some((c) => c.startsWith("superset") || c.startsWith("node"))).toBe(false);
   });
 });
 
@@ -249,6 +319,8 @@ describe("release-finish", () => {
     /** How many `sources list` reads after the sync still answer `before`. */
     lag?: number;
     org?: unknown;
+    /** `sources list` never answers once the sync was asked for. */
+    hang?: boolean;
     env?: NodeJS.ProcessEnv;
   };
 
@@ -260,6 +332,7 @@ describe("release-finish", () => {
     NodeFS.writeFileSync(NodePath.join(state, "origin"), c.origin);
     if (c.ancestor) NodeFS.writeFileSync(NodePath.join(state, "ancestor"), "");
     if (c.rejected) NodeFS.writeFileSync(NodePath.join(state, "rejected"), "");
+    if (c.hang) NodeFS.writeFileSync(NodePath.join(state, "hang"), "");
     NodeFS.writeFileSync(NodePath.join(state, "before.json"), JSON.stringify(c.before ?? sources({ syncedSha: OLD, syncedAt: BEFORE })));
     NodeFS.writeFileSync(NodePath.join(state, "after.json"), JSON.stringify(c.sources ?? sources({ syncedSha: RELEASE, syncedAt: AFTER })));
     NodeFS.writeFileSync(NodePath.join(state, "org.json"), JSON.stringify(c.org ?? orgBumped));
@@ -295,6 +368,7 @@ case "$*" in
     touch "$S/synced"; cat ${JSON.stringify(NodePath.join(fixtures, "plugins-org-sources-sync.json"))} ;;
   "plugins organization sources list"*)
     if [ -f "$S/synced" ]; then
+      [ -f "$S/hang" ] && exec sleep 30
       n=$(( $(cat "$S/reads" 2>/dev/null || echo 0) + 1 )); echo $n > "$S/reads"
       [ $n -gt ${c.lag ?? 0} ] && cat "$S/after.json" || cat "$S/before.json"
     else
@@ -366,6 +440,18 @@ esac
 
     expect(out.status).not.toBe(0);
     expect(out.stderr).toContain("had not landed");
+    expect(out.stderr).toContain(`make release-finish VERSION=${VERSION}`);
+    expectNoTagPush(out.calls);
+  });
+
+  it("fails, with the rerun command and no tag push, when a superset call never answers", () => {
+    const started = Date.now();
+    const out = finish("hang", { origin: OLD, ancestor: false, hang: true, env: { RELEASE_FINISH_CALL_TIMEOUT_MS: "500" } });
+
+    expect(out.status).toBe(1);
+    expect(Date.now() - started).toBeLessThan(20_000);
+    expect(synced(out.calls)).toBe(true);
+    expect(out.stderr).toContain("superset plugins organization sources list --json did not answer within 0.5 s");
     expect(out.stderr).toContain(`make release-finish VERSION=${VERSION}`);
     expectNoTagPush(out.calls);
   });
