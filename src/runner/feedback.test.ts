@@ -721,6 +721,7 @@ const rigFor = (events: ReadonlyArray<RunEvent> = STARTED): Rig => {
     repo: REPO,
     trackerUser: "rawphp",
     hostLogins: new Map(),
+    cloud: false,
     machine: "mac-mini",
     get project() {
       return rig.project;
@@ -1429,6 +1430,26 @@ describe("feedback: the step", () => {
         assert.ok(req.hostMessage!("h2").includes("You act on GitHub as rawphp."));
         assert.ok(req.message.includes("You act on GitHub as rawphp."));
       }
+    }),
+  );
+
+  it.effect("a relaunch sends the cloud message, with the same resume and feedback, and no login check", () =>
+    Effect.gen(function* () {
+      const rig = yield* reviewedRun();
+      rig.ctx = { ...rig.ctx, hostLogins: new Map([["h1", "tomkaczocha"]]) };
+      assert.deepStrictEqual(yield* feedbackIn(rig), relaunched(1));
+      const req = rig.t3.launches[0]!;
+      const cloud = req.cloudMessage!;
+      const tail = `${END_WITH_DONE}\n\n${reviewBlock()}`;
+      assert.ok(cloud.endsWith(tail), cloud);
+      assert.ok(cloud.includes("waits for review, and an instructor left feedback"), cloud);
+      assert.ok(cloud.includes("You act on GitHub as the Paradev GitHub App (superset-app[bot])"), cloud);
+      assert.ok(!cloud.includes("gh api user --jq"), cloud);
+      assert.ok(!cloud.includes("rawphp."), cloud);
+      // The local and host texts are their own.
+      assert.ok(req.message.includes("You act on GitHub as rawphp."), req.message);
+      assert.ok(req.message.endsWith(tail), req.message);
+      assert.ok(req.hostMessage!("h1").includes("You act on GitHub as tomkaczocha."));
     }),
   );
 

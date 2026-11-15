@@ -49,6 +49,7 @@ import {
   NO_PROJECT,
   otherRepoProject,
   TEXT_CHANGED,
+  cloudLaunchMessage,
   hostLaunchMessage,
   launchMessage,
   sessionMayExistNote,
@@ -327,6 +328,7 @@ const ctxFor = (
   repo: REPO,
   trackerUser: USER,
   hostLogins: new Map(),
+  cloud: false,
   machine: "mac-mini",
   project: project(),
   dataDir,
@@ -490,6 +492,7 @@ describe("start: a fresh ready issue", () => {
             baseRef: "main",
             message: launchMessage(REPO, 7, USER),
             hostMessage: "function",
+            cloudMessage: cloudLaunchMessage(REPO, 7),
             model: MODEL,
           },
         ],
@@ -509,6 +512,24 @@ describe("start: a fresh ready issue", () => {
       assert.strictEqual(hostMessage!("other"), hostLaunchMessage(REPO, 7, USER));
       assert.ok(hostMessage!("h1").includes("gh auth token --user tomkaczocha"));
       assert.strictEqual(t3.launchRequests[0]!.message, launchMessage(REPO, 7, USER));
+    }),
+  );
+
+  it.effect("sends the cloud message, which names no login, beside the local and host ones", () =>
+    Effect.gen(function* () {
+      const dataDir = tempDir();
+      const { tracker } = fakeTracker({});
+      const t3 = fakeSessions(dataDir, {});
+      yield* startIn(dataDir, tracker, t3.sessions, {
+        cloud: true,
+        hostLogins: new Map([["h1", "tomkaczocha"]]),
+      });
+      const request = t3.launchRequests[0]!;
+      assert.strictEqual(request.cloudMessage, cloudLaunchMessage(REPO, 7));
+      assert.ok(!request.cloudMessage!.includes(USER), request.cloudMessage);
+      assert.ok(!request.cloudMessage!.includes("tomkaczocha"), request.cloudMessage);
+      assert.strictEqual(request.message, launchMessage(REPO, 7, USER));
+      assert.strictEqual(request.hostMessage!("h1"), hostLaunchMessage(REPO, 7, "tomkaczocha"));
     }),
   );
 
@@ -2858,6 +2879,25 @@ describe("start: the resume onto an open pull request of an earlier attempt", ()
       assert.ok(host.includes("Do not open another pull request"), host);
       assert.ok(host.includes("You act on GitHub as tomkaczocha."), host);
       assert.ok(host.includes("GH_TOKEN=$(gh auth token --user tomkaczocha)"), host);
+    }),
+  );
+
+  it.effect("finds an open pull request by the Paradev GitHub App only for a repo with a cloud environment", () =>
+    Effect.gen(function* () {
+      const cloudDir = tempDir();
+      const cloud = fakeTracker({ closing: [closingDraft("t3code/abc", { author: "app/superset-app" })] });
+      const onCloud = fakeSessions(cloudDir, {});
+      yield* startIn(cloudDir, cloud.tracker, onCloud.sessions, { cloud: true });
+      const request = onCloud.launchRequests[0]!;
+      assert.strictEqual(request.baseRef, "t3code/abc");
+      assert.ok(request.cloudMessage!.includes(URL12), request.cloudMessage);
+      assert.ok(request.cloudMessage!.includes("Do not open another pull request"), request.cloudMessage);
+
+      const localDir = tempDir();
+      const local = fakeTracker({ closing: [closingDraft("t3code/abc", { author: "app/superset-app" })] });
+      const noCloud = fakeSessions(localDir, {});
+      yield* startIn(localDir, local.tracker, noCloud.sessions);
+      assert.strictEqual(noCloud.launchRequests[0]!.baseRef, "main");
     }),
   );
 

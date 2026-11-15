@@ -4721,6 +4721,43 @@ it.effect(
     }),
 );
 
+it.effect(
+  "a pull request a GitHub App opened is by app/<slug> in both listings, as gh pr list names it",
+  () =>
+    Effect.gen(function* () {
+      // GraphQL names the Paradev GitHub App's pull request `superset-app`, typed Bot, and
+      // `gh pr list --json author` names it `app/superset-app`; the REST API's
+      // `superset-app[bot]` is never read. A user named superset-app stays superset-app.
+      const bot = { __typename: "Bot", login: "superset-app" };
+      const user = { __typename: "User", login: "superset-app" };
+      const closing = setup(
+        reply(
+          closingReply(
+            [
+              listedPr(14, { author: bot as { login: string } }),
+              listedPr(15, { author: user as { login: string } }),
+            ].join(","),
+          ),
+        ),
+      );
+      const closed = yield* closing.ok(closing.github.openPullRequestsClosing(6));
+      assert.deepStrictEqual(
+        closed.map((pull) => pull.author),
+        ["app/superset-app", "superset-app"],
+      );
+      const onHead = setup(
+        reply(
+          `[${listedPr(14, {
+            headRefName: "t3code/abc",
+            author: { id: "", is_bot: true, login: "app/superset-app", name: "" } as { login: string },
+          })}]`,
+        ),
+      );
+      const listed = yield* onHead.ok(onHead.github.openPullRequestsOnHead("t3code/abc"));
+      assert.deepStrictEqual(listed.map((pull) => pull.author), ["app/superset-app"]);
+    }),
+);
+
 it.effect("openPullRequestsClosing is empty when nothing would close the issue", () =>
   Effect.gen(function* () {
     const t = setup(reply(closingReply("")));

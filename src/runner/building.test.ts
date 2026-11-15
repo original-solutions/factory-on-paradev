@@ -490,6 +490,7 @@ const rigFor = (
     repo: REPO,
     trackerUser: "rawphp",
     hostLogins: new Map(),
+    cloud: false,
     machine: "mac-mini",
     project: projectConfig(options.base),
     dataDir,
@@ -3290,6 +3291,21 @@ describe("advance: the pull request a session leaves when it stops or asks", () 
       assertStuck(rig, yield* advanceIn(rig), { publicReason: SAID_STUCK, left: [PR_LEFT] });
       const other = rigFor();
       other.world.onHead = { "t3code/abc": [draftOn("t3code/abc", { author: "tomkaczocha" })] };
+      setStatus(other, "completed", "FACTORY-STOP: stuck");
+      assert.strictEqual((yield* advanceIn(other)).kind, "stuck");
+      assert.deepStrictEqual(leftLines(other), []);
+    }),
+  );
+
+  it.effect("is recorded when the Paradev GitHub App opened it, only for a repo with a cloud environment", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      rig.ctx = { ...rig.ctx, cloud: true };
+      rig.world.onHead = { "t3code/abc": [draftOn("t3code/abc", { author: "app/superset-app" })] };
+      setStatus(rig, "completed", "FACTORY-STOP: stuck");
+      assertStuck(rig, yield* advanceIn(rig), { publicReason: SAID_STUCK, left: [PR_LEFT] });
+      const other = rigFor();
+      other.world.onHead = { "t3code/abc": [draftOn("t3code/abc", { author: "app/superset-app" })] };
       setStatus(other, "completed", "FACTORY-STOP: stuck");
       assert.strictEqual((yield* advanceIn(other)).kind, "stuck");
       assert.deepStrictEqual(leftLines(other), []);
