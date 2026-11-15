@@ -3213,6 +3213,48 @@ describe("launch in the cloud", () => {
     }),
   );
 
+  it.live("the create mark is on disk, with the workspace name, when the create is sent", () =>
+    Effect.gen(function* () {
+      const marksAtCreate: Array<ReadonlyArray<string>> = [];
+      const t: Rig = rig(
+        [
+          {
+            argv: createArgv,
+            fixture: "ws-create-cloud",
+            around: (answer) =>
+              listCloudCreates(t.data).pipe(
+                Effect.provide(NodeServices.layer),
+                Effect.orDie,
+                Effect.tap((marks) => Effect.sync(() => marksAtCreate.push(marks.map((mark) => mark.name)))),
+                Effect.andThen(answer),
+              ),
+          },
+          tagged,
+          { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
+        ],
+        { config: onCloud },
+      );
+      yield* t.run((s) => s.launch(request()));
+      assert.deepStrictEqual(marksAtCreate, [["fac/1-1"]]);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("a create mark that cannot be written fails the launch before any call: no create is sent", () =>
+    Effect.gen(function* () {
+      const t = rig([], { config: onCloud });
+      const marks = NodePath.join(t.data, "paradev", "cloud-creates");
+      NodeFS.mkdirSync(marks, { recursive: true });
+      NodeFS.chmodSync(marks, 0o555);
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      NodeFS.chmodSync(marks, 0o755);
+      assert.strictEqual(error.operation, "launch");
+      assert.deepStrictEqual(t.calls, []);
+      assert.deepStrictEqual(written(t.data), []);
+    }),
+  );
+
   /** A create whose answer arrives with the records' folder read-only: the record cannot be written. */
   const createdUnwritable = (data: () => string): Step => ({
     argv: createArgv,
