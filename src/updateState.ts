@@ -20,7 +20,6 @@ import * as Effect from "effect/Effect";
 import { pointCurrent } from "./install.ts";
 import { formatTs, parseTs } from "./ledger/time.ts";
 import { installPathsOf, UPDATE_PENDING_FILE, UPDATE_REFUSED_FILE } from "./paths.ts";
-import { isRunner, lockHolder } from "./runnerLock.ts";
 import type { ReportedAttention } from "./status.ts";
 import { readTextOrNull, writeFileWhole } from "./syncFiles.ts";
 /** Starts of a self-installed version with no pass finished; the next start goes back. */
@@ -133,19 +132,7 @@ export interface StartOptions {
   /** The running `packageVersion`, `X.Y.Z`. */
   readonly version: string;
   readonly nowMs: () => number;
-  /** Whether a live runner holds the runner lock now. Default: the lock file's pid is a runner. */
-  readonly lockHeld?: (dataDir: string) => boolean;
 }
-
-/** Whether `<dataDir>/runner.lock` names a live runner; a lock that cannot be read counts as none. */
-const lockHeldByRunner = (dataDir: string): boolean => {
-  try {
-    const pid = lockHolder(dataDir);
-    return pid !== null && pid !== process.pid && isRunner(pid);
-  } catch {
-    return false;
-  }
-};
 
 const RUN: Start = { kind: "run", giveBack: Effect.void };
 
@@ -164,11 +151,7 @@ export const countStart = Effect.fn("UpdateState.countStart")(function* (options
     return RUN;
   }
   if (pending === null || pending.to !== version) return RUN;
-  if (pending.starts >= START_BUDGET) {
-    // A runner of `to` is up: this start is a second `run`, which the lock turns away uncounted.
-    if ((options.lockHeld ?? lockHeldByRunner)(dataDir)) return RUN;
-    return yield* goBack(options, pending);
-  }
+  if (pending.starts >= START_BUDGET) return yield* goBack(options, pending);
   try {
     writePending(dataDir, { ...pending, starts: pending.starts + 1 });
   } catch (error) {
