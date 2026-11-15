@@ -533,6 +533,21 @@ const onePassMore = (loop: FactoryLoop["Service"], factoryDir: string) =>
     yield* idleAfter(loop, factoryDir, before + 1);
   });
 
+/**
+ * Wakes passes until `done`. A sweep goes on a moment after its listing ends, and a pass that
+ * starts in that moment skips its sweep, so the sweep after a listing is a later pass's.
+ */
+const passesUntil = (loop: FactoryLoop["Service"], factoryDir: string, what: string, done: () => boolean) =>
+  Effect.gen(function* () {
+    for (let pass = 0; pass < 20; pass++) {
+      yield* onePassMore(loop, factoryDir);
+      const until = Date.now() + 500;
+      while (!done() && Date.now() < until) yield* realDelay(5);
+      if (done()) return;
+    }
+    return yield* Effect.die(new Error(`timed out waiting for ${what}`));
+  });
+
 const eventsOf = (factoryDir: string, event: string) =>
   scanMachineLog(factoryDir).filter((entry) => entry.event === event);
 
@@ -1524,8 +1539,8 @@ describe("on the Paradev CLI", () => {
         const cloud = yield* started(named);
         yield* idleAfter(cloud.loop, cloud.factoryDir, 1);
         yield* waitUntil("the first sweep", () => sweeps(cloud.paradev.calls) === 1);
-        yield* onePassMore(cloud.loop, cloud.factoryDir);
-        yield* waitUntil("the second sweep", () => sweeps(cloud.paradev.calls) === 2);
+        yield* passesUntil(cloud.loop, cloud.factoryDir, "the second sweep", () => sweeps(cloud.paradev.calls) >= 2);
+        assert.strictEqual(sweeps(cloud.paradev.calls), 2);
         // A cloud block with no repo naming an environment has nothing of its own to sweep.
         const none = yield* started(configFor([["a/b", "/b"]], "/gh", cloudBlock));
         yield* idleAfter(none.loop, none.factoryDir, 1);
@@ -1558,11 +1573,11 @@ describe("on the Paradev CLI", () => {
         assert.strictEqual(finishedPasses(factoryDir), 3);
         assert.strictEqual(inFlight, 1);
         assert.strictEqual(most, 1);
-        // Released, the listing ends; the next pass sweeps again.
+        // Released, the listing ends; a pass after the sweep ends sweeps again.
         yield* Deferred.succeed(release, undefined);
-        yield* waitUntil("the first sweep to end", () => inFlight === 0 && sweeps(paradev.calls) === 1);
-        yield* onePassMore(loop, factoryDir);
-        yield* waitUntil("the second sweep", () => sweeps(paradev.calls) === 2);
+        yield* waitUntil("the first listing to end", () => inFlight === 0 && sweeps(paradev.calls) === 1);
+        yield* passesUntil(loop, factoryDir, "the second sweep", () => sweeps(paradev.calls) >= 2);
+        assert.strictEqual(sweeps(paradev.calls), 2);
         assert.strictEqual(most, 1);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
@@ -1579,8 +1594,8 @@ describe("on the Paradev CLI", () => {
         yield* waitUntil("the failed sweep's warning", () =>
           logs.some((line) => line.startsWith("the cloud orphan sweep failed")),
         );
-        yield* onePassMore(loop, factoryDir);
-        yield* waitUntil("the second sweep", () => lists === 2 && sweeps(paradev.calls) === 2);
+        yield* passesUntil(loop, factoryDir, "the second sweep", () => lists >= 2 && sweeps(paradev.calls) >= 2);
+        assert.strictEqual(sweeps(paradev.calls), 2);
         const warnings = logs.filter((line) => line.startsWith("the cloud orphan sweep failed"));
         assert.strictEqual(warnings.length, 1);
         assert.include(warnings[0], "No active organization");

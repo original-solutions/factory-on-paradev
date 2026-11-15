@@ -30,7 +30,7 @@ import {
   type ParadevSessionsConfig,
 } from "./sessions.ts";
 import { isAllowed, SshError, type SshRunner } from "./ssh.ts";
-import { readLaunch, readPlacement, readThread, type ThreadRecord, writeLaunch, writePlacement, writeThread } from "./state.ts";
+import { listCloudCreates, markCloudCreate, readLaunch, readPlacement, readThread, type ThreadRecord, writeLaunch, writePlacement, writeThread } from "./state.ts";
 
 const tempDir = useTempDirs();
 
@@ -2894,8 +2894,12 @@ describe("launch in the cloud", () => {
   };
   const createArgv = [
     "workspaces", "create", "--host", "cloud", "--environment", ENV, "--machine-size", "small",
-    "--name", "fac/1-1", "--base-branch", "main", "--tag", "factory", "--tag", `factory-${RUNNER}`,
+    "--name", "fac/1-1", "--base-branch", "main",
   ];
+  /** The tags go on after the create: CLI 2.0.8 refuses `--tag` on a cloud create (#87). */
+  const updateArgv = ["workspaces", "update", C3_WS, "--host", "cloud", "--tag", "factory", "--tag", `factory-${RUNNER}`];
+  /** Its answer was not recorded; the adapter reads nothing but the exit code. */
+  const tagged: Step = { argv: updateArgv, answer: { id: C3_WS, tags: ["factory", `factory-${RUNNER}`] } };
   const getArgv = ["workspaces", "get", C3_WS, "--host", "cloud"];
 
   it.live("a cloud launch starts the agent with cloudMessage, whatever hostMessage says", () =>
@@ -2903,6 +2907,7 @@ describe("launch in the cloud", () => {
       const t = rig(
         [
           { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
           { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
         ],
@@ -2919,6 +2924,7 @@ describe("launch in the cloud", () => {
       const t = rig(
         [
           { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
           { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
         ],
@@ -2930,12 +2936,13 @@ describe("launch in the cloud", () => {
     }),
   );
 
-  it.live("creates with no --branch or --agent, records before the ready poll, starts the agent once ready, keeps Paradev's branch", () =>
+  it.live("creates with no --branch, --agent or --tag, records before the ready poll, starts the agent once ready, keeps Paradev's branch", () =>
     Effect.gen(function* () {
       const recordedFirst: Array<string> = [];
       const t: Rig = rig(
         [
           { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
           {
             argv: getArgv,
             fixture: "ws-get-cloud-provisioning",
@@ -2980,6 +2987,7 @@ describe("launch in the cloud", () => {
       const t = rig(
         [
           { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
           { argv: getArgv, fixture: "ws-get-cloud-provisioning" },
           { argv: ["workspaces", "archive", C3_WS, "--host", "cloud"], fixture: "ws-archive-cloud" },
         ],
@@ -3004,10 +3012,11 @@ describe("launch in the cloud", () => {
     }),
   );
 
-  it.live("a retry after the record waits for ready and takes the agent an earlier attempt started, with no create", () =>
+  it.live("a retry after the record tags the workspace again, waits for ready and takes the agent an earlier attempt started, with no create", () =>
     Effect.gen(function* () {
       const t = rig(
         [
+          tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
           recorded("snapshot-cloud"),
         ],
@@ -3018,6 +3027,8 @@ describe("launch in the cloud", () => {
       const launched = yield* t.run((s) => s.launch(request()));
       assert.strictEqual(launched.threadId, `cloud:${C3_WS}`);
       assert.deepStrictEqual(t.unused(), []);
+      // The same update again, before the ready poll: it replaces the tag set, so a second send changes nothing.
+      assert.deepStrictEqual(t.calls.slice(0, 2), [updateArgv, getArgv]);
       const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
       assert.deepStrictEqual(saved!.terminals, [C3_TERM]);
     }),
@@ -3035,6 +3046,7 @@ describe("launch in the cloud", () => {
     Effect.gen(function* () {
       const t = rig(
         [
+          tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
           noAgentSnapshot,
           noAgentSnapshot,
@@ -3050,6 +3062,7 @@ describe("launch in the cloud", () => {
         String(error.cause),
         `workspace ${C3_WS} has a terminal with no claude agent in it, after 3 looks; the workspace was archived`,
       );
+      assert.deepStrictEqual(t.calls[0], updateArgv);
       assert.deepStrictEqual(t.unused(), []);
       assert.strictEqual(t.calls.filter(argvIs("workspaces", "archive")).length, 1);
       assert.isUndefined(t.calls.find(argvIs("agents", "create")));
@@ -3063,6 +3076,7 @@ describe("launch in the cloud", () => {
       const t = rig(
         [
           { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
           { argv: argvIs("agents", "create", "--host", "cloud"), fail: "Request timed out" },
           noAgentSnapshot,
@@ -3085,9 +3099,9 @@ describe("launch in the cloud", () => {
     }),
   );
 
-  /** Every file a launch wrote under the data dir, relative to it, but the placement files; the rig's runner id was there before it. */
+  /** Every file a launch wrote under the data dir, relative to it, but the placement files and the cloud create marks; the rig's runner id was there before it. */
   const written = (data: string): ReadonlyArray<string> =>
-    NodeFS.existsSync(data) ? NodeFS.readdirSync(data, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => NodePath.relative(data, NodePath.join(e.parentPath, e.name))).filter((file) => file !== NodePath.join("paradev", "runner-id") && !file.startsWith(NodePath.join("paradev", "placements"))) : [];
+    NodeFS.existsSync(data) ? NodeFS.readdirSync(data, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => NodePath.relative(data, NodePath.join(e.parentPath, e.name))).filter((file) => file !== NodePath.join("paradev", "runner-id") && !file.startsWith(NodePath.join("paradev", "placements")) && !file.startsWith(NodePath.join("paradev", "cloud-creates"))) : [];
 
   it.live("a created workspace id that is not plain fails the launch, with no record, no launch file and no further call", () =>
     Effect.gen(function* () {
@@ -3099,6 +3113,325 @@ describe("launch in the cloud", () => {
       assert.include(String(error.cause), "cloud workspace id ../x is not plain");
       assert.deepStrictEqual(t.unused(), []);
       assert.strictEqual(t.calls.length, 1);
+      assert.deepStrictEqual(written(t.data), []);
+    }),
+  );
+
+  /** The tags the launch's `workspaces update` sent. */
+  const tagsSent = (calls: ReadonlyArray<ReadonlyArray<string>>): ReadonlyArray<string> => {
+    const update = calls.find(argvIs("workspaces", "update")) ?? [];
+    return update.flatMap((arg, i) => (update[i - 1] === "--tag" ? [arg] : []));
+  };
+  /** `workspaces list --host cloud` with the launch's workspace, its tags the plain strings the update sent. */
+  const listedAsTagged = (calls: () => ReadonlyArray<ReadonlyArray<string>>, over: Record<string, unknown> = {}): Step => ({
+    argv: ["workspaces", "list", "--host", "cloud"],
+    fixture: "ws-list-noflag-after-cloud",
+    edit: (answer) => [{ ...(answer as ReadonlyArray<object>)[0], id: C3_WS, tags: tagsSent(calls()), ...over }],
+  });
+
+  it.live("a launch tags its workspace with both tags after its record and before the ready poll, and the count finds it by them", () =>
+    Effect.gen(function* () {
+      const recordAtUpdate: Array<boolean> = [];
+      const t: Rig = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          {
+            ...tagged,
+            around: (answer) =>
+              Effect.sync(() =>
+                recordAtUpdate.push(NodeFS.existsSync(NodePath.join(t.data, "paradev", "threads", `${C3_WS}.json`))),
+              ).pipe(Effect.andThen(answer)),
+          },
+          { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
+          { argv: ["snapshot"], fixture: "snapshot-local-after-resume" },
+          listedAsTagged(() => t.calls),
+          {
+            argv: ["snapshot", "--host", "cloud", "--workspace", C3_WS],
+            fixture: "snapshot-cloud",
+            edit: snapshotOf(C3_WS, [{ id: C6_RESUMED, title: "", agent: { id: "claude", state: "working" } }]),
+          },
+        ],
+        { config: { ...onCloud, cloud: true } },
+      );
+      yield* t.run((s) => s.launch(request()));
+      assert.deepStrictEqual(t.calls.slice(0, 3), [createArgv, updateArgv, getArgv]);
+      // The record first: a launch cut off during the update leaves a workspace its record finds.
+      assert.deepStrictEqual(recordAtUpdate, [true]);
+      assert.deepStrictEqual(tagsSent(t.calls), ["factory", `factory-${RUNNER}`]);
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 0 },
+        { target: { kind: "cloud" }, running: 1 },
+      ]);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("an update that cannot connect once is sent again, and the launch goes on with no archive", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          { argv: updateArgv, fail: "Could not connect to API" },
+          tagged,
+          { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
+        ],
+        { config: onCloud },
+      );
+      const launched = yield* t.run((s) => s.launch(request()));
+      assert.strictEqual(launched.threadId, `cloud:${C3_WS}`);
+      assert.deepStrictEqual(t.calls.slice(0, 4), [createArgv, updateArgv, updateArgv, getArgv]);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isUndefined(t.calls.find(argvIs("workspaces", "archive")));
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNull(saved!.archivedAt);
+      assert.strictEqual(saved!.terminals.length, 1);
+    }),
+  );
+
+  it.live("a retry whose update cannot connect once sends it again and takes the earlier agent, with no archive", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: updateArgv, fail: "Could not connect to API" },
+          tagged,
+          { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          recorded("snapshot-cloud"),
+        ],
+        { config: { place: () => Effect.die("placed again") } },
+      );
+      yield* seed(t.data, cloudRecord({ terminals: [], turns: [] }));
+      yield* writeLaunch(t.data, LAUNCH_ID, `cloud:${C3_WS}`).pipe(Effect.provide(NodeServices.layer));
+      yield* t.run((s) => s.launch(request()));
+      assert.deepStrictEqual(t.calls.slice(0, 3), [updateArgv, updateArgv, getArgv]);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isUndefined(t.calls.find(argvIs("workspaces", "archive")));
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNull(saved!.archivedAt);
+      assert.deepStrictEqual(saved!.terminals, [C3_TERM]);
+    }),
+  );
+
+  it.live("the create mark is on disk, with the workspace name, when the create is sent", () =>
+    Effect.gen(function* () {
+      const marksAtCreate: Array<ReadonlyArray<string>> = [];
+      const t: Rig = rig(
+        [
+          {
+            argv: createArgv,
+            fixture: "ws-create-cloud",
+            around: (answer) =>
+              listCloudCreates(t.data).pipe(
+                Effect.provide(NodeServices.layer),
+                Effect.orDie,
+                Effect.tap((marks) => Effect.sync(() => marksAtCreate.push(marks.map((mark) => mark.name)))),
+                Effect.andThen(answer),
+              ),
+          },
+          tagged,
+          { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
+        ],
+        { config: onCloud },
+      );
+      yield* t.run((s) => s.launch(request()));
+      assert.deepStrictEqual(marksAtCreate, [["fac/1-1"]]);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("a create mark that cannot be written fails the launch before any call: no create is sent", () =>
+    Effect.gen(function* () {
+      const t = rig([], { config: onCloud });
+      const marks = NodePath.join(t.data, "paradev", "cloud-creates");
+      NodeFS.mkdirSync(marks, { recursive: true });
+      NodeFS.chmodSync(marks, 0o555);
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      NodeFS.chmodSync(marks, 0o755);
+      assert.strictEqual(error.operation, "launch");
+      assert.deepStrictEqual(t.calls, []);
+      assert.deepStrictEqual(written(t.data), []);
+    }),
+  );
+
+  /** A create whose answer arrives with the records' folder read-only: the record cannot be written. */
+  const createdUnwritable = (data: () => string): Step => ({
+    argv: createArgv,
+    fixture: "ws-create-cloud",
+    edit: (answer) => {
+      const threads = NodePath.join(data(), "paradev", "threads");
+      NodeFS.mkdirSync(threads, { recursive: true });
+      NodeFS.chmodSync(threads, 0o555);
+      return answer;
+    },
+  });
+
+  it.live("a record that cannot be written archives the workspace the create made, with no update, and fails the launch", () =>
+    Effect.gen(function* () {
+      const t: Rig = rig(
+        [createdUnwritable(() => t.data), { argv: archiveArgv, fixture: "ws-archive-cloud" }],
+        { config: onCloud },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      NodeFS.chmodSync(NodePath.join(t.data, "paradev", "threads"), 0o755);
+      assert.isTrue(String(error.cause).endsWith("; the workspace was archived"), String(error.cause));
+      assert.deepStrictEqual(t.calls, [createArgv, archiveArgv]);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual(written(t.data), []);
+    }),
+  );
+
+  it.live("a launch file that cannot be written archives the workspace the create made, with no update, and fails the launch", () =>
+    Effect.gen(function* () {
+      const t: Rig = rig(
+        [
+          {
+            argv: createArgv,
+            fixture: "ws-create-cloud",
+            // A folder where the launch file goes: the record is written, the launch file is not.
+            edit: (answer) => {
+              NodeFS.mkdirSync(NodePath.join(t.data, "paradev", "launches", `${sha256(LAUNCH_ID)}.json`), { recursive: true });
+              return answer;
+            },
+          },
+          { argv: archiveArgv, fixture: "ws-archive-cloud" },
+        ],
+        { config: onCloud },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.isTrue(String(error.cause).endsWith("; the workspace was archived"), String(error.cause));
+      assert.deepStrictEqual(t.calls, [createArgv, archiveArgv]);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("a record that cannot be written, then an archive that fails, says both, and leaves the create mark for the sweep", () =>
+    Effect.gen(function* () {
+      const t: Rig = rig(
+        [createdUnwritable(() => t.data), { argv: archiveArgv, fail: "boom" }],
+        { config: onCloud },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      NodeFS.chmodSync(NodePath.join(t.data, "paradev", "threads"), 0o755);
+      assert.include(String(error.cause), "; archiving the workspace failed too (");
+      assert.deepStrictEqual(t.calls, [createArgv, archiveArgv]);
+      const marks = NodeFS.readdirSync(NodePath.join(t.data, "paradev", "cloud-creates"));
+      assert.strictEqual(marks.length, 1);
+      const mark = JSON.parse(NodeFS.readFileSync(NodePath.join(t.data, "paradev", "cloud-creates", marks[0]!), "utf8"));
+      assert.strictEqual(mark.name, "fac/1-1");
+    }),
+  );
+
+  it.live("an update that fails archives the workspace it just created and fails the launch with the update's error", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          { argv: updateArgv, fail: "tags are not allowed here" },
+          { argv: archiveArgv, fixture: "ws-archive-cloud" },
+        ],
+        { config: onCloud },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.strictEqual(error.operation, "launch");
+      assert.include(String(error.cause), "tags are not allowed here; the workspace was archived");
+      assert.deepStrictEqual(t.calls, [createArgv, updateArgv, archiveArgv]);
+      assert.deepStrictEqual(t.unused(), []);
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNotNull(saved!.archivedAt);
+      assert.deepStrictEqual(saved!.terminals, []);
+      assert.strictEqual(yield* readLaunch(t.data, LAUNCH_ID).pipe(Effect.provide(NodeServices.layer)), `cloud:${C3_WS}`);
+    }),
+  );
+
+  it.live("an update that fails, then an archive that fails, leaves pendingArchive on the record, and the sweep archives the untagged workspace by its record", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          { argv: updateArgv, fail: "tags are not allowed here" },
+          { argv: archiveArgv, fail: "boom" },
+          // The update never landed: the listing shows the workspace with no tags.
+          {
+            argv: ["workspaces", "list", "--host", "cloud"],
+            fixture: "ws-list-noflag-after-cloud",
+            edit: (answer) => [
+              { ...(answer as ReadonlyArray<object>)[0], id: C3_WS, tags: [], createdAt: new Date(Date.now() - 60 * MINUTE).toISOString() },
+            ],
+          },
+          { argv: archiveArgv, fixture: "ws-archive-cloud" },
+        ],
+        { config: onCloud },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), "tags are not allowed here; archiving the workspace failed too (");
+      const given = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isTrue(given!.pendingArchive);
+      assert.isNull(given!.archivedAt);
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.include(logs[0], `archived cloud workspace ${C3_WS}`);
+      assert.include(logs[0], "its launch failed, and so did that launch's archive");
+      const swept = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNotNull(swept!.archivedAt);
+    }),
+  );
+
+  it.live("a retry whose update fails archives the workspace and fails, with no ready poll and no agent", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: updateArgv, fail: "tags are not allowed here" },
+          { argv: archiveArgv, fixture: "ws-archive-cloud" },
+        ],
+        { config: { place: () => Effect.die("placed again"), cloudReadyPollMs: 1 } },
+      );
+      yield* seed(t.data, cloudRecord({ terminals: [], turns: [] }));
+      yield* writeLaunch(t.data, LAUNCH_ID, `cloud:${C3_WS}`).pipe(Effect.provide(NodeServices.layer));
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), "tags are not allowed here; the workspace was archived");
+      assert.deepStrictEqual(t.calls, [updateArgv, archiveArgv]);
+      assert.deepStrictEqual(t.unused(), []);
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNotNull(saved!.archivedAt);
+    }),
+  );
+
+  it.live("a launch whose ready wait and archive both fail leaves its tagged, pendingArchive workspace to the sweep", () =>
+    Effect.gen(function* () {
+      const t: Rig = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
+          { argv: getArgv, fixture: "ws-get-cloud-provisioning" },
+          { argv: archiveArgv, fail: "boom" },
+          listedAsTagged(() => t.calls, { createdAt: new Date(Date.now() - 60 * MINUTE).toISOString() }),
+          { argv: archiveArgv, fixture: "ws-archive-cloud" },
+        ],
+        { config: { ...onCloud, cloudReadyMaxMs: 0 } },
+      );
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.include(logs[0], `archived cloud workspace ${C3_WS}`);
+      assert.include(logs[0], "its launch failed, and so did that launch's archive");
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNotNull(saved!.archivedAt);
+    }),
+  );
+
+  it.live("a runner id that cannot be read fails the launch before the create, with no record and no launch file", () =>
+    Effect.gen(function* () {
+      const t = rig([], { config: onCloud });
+      const idFile = NodePath.join(t.data, "paradev", "runner-id");
+      NodeFS.rmSync(idFile);
+      NodeFS.mkdirSync(idFile); // a directory: the read fails, and it is not a missing file
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.strictEqual(error.operation, "launch");
+      assert.deepStrictEqual(t.calls, []);
       assert.deepStrictEqual(written(t.data), []);
     }),
   );
@@ -3521,6 +3854,241 @@ describe("the orphan sweep", () => {
       NodeFS.writeFileSync(NodePath.join(data, "paradev", "threads", `${TORN}.json`), '{"v":2,"thre');
     });
 
+  const onCloud = { place: () => Effect.succeed({ kind: "cloud", environmentId: ENV, machineSize: "small" } as const) };
+  const createArgv = [
+    "workspaces", "create", "--host", "cloud", "--environment", ENV, "--machine-size", "small",
+    "--name", "fac/1-1", "--base-branch", "main",
+  ];
+  const LOST = "a9e2d3c4-0000-4000-8000-000000000012";
+  const OLDER = "aae2d3c4-0000-4000-8000-000000000013";
+  const marksIn = (data: string) => {
+    const dir = NodePath.join(data, "paradev", "cloud-creates");
+    return NodeFS.existsSync(dir) ? NodeFS.readdirSync(dir) : [];
+  };
+  /** The send times of the create marks on disk, oldest first. */
+  const marksAt = (data: string) =>
+    listCloudCreates(data).pipe(
+      Effect.provide(NodeServices.layer),
+      Effect.map((marks) => marks.map((mark) => mark.at).sort((a, b) => a - b)),
+    );
+  /** Untagged rows with no record: LOST was created when the launch sent its create, OLDER an hour before. */
+  const lostRows = (over: Record<string, unknown> = {}) => (answer: unknown) => {
+    const [row] = answer as ReadonlyArray<Record<string, unknown>>;
+    const untagged = { ...row, tags: [], name: "fac/1-1" };
+    return [
+      { ...untagged, id: LOST, createdAt: ago(11 * MINUTE), ...over },
+      { ...untagged, id: OLDER, createdAt: ago(71 * MINUTE) }, // the name, from before this runner's create: not its own
+      { ...untagged, id: "abe2d3c4-0000-4000-8000-000000000014", name: "fac/2-1", createdAt: ago(11 * MINUTE) }, // no create of this runner sent that name
+      // Another runner's launch of the same issue and attempt: the same name, and its own tags.
+      { ...untagged, id: "ace2d3c4-0000-4000-8000-000000000015", tags: ["factory", "factory-ffffffff-0000-4000-8000-00000000ffff"], createdAt: ago(11 * MINUTE) },
+      { ...untagged, id: "ade2d3c4-0000-4000-8000-000000000016", tags: [{ name: "kept" }], createdAt: ago(11 * MINUTE) }, // any tag at all: not bare
+    ];
+  };
+  const archiveLost = { argv: ["workspaces", "archive", LOST, "--host", "cloud"], answer: { deleted: [LOST], notFound: [], failed: [], warnings: [] } };
+
+  it.effect("an untagged workspace a create made and never answered with is archived by the create's mark, and the mark goes once it is gone", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fail: "Request timed out" },
+          { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows() },
+          archiveLost,
+          { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows({ status: "deleted" }) },
+        ],
+        { config: onCloud },
+      );
+      yield* TestClock.setTime(NOW - 11 * MINUTE);
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.strictEqual(marksIn(t.data).length, 1);
+      yield* TestClock.setTime(NOW);
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.include(logs[0], `archived cloud workspace ${LOST} (fac/1-1): untagged, named by a cloud create this runner sent`);
+      assert.strictEqual(t.calls.filter(argvIs("workspaces", "archive")).length, 1);
+      assert.strictEqual(marksIn(t.data).length, 1);
+      // 16 minutes after the create was sent, with the workspace deleted: nothing waits on the mark.
+      yield* TestClock.setTime(NOW + 5 * MINUTE);
+      yield* t.run((s) => s.sweepOrphans);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual(marksIn(t.data), []);
+    }),
+  );
+
+  it.effect("a create mark stays while its workspace is still listed, and while its create can still be waited for", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fail: "Request timed out" },
+          { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows({ status: "deleted" }) },
+          { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows() },
+          { argv: ["workspaces", "archive", LOST, "--host", "cloud"], fail: "boom" },
+        ],
+        { config: onCloud },
+      );
+      yield* TestClock.setTime(NOW - 11 * MINUTE);
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      // 15 minutes after the send, nothing listed: the create's 5 minutes and the sweep's 10 are not over.
+      yield* TestClock.setTime(NOW + 4 * MINUTE);
+      yield* t.run((s) => s.sweepOrphans);
+      assert.strictEqual(marksIn(t.data).length, 1);
+      // Later, the workspace is listed and its archive fails: the mark is what finds it next pass.
+      yield* TestClock.setTime(NOW + 5 * MINUTE);
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.include(logs[0], `could not archive the orphaned cloud workspace ${LOST}`);
+      assert.strictEqual(marksIn(t.data).length, 1);
+    }),
+  );
+
+  it.effect("a create sent again under the same command id has a mark of its own, and each mark goes 15 minutes after its own send", () =>
+    Effect.gen(function* () {
+      const nothingLive = { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows({ status: "deleted" }) };
+      const t = rig(
+        [
+          { argv: createArgv, fail: "Request timed out" },
+          { argv: createArgv, fail: "Request timed out" },
+          nothingLive,
+          nothingLive,
+        ],
+        { config: onCloud },
+      );
+      yield* TestClock.setTime(NOW - 11 * MINUTE);
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      // The same launch, placed again 12 minutes later: its create may still be answering.
+      yield* TestClock.setTime(NOW + MINUTE);
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.deepStrictEqual(yield* marksAt(t.data), [NOW - 11 * MINUTE, NOW + MINUTE]);
+      // Over 15 minutes after the first send, under 15 after the second: only the second's mark stays.
+      yield* TestClock.setTime(NOW + 5 * MINUTE);
+      yield* t.run((s) => s.sweepOrphans);
+      assert.deepStrictEqual(yield* marksAt(t.data), [NOW + MINUTE]);
+      yield* TestClock.setTime(NOW + 17 * MINUTE);
+      yield* t.run((s) => s.sweepOrphans);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual(yield* marksAt(t.data), []);
+    }),
+  );
+
+  it.effect("a mark a launch writes while the sweep archives another workspace is kept, and the old mark of the same launch goes", () =>
+    Effect.gen(function* () {
+      const t: Rig = rig(
+        [
+          { argv: createArgv, fail: "Request timed out" },
+          {
+            argv: listArgv,
+            fixture: "ws-list-noflag-after-cloud",
+            edit: (answer) => [
+              { ...(answer as ReadonlyArray<object>)[0], id: C6_WS, name: "fac/6-1", tags: ["factory", MINE], createdAt: ago(60 * MINUTE) },
+            ],
+          },
+          {
+            ...recorded("ws-archive-cloud-6"),
+            // The pass places the same launch again and sends its create, beside this sweep.
+            around: (answer) =>
+              markCloudCreate(t.data, LAUNCH_ID, "fac/1-1", NOW).pipe(
+                Effect.provide(NodeServices.layer),
+                Effect.orDie,
+                Effect.andThen(answer),
+              ),
+          },
+        ],
+        { config: onCloud },
+      );
+      yield* TestClock.setTime(NOW - 16 * MINUTE);
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      yield* TestClock.setTime(NOW);
+      yield* t.run((s) => s.sweepOrphans);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual(yield* marksAt(t.data), [NOW]);
+    }),
+  );
+
+  it.effect("an untagged workspace with a record is swept by its record: archived with no agent and no launch file, left alone with an agent", () =>
+    Effect.gen(function* () {
+      const untaggedRecorded = (answer: unknown) => {
+        const [row] = answer as ReadonlyArray<Record<string, unknown>>;
+        const untagged = { ...row, tags: [], createdAt: ago(60 * MINUTE) };
+        return [{ ...untagged, id: NO_AGENT }, { ...untagged, id: C3_WS }];
+      };
+      const t = rig([
+        { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: untaggedRecorded },
+        { argv: ["workspaces", "archive", NO_AGENT, "--host", "cloud"], answer: { deleted: [NO_AGENT], notFound: [], failed: [], warnings: [] } },
+      ]);
+      // C3's record has an agent. NO_AGENT's has none, and no launch file names it.
+      yield* seed(
+        t.data,
+        cloudRecord(),
+        cloudRecord({ threadId: `cloud:${NO_AGENT}`, workspaceId: NO_AGENT, launchCommandId: NO_AGENT_LAUNCH, terminals: [], turns: [] }),
+      );
+      yield* TestClock.setTime(NOW);
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.deepStrictEqual(t.calls.filter(argvIs("workspaces", "archive")).map((argv) => argv[2]), [NO_AGENT]);
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.include(logs[0], `archived cloud workspace ${NO_AGENT}`);
+      assert.include(logs[0], "no agent, and no launch file names its record");
+      const live = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNull(live!.archivedAt);
+    }),
+  );
+
+  it.effect("a workspace Paradev made late keeps its mark while it is under 10 minutes old, and is archived once it is over", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fail: "Request timed out" },
+          { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows({ createdAt: ago(9 * MINUTE) }) },
+          { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows({ createdAt: ago(9 * MINUTE) }) },
+          archiveLost,
+        ],
+        { config: onCloud },
+      );
+      // The create was sent 16 minutes ago; the workspace it made is listed as 9 minutes old.
+      yield* TestClock.setTime(NOW - 16 * MINUTE);
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      yield* TestClock.setTime(NOW);
+      yield* t.run((s) => s.sweepOrphans);
+      assert.isUndefined(t.calls.find(argvIs("workspaces", "archive")));
+      assert.strictEqual(marksIn(t.data).length, 1);
+      yield* TestClock.setTime(NOW + 2 * MINUTE);
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.include(logs[0], `archived cloud workspace ${LOST} (fac/1-1): untagged`);
+    }),
+  );
+
+  it.effect("a workspace created over a minute before the create was sent keeps the mark's name and is left alone", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fail: "Request timed out" },
+          {
+            argv: listArgv,
+            fixture: "ws-list-noflag-after-cloud",
+            edit: lostRows({ createdAt: ago(12 * MINUTE + 1) }),
+          },
+          {
+            argv: listArgv,
+            fixture: "ws-list-noflag-after-cloud",
+            edit: lostRows({ createdAt: ago(12 * MINUTE) }),
+          },
+          archiveLost,
+        ],
+        { config: onCloud },
+      );
+      yield* TestClock.setTime(NOW - 11 * MINUTE);
+      yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      yield* TestClock.setTime(NOW);
+      yield* t.run((s) => s.sweepOrphans);
+      assert.isUndefined(t.calls.find(argvIs("workspaces", "archive")));
+      // Exactly a minute before: Paradev's clock may read that far behind.
+      yield* t.run((s) => s.sweepOrphans);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
   it.effect("archives each cloud workspace with this runner's tag, no thread record, created over 10 minutes ago, one line each", () =>
     Effect.gen(function* () {
       const t = rig([
@@ -3773,6 +4341,7 @@ describe("cycle 1: liveness a send can trust, and what a failed cloud launch lea
     rig(
       [
         { argv: argvIs("workspaces", "create", "--host", "cloud"), fixture: "ws-create-cloud" },
+        { argv: argvIs("workspaces", "update", C3_WS, "--host", "cloud"), answer: { id: C3_WS } },
         ...after,
       ],
       { config: { place: () => Effect.succeed({ kind: "cloud", environmentId: ENV, machineSize: "small" } as const), cloudReadyPollMs: 1 } },
@@ -3816,6 +4385,7 @@ describe("cycle 1: liveness a send can trust, and what a failed cloud launch lea
       const t: Rig = rig(
         [
           { argv: argvIs("workspaces", "create", "--host", "cloud"), fixture: "ws-create-cloud" },
+          { argv: argvIs("workspaces", "update", C3_WS, "--host", "cloud"), answer: { id: C3_WS } },
           // The records folder stops taking writes once the record is in it.
           { argv: getC3, fixture: "ws-get-cloud-provisioning", edit: (answer) => (NodeFS.chmodSync(threads(), 0o555), answer) },
           { argv: archiveC3, fail: "No active organization" },

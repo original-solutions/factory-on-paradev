@@ -1,6 +1,6 @@
 /**
- * The adapter's own records under `<data>/paradev/`: one thread record per workspace, and one
- * launch file per launch command id that points at its thread. Each is written whole through
+ * The adapter's own records under `<data>/paradev/`: one thread record per workspace, one
+ * launch file per launch command id that points at its thread, and one mark per cloud create sent. Each is written whole through
  * `files.ts`, and a file that does not read back as a whole record is treated as missing.
  */
 import * as Effect from "effect/Effect";
@@ -148,6 +148,17 @@ const placementFile = (path: Path.Path, dataDir: string, commandId: string) =>
 
 const runnerIdFile = (path: Path.Path, dataDir: string) => path.join(dataDir, "paradev", "runner-id");
 
+/**
+ * A cloud create this runner sent: the name it gave the workspace, and when (epoch ms). One file
+ * per send, never rewritten: a launch placed again sends the same name under the same command id,
+ * and its new mark is another file, so nothing removes a mark a launch is writing.
+ */
+const CloudCreateSchema = Schema.Struct({ name: Schema.String, at: Schema.Number });
+export type CloudCreate = typeof CloudCreateSchema.Type & { readonly file: string };
+const decodeCloudCreate = Schema.decodeUnknownOption(Schema.fromJsonString(CloudCreateSchema));
+
+const cloudCreatesDir = (path: Path.Path, dataDir: string) => path.join(dataDir, "paradev", "cloud-creates");
+
 const RUNNER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The file's text; null when it does not exist. */
@@ -264,6 +275,50 @@ export const writePlacement = Effect.fn("ParadevState.writePlacement")(function*
 ) {
   const path = yield* Path.Path;
   yield* writeFileAtomically(placementFile(path, dataDir, commandId), `${JSON.stringify(target)}\n`);
+});
+
+/**
+ * Marks that a cloud create named `name` is about to be sent for `commandId`, at `at`. A cloud
+ * workspace has no tag until the call after its create, so a create that made its workspace and
+ * never answered with it leaves this file as the only proof the workspace is this runner's.
+ */
+export const markCloudCreate = Effect.fn("ParadevState.markCloudCreate")(function* (
+  dataDir: string,
+  commandId: string,
+  name: string,
+  at: number,
+) {
+  const path = yield* Path.Path;
+  const file = path.join(cloudCreatesDir(path, dataDir), `${sha256(commandId)}-${at}.json`);
+  yield* writeFileAtomically(file, `${JSON.stringify({ name, at })}\n`);
+});
+
+/** Every cloud create mark that reads back whole. */
+export const listCloudCreates = Effect.fn("ParadevState.listCloudCreates")(function* (dataDir: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const dir = cloudCreatesDir(path, dataDir);
+  const names = yield* fs.readDirectory(dir).pipe(
+    Effect.catchIf(
+      (error) => error.reason._tag === "NotFound",
+      () => Effect.succeed([] as ReadonlyArray<string>),
+    ),
+  );
+  const marks: Array<CloudCreate> = [];
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const file = path.join(dir, name);
+    const text = yield* readText(file);
+    const mark = text === null ? null : Option.getOrNull(decodeCloudCreate(text));
+    if (mark !== null) marks.push({ ...mark, file });
+  }
+  return marks;
+});
+
+/** Removes a cloud create mark; one already gone is fine. */
+export const removeCloudCreate = Effect.fn("ParadevState.removeCloudCreate")(function* (mark: CloudCreate) {
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.remove(mark.file, { force: true });
 });
 
 /**
