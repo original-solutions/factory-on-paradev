@@ -4510,6 +4510,7 @@ describe("the cloud count, one workspace at a time (#85)", () => {
   const OTHER_WS = "f2e2d3c4-0000-4000-8000-000000000020";
   const THIRD_WS = "f3e2d3c4-0000-4000-8000-000000000030";
   const OTHER_TERM = "f2e2d3c4-0000-4000-8000-0000000000aa";
+  const FOURTH_WS = "f4e2d3c4-0000-4000-8000-000000000040";
   const listArgv = ["workspaces", "list", "--host", "cloud"];
   /** The listing, as the recorded row with each of `rows` laid over it. */
   const listOf = (...rows: ReadonlyArray<Record<string, unknown>>): Step => ({
@@ -4533,11 +4534,14 @@ describe("the cloud count, one workspace at a time (#85)", () => {
         [
           localStep,
           bareCloud,
-          // Another runner's, one with no runner's mark, and the live record's own, which is gone.
+          // Another runner's, one with no runner's mark, one of this runner's that is gone, one whose
+          // id is not plain, and the live record's own, gone and listed with no tag.
           listOf(
             { id: THIRD_WS, tags: ["factory", "factory-ffffffff-0000-4000-8000-00000000ffff"] },
             { id: OTHER_WS, tags: ["factory"] },
-            { id: C3_WS, tags: ["factory", MINE], status: "deleted" },
+            { id: FOURTH_WS, tags: ["factory", MINE], status: "deleted" },
+            { id: "--json", tags: ["factory", MINE] },
+            { id: C3_WS, tags: [], status: "deleted" },
           ),
         ],
         { config: { cloud: true } },
@@ -4568,19 +4572,6 @@ describe("the cloud count, one workspace at a time (#85)", () => {
         { target: { kind: "cloud" }, running: 0 },
       ]);
       assert.deepStrictEqual(t.calls, [["snapshot"]]);
-    }),
-  );
-
-  it.effect("an empty listing: only the live record's workspace is read, and an agent gone from it counts 0", () =>
-    Effect.gen(function* () {
-      const t = rig([localStep, bareCloud, listOf(), snapshotAt(C3_WS, [])], { config: { cloud: true } });
-      yield* seedCloud(t.data);
-      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
-        { target: { kind: "local" }, running: 1 },
-        { target: { kind: "cloud" }, running: 0 },
-      ]);
-      assert.deepStrictEqual(bare(t.calls), []);
-      assert.deepStrictEqual(t.unused(), [bareCloud]);
     }),
   );
 
@@ -4630,27 +4621,19 @@ describe("the cloud count, one workspace at a time (#85)", () => {
     }),
   );
 
-  it.effect("a live record's workspace the listing shows without this runner's tag, or not at all, is still read: the count never drops it", () =>
+  it.effect("a live record's workspace the listing shows without this runner's tag, or leaves out: the count is null, never 0", () =>
     Effect.gen(function* () {
-      const t = rig(
-        [
-          localStep,
-          bareCloud,
-          // The listing does not echo the tag for C3_WS, and leaves OTHER_WS out.
-          listOf({ id: C3_WS, tags: [] }),
-          snapshotAt(C3_WS),
-          snapshotAt(OTHER_WS, [{ id: OTHER_TERM, title: "Claude Code", agent: { id: "claude", state: "working" } }]),
-        ],
-        { config: { cloud: true } },
-      );
-      yield* seedCloud(t.data);
-      yield* seed(t.data, cloudRecord({ threadId: `cloud:${OTHER_WS}`, workspaceId: OTHER_WS, terminals: [OTHER_TERM] }));
-      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
-        { target: { kind: "local" }, running: 1 },
-        { target: { kind: "cloud" }, running: 2 },
-      ]);
-      assert.deepStrictEqual(bare(t.calls), []);
-      assert.deepStrictEqual(t.unused(), [bareCloud]);
+      // Untagged in the listing; an empty listing.
+      for (const listing of [listOf({ id: C3_WS, tags: [] }), listOf()]) {
+        const t = rig([localStep, bareCloud, listing], { config: { cloud: true } });
+        yield* seedCloud(t.data);
+        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "cloud" }, running: null },
+        ]);
+        // Only tagged workspaces are read: no snapshot of the untagged one.
+        assert.deepStrictEqual(t.calls.filter((argv) => argv[0] === "snapshot" && argv.includes("cloud")), []);
+      }
     }),
   );
 
