@@ -46,7 +46,7 @@ import {
   type AdvanceOutcome,
   type BuildingContext,
 } from "./building.ts";
-import { AGENT_DIED_NO_SESSION, INTERRUPTION_MESSAGE } from "./messages.ts";
+import { AGENT_DIED_NO_SESSION, AGENT_DIED_REFUSED, INTERRUPTION_MESSAGE } from "./messages.ts";
 import { readProgress } from "./progress.ts";
 import { runProject } from "./run.ts";
 import { interruptible } from "./testSupport.ts";
@@ -1624,6 +1624,66 @@ describe("advance: a run whose agent process died", () => {
       assertStuck(rig, yield* advanceIn(rig), { publicReason: AGENT_DIED_NO_SESSION });
       assert.deepStrictEqual(stuckCauses(rig), Array(3).fill("advance agent-died-no-session"));
       assert.ok(!linesOf(rig).some((line) => line.event === "session_paused"));
+    }),
+  );
+
+  it.effect("whose thread cannot be read after that send writes nothing, and the next pass goes stuck", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      died(rig);
+      const noSession = () => ({
+        error: new ThreadNotFoundError({ threadId: "thread-1" }),
+        delivered: false,
+      });
+      rig.world.sendFailure = noSession();
+      rig.world.threadOnce = sessionsFailure();
+      const bytes = bytesOf(rig);
+      assert.strictEqual((yield* Effect.flip(advanceIn(rig)))._tag, "FactorySessionsError");
+      assert.strictEqual(bytesOf(rig), bytes);
+      // The adapter keeps the resume pending, so the status still says the agent died.
+      rig.world.sendFailure = noSession();
+      clearCalls(rig);
+      assertStuck(rig, yield* advanceIn(rig), { publicReason: AGENT_DIED_NO_SESSION });
+      assert.ok(!linesOf(rig).some((line) => line.event === "session_paused"));
+    }),
+  );
+
+  it.effect("whose thread record is gone at the send is the pass's to decide too", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      died(rig);
+      rig.world.sendFailure = {
+        error: new ThreadNotFoundError({ threadId: "thread-1" }),
+        delivered: false,
+      };
+      rig.world.thread = new ThreadNotFoundError({ threadId: "thread-1" });
+      const bytes = bytesOf(rig);
+      assert.deepStrictEqual(yield* advanceIn(rig), { kind: "ended-badly", what: "thread-gone" });
+      assert.strictEqual(bytesOf(rig), bytes);
+    }),
+  );
+
+  it.effect("whose session refuses the resume message goes stuck, and nothing is sent again", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      died(rig);
+      const refused = new MessageRejectedError({
+        threadId: "thread-1",
+        commandId: "softfac:rawphp__softfac__10__1:agent-died:1",
+        cause: "the agent is waiting on a permission prompt; nothing was typed",
+      });
+      rig.world.sendFailure = { error: refused, delivered: false };
+      assertStuck(rig, yield* advanceIn(rig), {
+        publicReason: AGENT_DIED_REFUSED,
+        recorded: `${AGENT_DIED_REFUSED}: ${refused.message}`,
+      });
+      assert.deepStrictEqual(stuckCauses(rig), Array(3).fill("advance agent-died-refused"));
+      assert.deepStrictEqual(sends(rig), [resumeCall(1)]);
+      assert.ok(!linesOf(rig).some((line) => line.event === "session_paused"));
+      // The run is finished: a second call sends nothing.
+      clearCalls(rig);
+      assert.strictEqual((yield* Effect.flip(advanceIn(rig)))._tag, "NotBuildingError");
+      assert.deepStrictEqual(sends(rig), []);
     }),
   );
 

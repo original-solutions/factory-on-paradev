@@ -309,6 +309,10 @@ export const THREAD_GONE = "the T3 thread no longer exists";
 export const AGENT_DIED_NO_SESSION =
   "the session's agent process died and has no Claude session to resume";
 
+/** The public reason when a session's agent process died and its session refused the resume message. */
+export const AGENT_DIED_REFUSED =
+  "the session's agent process died and its session refused the resume message";
+
 /** The public reason of a run an operator stopped with `factory/scripts/stop-run.sh`. */
 export const STOPPED_BY_HAND = "stopped by hand";
 

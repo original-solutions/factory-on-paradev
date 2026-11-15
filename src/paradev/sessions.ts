@@ -1294,7 +1294,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * The dead terminal is closed first when the snapshot still lists it, since its agent reads
    * `working` for ever. The resume is recorded as pending before that close, so a failure after
    * it still reads as a dead agent (`status`); `agents create` is not retried: an agent it started
-   * before failing is adopted by the next send. No session to resume is no longer pending.
+   * before failing is adopted by the next send. No session to resume stays pending too, so the
+   * run reads as a dead agent until the core has decided it.
    */
   const resume = (record: ThreadRecord, listed: boolean, worktreePath: string, commandId: string, text: string) =>
     Effect.gen(function* () {
@@ -1305,10 +1306,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         yield* call(cli, ["terminals", "close", ...inWorkspace(record), "--terminal", dead], 30_000);
       }
       const session = yield* targetFor(record.target).newestSession(record, worktreePath);
-      if (session === null) {
-        yield* save({ ...record, pendingResume: null });
-        return yield* new ThreadNotFoundError({ threadId: record.threadId });
-      }
+      if (session === null) return yield* new ThreadNotFoundError({ threadId: record.threadId });
       const argv = [
         "agents", "create", ...inWorkspace(record), "--agent", record.agent,
         "--resume-session", session, "--prompt", text,

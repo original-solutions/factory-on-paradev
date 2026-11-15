@@ -2369,8 +2369,9 @@ describe("send to a dead agent resumes it", () => {
       assert.instanceOf(error, ThreadNotFoundError);
       assert.deepStrictEqual(t.unused(), []);
       assert.deepStrictEqual((yield* saved(t.data))!.terminals, [L5_DEAD]);
-      // Nothing can resume it, so it is not left pending and a later status does not read agentDied.
-      assert.notOk((yield* saved(t.data))!.pendingResume);
+      // The resume stays pending, so a later status still reads agentDied and the core's next
+      // pass comes to the same decision when this one did not finish it.
+      assert.strictEqual((yield* saved(t.data))!.pendingResume, SEND_ID);
     }),
   );
 

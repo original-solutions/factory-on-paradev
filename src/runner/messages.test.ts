@@ -3,6 +3,7 @@ import { describe } from "vitest";
 
 import {
   AGENT_DIED_NO_SESSION,
+  AGENT_DIED_REFUSED,
   INSTRUCTION_LIMIT,
   INTERRUPTION_MESSAGE,
   CANNOT_VERIFY_DURING_BUILD,
@@ -334,6 +335,10 @@ describe("the fixed reasons of a building run", () => {
     assert.strictEqual(
       AGENT_DIED_NO_SESSION,
       "the session's agent process died and has no Claude session to resume",
+    );
+    assert.strictEqual(
+      AGENT_DIED_REFUSED,
+      "the session's agent process died and its session refused the resume message",
     );
     assert.strictEqual(STOPPED_BY_HAND, "stopped by hand");
     assert.strictEqual(
