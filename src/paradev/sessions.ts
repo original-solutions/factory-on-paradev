@@ -907,7 +907,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * Places `request` and runs `launchOn` on the answer, which is kept under the command id. A send
    * cut off after that goes back to its kept target, and placement checks that target again; a
    * kept cloud target is not reused: no launch file was written, so the workspace it made is an
-   * orphan the sweep archives. The placement is in flight until `launchOn` ends, however it ends,
+   * orphan the sweep archives once tagged (one cut off between its create and its update is
+   * untagged, and the sweep cannot see it). The placement is in flight until `launchOn` ends, however it ends,
    * and `launchEnded` is told then.
    */
   const placement = <A, E, R>(
@@ -1004,7 +1005,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     Effect.gen(function* () {
       if (!isSafeBranchName(request.baseRef)) return yield* fail(`the base ${request.baseRef} is not a plain branch name`);
       const target: Target = { kind: "cloud", environmentId: placed.environmentId };
-      // The runner id before the create: a launch that cannot tag its workspace makes none.
+      // The runner id before the create: a launch with no runner id to tag with makes no workspace.
       yield* mine;
       // 1. Not retried: a cloud create is not idempotent by branch, so a repeat makes a second
       // workspace. One that failed after making its workspace has no tags yet, so the orphan
