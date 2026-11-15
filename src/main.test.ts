@@ -4543,12 +4543,12 @@ describe("liveWorld: the hosts", () => {
   const HOSTS = "hosts:\n  - id: h1\n    name: mini\n    ssh: me@mini\n    max_runs: 2\n";
   const refused: SshSpawn = () =>
     Effect.succeed({ exitCode: 255, timedOut: false, stdout: "", stderr: "Connection refused\n" });
-  /** A host whose every ssh read passes: no proxy name missing, an email, gh and claude there. */
+  /** A host whose every ssh read passes: no proxy name missing, an email, gh and claude there, and the plugin at this runner's version. */
   const healthy: SshSpawn = (args) =>
     Effect.succeed({
       exitCode: 0,
       timedOut: false,
-      stdout: args.at(-1) === PROXY_ENV_READ ? "" : "me@example.com\n",
+      stdout: args.at(-1) === PROXY_ENV_READ ? "" : args.at(-1) === PLUGIN_VERSION_READ ? `${version}\n` : "me@example.com\n",
       stderr: "",
     });
   const hostsListed = (paradev: FakeParadev) =>

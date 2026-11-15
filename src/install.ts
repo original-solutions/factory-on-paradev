@@ -16,6 +16,7 @@ import {
   type MachineConfig,
 } from "./config.ts";
 import { printHostChecks } from "./paradev/hostsCheck.ts";
+import { readMinPluginVersion } from "./plugin.ts";
 import { lstatOrNull, readTextOrNull, writeFileWhole } from "./syncFiles.ts";
 import {
   installPathsOf,
@@ -313,7 +314,7 @@ export const install = async (env: InstallEnv): Promise<number> => {
   // A host that fails does not stop the install: the runner starts either way and gives that
   // host no run until a check passes.
   if (config.config !== null) {
-    await printHostChecks(env.run, config.config, config.config.hosts, env.out);
+    await printHostChecks(env.run, config.config, config.config.hosts, readMinPluginVersion(env.packageRoot), env.out);
   }
 
   const version = packageVersion(env.packageRoot);

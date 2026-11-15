@@ -29,6 +29,7 @@ import {
   ghTokenCheck,
   GIT_EMAIL,
   LOAD_COMMAND,
+  PLUGIN_VERSION_READ,
   PROXY_ENV_READ,
   remoteUrl,
   trustRead,
@@ -37,7 +38,7 @@ import {
 } from "./paradev/ssh.ts";
 import { readRun, type Entry } from "./ledger/read.ts";
 import { newRunId } from "./ledger/runId.ts";
-import { FactoryLoop, factoryRuntime } from "./main.ts";
+import { FactoryLoop, factoryRuntime, version } from "./main.ts";
 import { readFixture } from "./paradev/fake-superset.ts";
 import { AgentProcess } from "./paradev/sessions.ts";
 import { readThread } from "./paradev/state.ts";
@@ -1230,6 +1231,7 @@ const placementRun = (spec: PlacementSpec) =>
           if (command === GH_AUTH_STATUS) return answer("Logged in\n");
           if (command === ghTokenCheck(LOGIN)) return answer("");
           if (command === CLAUDE_VERSION) return answer("2.1.0\n");
+          if (command === PLUGIN_VERSION_READ) return answer(`${version}\n`);
           if (command.includes("'rev-parse'")) return answer(`${baseSha}\n`);
           return { exitCode: 1, timedOut: false, stdout: "", stderr: `no answer for ${command}` };
         });

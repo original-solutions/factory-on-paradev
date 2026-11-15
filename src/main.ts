@@ -878,6 +878,7 @@ export const liveWorld = (
         },
         machine,
         host,
+        minPluginVersion,
       ),
     // Paradev removes a workspace's worktree when it archives it, so no thread is left on one.
     threadsOnBrokenWorktrees: () => Effect.succeed([]),
