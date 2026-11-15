@@ -3865,6 +3865,12 @@ describe("the orphan sweep", () => {
     const dir = NodePath.join(data, "paradev", "cloud-creates");
     return NodeFS.existsSync(dir) ? NodeFS.readdirSync(dir) : [];
   };
+  /** The send times of the create marks on disk, oldest first. */
+  const marksAt = (data: string) =>
+    listCloudCreates(data).pipe(
+      Effect.provide(NodeServices.layer),
+      Effect.map((marks) => marks.map((mark) => mark.at).sort((a, b) => a - b)),
+    );
   /** Untagged rows with no record: LOST was created when the launch sent its create, OLDER an hour before. */
   const lostRows = (over: Record<string, unknown> = {}) => (answer: unknown) => {
     const [row] = answer as ReadonlyArray<Record<string, unknown>>;
@@ -3935,17 +3941,15 @@ describe("the orphan sweep", () => {
     }),
   );
 
-  it.effect("a create sent again under the same command id keeps its mark until 15 minutes after the last send, and still finds the first send's workspace", () =>
+  it.effect("a create sent again under the same command id has a mark of its own, and each mark goes 15 minutes after its own send", () =>
     Effect.gen(function* () {
+      const nothingLive = { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows({ status: "deleted" }) };
       const t = rig(
         [
           { argv: createArgv, fail: "Request timed out" },
           { argv: createArgv, fail: "Request timed out" },
-          { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows({ status: "deleted" }) },
-          // Listed at last: the workspace the first send made, 27 minutes old.
-          { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows({ createdAt: ago(11 * MINUTE) }) },
-          archiveLost,
-          { argv: listArgv, fixture: "ws-list-noflag-after-cloud", edit: lostRows({ status: "deleted" }) },
+          nothingLive,
+          nothingLive,
         ],
         { config: onCloud },
       );
@@ -3954,23 +3958,19 @@ describe("the orphan sweep", () => {
       // The same launch, placed again 12 minutes later: its create may still be answering.
       yield* TestClock.setTime(NOW + MINUTE);
       yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
-      // Over 15 minutes after the first send, under 15 after the last: the mark stays.
+      assert.deepStrictEqual(yield* marksAt(t.data), [NOW - 11 * MINUTE, NOW + MINUTE]);
+      // Over 15 minutes after the first send, under 15 after the second: only the second's mark stays.
       yield* TestClock.setTime(NOW + 5 * MINUTE);
       yield* t.run((s) => s.sweepOrphans);
-      assert.strictEqual(marksIn(t.data).length, 1);
-      yield* TestClock.setTime(NOW + 16 * MINUTE);
-      yield* t.run((s) => s.sweepOrphans);
-      assert.strictEqual(t.calls.filter(argvIs("workspaces", "archive")).length, 1);
-      assert.strictEqual(marksIn(t.data).length, 1);
-      // Over 15 minutes after the last send, and nothing listed live: the mark goes.
+      assert.deepStrictEqual(yield* marksAt(t.data), [NOW + MINUTE]);
       yield* TestClock.setTime(NOW + 17 * MINUTE);
       yield* t.run((s) => s.sweepOrphans);
       assert.deepStrictEqual(t.unused(), []);
-      assert.deepStrictEqual(marksIn(t.data), []);
+      assert.deepStrictEqual(yield* marksAt(t.data), []);
     }),
   );
 
-  it.effect("a mark a launch writes again while the sweep archives another workspace is kept, though it was old when the sweep read it", () =>
+  it.effect("a mark a launch writes while the sweep archives another workspace is kept, and the old mark of the same launch goes", () =>
     Effect.gen(function* () {
       const t: Rig = rig(
         [
@@ -4000,8 +4000,7 @@ describe("the orphan sweep", () => {
       yield* TestClock.setTime(NOW);
       yield* t.run((s) => s.sweepOrphans);
       assert.deepStrictEqual(t.unused(), []);
-      const marks = yield* listCloudCreates(t.data).pipe(Effect.provide(NodeServices.layer));
-      assert.deepStrictEqual(marks.map(({ at, lastAt }) => ({ at, lastAt })), [{ at: NOW - 16 * MINUTE, lastAt: NOW }]);
+      assert.deepStrictEqual(yield* marksAt(t.data), [NOW]);
     }),
   );
 

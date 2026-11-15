@@ -219,22 +219,24 @@ describe("placement files", () => {
 describe("cloud create marks", () => {
   const dir = (data: string) => NodePath.join(data, "paradev", "cloud-creates");
 
-  it.effect("a mark holds the name and the times of the first and the last send, lists back, and is removed once", () =>
+  it.effect("each send writes its own mark with the name and the time, lists back, and is removed once", () =>
     Effect.gen(function* () {
       const data = tempDir("state");
       assert.deepStrictEqual(yield* listCloudCreates(data), []);
       yield* markCloudCreate(data, "launch-1", "fac/1-1", 1000);
-      // A second send under the same command id keeps the first time and takes its own as the last.
+      // A second send under the same command id is a second mark: the first is not rewritten.
       yield* markCloudCreate(data, "launch-1", "fac/1-1", 2000);
       yield* markCloudCreate(data, "launch-2", "fac/2-1", 3000);
       const marks = [...(yield* listCloudCreates(data))].sort((a, b) => a.at - b.at);
-      assert.deepStrictEqual(marks.map(({ name, at, lastAt }) => ({ name, at, lastAt })), [
-        { name: "fac/1-1", at: 1000, lastAt: 2000 },
-        { name: "fac/2-1", at: 3000, lastAt: 3000 },
+      assert.deepStrictEqual(marks.map(({ name, at }) => ({ name, at })), [
+        { name: "fac/1-1", at: 1000 },
+        { name: "fac/1-1", at: 2000 },
+        { name: "fac/2-1", at: 3000 },
       ]);
+      assert.strictEqual(new Set(marks.map((mark) => mark.file)).size, 3);
       yield* removeCloudCreate(marks[0]!);
       yield* removeCloudCreate(marks[0]!);
-      assert.deepStrictEqual((yield* listCloudCreates(data)).map((mark) => mark.name), ["fac/2-1"]);
+      assert.deepStrictEqual((yield* listCloudCreates(data)).map((mark) => mark.at).sort(), [2000, 3000]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

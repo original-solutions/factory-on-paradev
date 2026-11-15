@@ -149,11 +149,11 @@ const placementFile = (path: Path.Path, dataDir: string, commandId: string) =>
 const runnerIdFile = (path: Path.Path, dataDir: string) => path.join(dataDir, "paradev", "runner-id");
 
 /**
- * A cloud create this runner sent: the name it gave the workspace, when it was first sent and
- * when it was last sent (epoch ms). A launch placed again sends the same name under the same
- * command id.
+ * A cloud create this runner sent: the name it gave the workspace, and when (epoch ms). One file
+ * per send, never rewritten: a launch placed again sends the same name under the same command id,
+ * and its new mark is another file, so nothing removes a mark a launch is writing.
  */
-const CloudCreateSchema = Schema.Struct({ name: Schema.String, at: Schema.Number, lastAt: Schema.Number });
+const CloudCreateSchema = Schema.Struct({ name: Schema.String, at: Schema.Number });
 export type CloudCreate = typeof CloudCreateSchema.Type & { readonly file: string };
 const decodeCloudCreate = Schema.decodeUnknownOption(Schema.fromJsonString(CloudCreateSchema));
 
@@ -280,9 +280,7 @@ export const writePlacement = Effect.fn("ParadevState.writePlacement")(function*
 /**
  * Marks that a cloud create named `name` is about to be sent for `commandId`, at `at`. A cloud
  * workspace has no tag until the call after its create, so a create that made its workspace and
- * never answered with it leaves this file as the only proof the workspace is this runner's. A
- * mark already there keeps its first time, which an earlier send's workspace is judged by, and
- * takes `at` as its last: the mark is needed for as long as the newest send can still answer.
+ * never answered with it leaves this file as the only proof the workspace is this runner's.
  */
 export const markCloudCreate = Effect.fn("ParadevState.markCloudCreate")(function* (
   dataDir: string,
@@ -291,10 +289,8 @@ export const markCloudCreate = Effect.fn("ParadevState.markCloudCreate")(functio
   at: number,
 ) {
   const path = yield* Path.Path;
-  const file = path.join(cloudCreatesDir(path, dataDir), `${sha256(commandId)}.json`);
-  const text = yield* readText(file);
-  const earlier = text === null ? null : Option.getOrNull(decodeCloudCreate(text));
-  yield* writeFileAtomically(file, `${JSON.stringify({ name, at: earlier?.at ?? at, lastAt: at })}\n`);
+  const file = path.join(cloudCreatesDir(path, dataDir), `${sha256(commandId)}-${at}.json`);
+  yield* writeFileAtomically(file, `${JSON.stringify({ name, at })}\n`);
 });
 
 /** Every cloud create mark that reads back whole. */
