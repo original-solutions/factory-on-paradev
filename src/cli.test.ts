@@ -14,6 +14,7 @@ import {
   GH_AUTH_STATUS,
   ghTokenCheck,
   GIT_EMAIL,
+  PLUGIN_VERSION_READ,
   PROXY_ENV_READ,
   remoteUrl,
   trustRead,
@@ -419,6 +420,7 @@ ${PARADEV}`;
       [GH_AUTH_STATUS]: good("ok"),
       [ghTokenCheck("rawphp")]: good(""),
       [CLAUDE_VERSION]: good("2.1.0"),
+      [PLUGIN_VERSION_READ]: good("0.3.5\n"),
       ...answers,
     };
     const run = (command: string, args: ReadonlyArray<string>): CommandResult => {
@@ -465,6 +467,27 @@ ${PARADEV}`;
     expect(s.outs).toContain("  gh: gh auth login on the host");
     // The same lines install prints: one function runs and prints the checks for both.
     expect(s.outs).toContain("host mini is not ready; the runner gives it no run until its check passes");
+  });
+
+  it("checks the host's plugin against this runner's factory.minPluginVersion", async () => {
+    const h = hostsRun();
+    const s = setup({ run: h.run });
+    seedConfig(s);
+    NodeFS.writeFileSync(
+      NodePath.join(s.packageRoot, "package.json"),
+      '{"version":"9.9.9","factory":{"minPluginVersion":"0.3.10"}}',
+    );
+    expect(await runCli(["hosts", "check", "mini"], s.io)).toBe(1);
+    expect(s.outs).toContain(
+      "  plugin: run this on the host: superset plugins install factory@organization && launchctl kickstart -k gui/$(id -u)/sh.superset.host (the factory plugin on the host is 0.3.5, older than the 0.3.10 this runner needs)",
+    );
+    NodeFS.writeFileSync(
+      NodePath.join(s.packageRoot, "package.json"),
+      '{"version":"9.9.9","factory":{"minPluginVersion":"0.3.5"}}',
+    );
+    s.outs.length = 0;
+    expect(await runCli(["hosts", "check", "mini"], s.io)).toBe(0);
+    expect(s.outs).toContain("  plugin: ok");
   });
 
   it("checks only the host a name picks", async () => {
