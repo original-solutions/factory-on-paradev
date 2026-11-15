@@ -3188,22 +3188,57 @@ describe("launch in the cloud", () => {
     }),
   );
 
-  it.live("an update that fails, then an archive that fails, leaves pendingArchive on the record and fails the launch", () =>
+  it.live("an update that fails, then an archive that fails, leaves pendingArchive on the record, and the sweep archives the untagged workspace by its record", () =>
     Effect.gen(function* () {
       const t = rig(
         [
           { argv: createArgv, fixture: "ws-create-cloud" },
           { argv: updateArgv, fail: "tags are not allowed here" },
           { argv: archiveArgv, fail: "boom" },
+          // The update never landed: the listing shows the workspace with no tags.
+          {
+            argv: ["workspaces", "list", "--host", "cloud"],
+            fixture: "ws-list-noflag-after-cloud",
+            edit: (answer) => [
+              { ...(answer as ReadonlyArray<object>)[0], id: C3_WS, tags: [], createdAt: new Date(Date.now() - 60 * MINUTE).toISOString() },
+            ],
+          },
+          { argv: archiveArgv, fixture: "ws-archive-cloud" },
         ],
         { config: onCloud },
       );
       const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
       assert.include(String(error.cause), "tags are not allowed here; archiving the workspace failed too (");
+      const given = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isTrue(given!.pendingArchive);
+      assert.isNull(given!.archivedAt);
+      const { logs } = yield* logged(t.run((s) => s.sweepOrphans));
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.include(logs[0], `archived cloud workspace ${C3_WS}`);
+      assert.include(logs[0], "its launch failed, and so did that launch's archive");
+      const swept = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNotNull(swept!.archivedAt);
+    }),
+  );
+
+  it.live("a retry whose update fails archives the workspace and fails, with no ready poll and no agent", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: updateArgv, fail: "tags are not allowed here" },
+          { argv: archiveArgv, fixture: "ws-archive-cloud" },
+        ],
+        { config: { place: () => Effect.die("placed again"), cloudReadyPollMs: 1 } },
+      );
+      yield* seed(t.data, cloudRecord({ terminals: [], turns: [] }));
+      yield* writeLaunch(t.data, LAUNCH_ID, `cloud:${C3_WS}`).pipe(Effect.provide(NodeServices.layer));
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), "tags are not allowed here; the workspace was archived");
+      assert.deepStrictEqual(t.calls, [updateArgv, archiveArgv]);
       assert.deepStrictEqual(t.unused(), []);
       const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
-      assert.isTrue(saved!.pendingArchive);
-      assert.isNull(saved!.archivedAt);
+      assert.isNotNull(saved!.archivedAt);
     }),
   );
 
