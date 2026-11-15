@@ -49,6 +49,7 @@ import {
   type ThreadStatus,
 } from "../sessions.ts";
 import {
+  AGENT_DIED_NO_SESSION,
   CANNOT_CONFIRM,
   CANNOT_VERIFY_DURING_BUILD,
   CHANGED_DURING_BUILD,
@@ -919,7 +920,20 @@ export const advance = (
             Effect.as("sent" as const),
             Effect.catchIf(isThreadNotFound, () => Effect.succeed("gone" as const)),
           );
-        if (sent === "gone") return { kind: "ended-badly", what: "thread-gone" } as const;
+        if (sent === "gone") {
+          // The adapter answers a missing Claude session as it answers a gone workspace. A
+          // workspace that is still there has an agent nothing can resume: waiting would not help.
+          const there = yield* ctx.sessions.thread(threadId).pipe(
+            Effect.map((thread) => !thread.archived),
+            Effect.catchIf(isThreadNotFound, () => Effect.succeed(false)),
+          );
+          if (!there) return { kind: "ended-badly", what: "thread-gone" } as const;
+          return yield* stuck(
+            "agent-died-no-session",
+            stopOf(AGENT_DIED_NO_SESSION, null),
+            status,
+          );
+        }
         yield* append(
           out,
           { event: "step_changed", data: { step: `${AGENT_DIED_RESUMED} ${status.runOrdinal}` } },
