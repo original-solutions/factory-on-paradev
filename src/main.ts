@@ -159,6 +159,9 @@ export const version = Paths.packageVersion(NodePath.resolve(import.meta.dirname
 /** The plugin this runner needs on a target: its `factory.minPluginVersion`, or why that did not read. */
 const minPluginVersion = readMinPluginVersion(NodePath.resolve(import.meta.dirname, ".."));
 
+/** This Mac's plugin check as the runner runs it: the plugin landed under `home` against this runner's minimum. */
+export const localPluginCheck = (home: string): string | null => localPluginReason(home, minPluginVersion);
+
 /**
  * The running factory, for the code that wakes it. Its `status` follows `reload`.
  */
@@ -859,7 +862,7 @@ export const liveWorld = (
     hostCheckedAt: new Map(),
     // Not ready until its check passes, as a host: a new world is a new config load.
     localPlugin: { notReady: "not checked yet since the config load", checkedAt: null },
-    checkLocalPlugin: live.checkLocalPlugin ?? (() => localPluginReason(NodeOS.homedir(), minPluginVersion)),
+    checkLocalPlugin: live.checkLocalPlugin ?? (() => localPluginCheck(NodeOS.homedir())),
     checkHost: (host) =>
       checkHost(
         {
@@ -1449,6 +1452,9 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
           ),
         ),
     };
+    // This Mac's plugin is checked at the config load, before the new world places anything: a
+    // launch placed before its first pass would otherwise find it not checked yet.
+    yield* checkLocalPlugin(world);
     options.onWorld?.(world);
     // Placement reads the world's host readings and the adapter's counts, built by now. This is
     // where the start takes over, so a start that failed before it leaves the last one placing.

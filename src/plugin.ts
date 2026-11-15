@@ -21,7 +21,13 @@ export const LOCAL_PLUGIN_FIX = "superset plugins install factory@organization, 
 export const landedPluginPath = (home: string): string =>
   NodePath.join(home, ".agents", "skills", "factory-build", "VERSION");
 
-const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+/** What a failed read says: the error's code when it has one, so no folder name gets into the text. */
+const whyNot = (error: unknown): string =>
+  (error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error));
+
+/** Whether a `landed` plugin version is older than the `minimum` a runner needs; both are read versions. */
+export const olderThan = (landed: string, minimum: string): boolean =>
+  compareVersions(parseVersion(landed)!, parseVersion(minimum)!) < 0;
 
 /** The version in this Mac's landed `VERSION` file; a file that is missing, empty or not a version fails. */
 export const readLandedPlugin = (home: string): Read<string> => {
@@ -32,7 +38,7 @@ export const readLandedPlugin = (home: string): Read<string> => {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT"
       ? { failed: `the factory plugin is not on this Mac: ${path} is missing` }
-      : { failed: `${path} could not be read: ${messageOf(error)}` };
+      : { failed: `${path} could not be read: ${whyNot(error)}` };
   }
   if (text === "") return { failed: `${path} is empty` };
   return parseVersion(text) === null ? { failed: `${path} holds ${JSON.stringify(text)}, not a version` } : { ok: text };
@@ -48,7 +54,7 @@ export const readMinPluginVersion = (packageRoot: string): Read<string | null> =
   try {
     json = JSON.parse(NodeFS.readFileSync(NodePath.join(packageRoot, "package.json"), "utf8")) as typeof json;
   } catch (error) {
-    return { failed: `package.json could not be read: ${messageOf(error)}` };
+    return { failed: `package.json could not be read: ${whyNot(error)}` };
   }
   const minimum = json?.factory?.minPluginVersion;
   if (minimum === undefined) return { ok: null };
@@ -66,7 +72,7 @@ export const localPluginReason = (home: string, minimum: Read<string | null>): s
   const landed = readLandedPlugin(home);
   if ("failed" in landed) return landed.failed;
   if (minimum.ok === null) return null;
-  return compareVersions(parseVersion(landed.ok)!, parseVersion(minimum.ok)!) < 0
+  return olderThan(landed.ok, minimum.ok)
     ? `the factory plugin on this Mac is ${landed.ok}, older than the ${minimum.ok} this runner needs`
     : null;
 };

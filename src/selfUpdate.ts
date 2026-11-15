@@ -36,7 +36,7 @@ import {
 } from "./gitHardening.ts";
 import { place, pointCurrent, stage } from "./install.ts";
 import { installPathsOf, packageVersion, UPDATE_REFUSED_FILE } from "./paths.ts";
-import { LOCAL_PLUGIN_FIX, readLandedPlugin, readMinPluginVersion } from "./plugin.ts";
+import { LOCAL_PLUGIN_FIX, olderThan, readLandedPlugin, readMinPluginVersion } from "./plugin.ts";
 import { FactoryProcess, type RunInput } from "./process.ts";
 import { compareVersions, parseVersion, type Version } from "./version.ts";
 import {
@@ -176,6 +176,14 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
   let offSaid = false;
   /** The plugin refusals logged since start, by tag and reason, so a retry logs nothing new. */
   const pluginSaid = new Set<string>();
+  /**
+   * Tags held back for this Mac's plugin and not yet past the plugin step. A failure of a step
+   * before it (a gh read, the clone) does not mark such a tag: it is retried every period until a
+   * person updates the plugin, so one flaky read in that wait must not stop it for good.
+   */
+  const heldForPlugin = new Set<string>();
+  /** Nothing is held back for the plugin any more: its item goes. */
+  const nothingHeld = options.attention.clear((open) => open.id === PLUGIN_UPDATE_NEEDED_ITEM_ID);
 
   /** `self_update` now; the first read that finds it off logs one line, until it is on again. */
   const enabledNow = Effect.suspend(() => {
@@ -235,7 +243,7 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
     if (needed.ok === null) return null;
     const landed = readLandedPlugin(options.home);
     if ("failed" in landed) return `it needs the factory plugin ${needed.ok} or newer, and ${landed.failed}`;
-    return compareVersions(parseVersion(landed.ok)!, parseVersion(needed.ok)!) < 0
+    return olderThan(landed.ok, needed.ok)
       ? `it needs the factory plugin ${needed.ok} or newer, and this Mac has ${landed.ok}`
       : null;
   };
@@ -277,7 +285,7 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
       const repo = `repos/${repository.owner}/${repository.repo}`;
       const fail = (why: string) =>
         Effect.sync(() => {
-          failed.add(tag);
+          if (!heldForPlugin.has(tag)) failed.add(tag);
         }).pipe(Effect.andThen(Effect.logWarning(`update ${tag} not staged: ${why}`)));
 
       // One commit, by sha, from here on: a tag moved between the check and the clone, or a branch
@@ -344,10 +352,12 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
         // plugin, and the next period stages the tag by itself.
         const held = pluginHold(clone);
         if (held !== null) {
+          heldForPlugin.add(tag);
           NodeFS.rmSync(clone, { recursive: true, force: true });
           return yield* holdForPlugin(tag, held, running);
         }
-        yield* options.attention.clear((open) => open.id === PLUGIN_UPDATE_NEEDED_ITEM_ID);
+        heldForPlugin.delete(tag);
+        yield* nothingHeld;
 
         const nodeDir = NodePath.dirname(options.execPath);
         const installed = yield* step("npm ci", {
@@ -429,7 +439,7 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
         return yield* Effect.logWarning(`self-update could not read the tags of ${repository.owner}/${repository.repo}: ${why}`);
       }
       const candidate = highestTag(read.success.tail.split("\n"));
-      if (candidate === null || compareVersions(candidate.version, running) <= 0) return;
+      if (candidate === null || compareVersions(candidate.version, running) <= 0) return yield* nothingHeld;
       const version = candidate.version.join(".");
       // The highest tag only: a refused one stages nothing, not a lower tag still above the running version.
       let refusedTag: string | null;
@@ -475,7 +485,12 @@ export const makeSelfUpdate = Effect.fn("SelfUpdate.make")(function* (options: S
     // next period reads the tags again.
     while (true) {
       yield* Effect.sleep(CHECK_INTERVAL);
-      if (staged !== null || !(yield* enabledNow)) continue;
+      if (staged !== null) continue;
+      // Off, no tag is tried again, so none waits for the plugin.
+      if (!(yield* enabledNow)) {
+        yield* nothingHeld;
+        continue;
+      }
       yield* check(repository, running, runningText).pipe(
         Effect.catchDefect((defect) =>
           Effect.logWarning(`self-update check failed: ${messageOf(defect)}`),
