@@ -56,6 +56,14 @@ describe("readLandedPlugin", () => {
   });
 });
 
+describe("readLandedPlugin, a VERSION that is not a file", () => {
+  it("says it could not be read, not that the plugin is missing", () => {
+    const home = homeWith();
+    NodeFS.mkdirSync(landedPluginPath(home), { recursive: true });
+    assert.deepStrictEqual(readLandedPlugin(home), { failed: `${landedPluginPath(home)} could not be read: EISDIR` });
+  });
+});
+
 describe("readMinPluginVersion", () => {
   it("reads factory.minPluginVersion, and null when package.json has none", () => {
     assert.deepStrictEqual(readMinPluginVersion(packageWith('{"factory":{"minPluginVersion":"0.3.10"}}')), { ok: "0.3.10" });
@@ -64,8 +72,10 @@ describe("readMinPluginVersion", () => {
   });
 
   it("fails on a package.json that cannot be read, or a minimum that is not a version", () => {
-    const unread = readMinPluginVersion(NodePath.join(tmp, "no-such-package"));
-    assert.isTrue("failed" in unread && unread.failed.startsWith("package.json could not be read: "));
+    // The reason names no folder: a self-update reads it in a clone of a random name.
+    assert.deepStrictEqual(readMinPluginVersion(NodePath.join(tmp, "no-such-package")), {
+      failed: "package.json could not be read: ENOENT",
+    });
     assert.deepStrictEqual(readMinPluginVersion(packageWith('{"factory":{"minPluginVersion":"0.3"}}')), {
       failed: 'package.json has factory.minPluginVersion "0.3", not a version',
     });

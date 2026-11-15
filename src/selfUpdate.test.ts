@@ -704,10 +704,11 @@ describe("self-update", () => {
     );
   });
 
-  it.effect("a tag that needs no newer plugin than this Mac's is staged as before", () => {
+  it.effect("a tag that needs no newer plugin than this Mac's is staged as before, compared as three numbers", () => {
     const f = fixture();
     f.answers.refs = ["refs/tags/v0.2.0"];
-    f.answers.minPlugin = "0.1.10";
+    // As text 0.1.10 sorts below 0.1.9.
+    f.answers.minPlugin = "0.1.9";
     landPlugin(f, "0.1.10");
     return withUpdater(f, true, () =>
       Effect.gen(function* () {
@@ -752,6 +753,65 @@ describe("self-update", () => {
         // A failed npm ci marks the tag as before: it is not tried again, and the item stays gone.
         yield* TestClock.adjust(TEN_MINUTES);
         expect(commands(f)).toEqual([...REFUSED, ...REFUSED, "npm", "gh"]);
+        expect(updateItems(f)).toEqual([]);
+      }),
+    );
+  });
+
+  it.effect("a held tag that then fails a step before the plugin step is not marked, and is tried again", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.minPlugin = "0.2.0";
+    landPlugin(f, "0.1.0");
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual(REFUSED);
+        f.answers.compare = "fail";
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual([...REFUSED, "gh", "gh", "gh"]);
+        expect(loud(f).at(-1)!.text).toContain("HTTP 404: Not Found");
+        // Still held: the item stays, and the next period tries the tag again.
+        expect(updateItems(f)).toHaveLength(1);
+        f.answers.compare = "ahead";
+        landPlugin(f, "0.2.0");
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual([...REFUSED, "gh", "gh", "gh", ...STAGING]);
+        expect(versionDirs(f)).toEqual(["0.1.0", "0.2.0"]);
+        expect(updateItems(f)).toEqual([]);
+      }),
+    );
+  });
+
+  it.effect("the item goes when no tag is newer than the running version any more", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.minPlugin = "0.2.0";
+    landPlugin(f, "0.1.0");
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(updateItems(f)).toHaveLength(1);
+        // The tag was deleted, or this version was installed another way.
+        f.answers.refs = ["refs/tags/v0.1.0"];
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(updateItems(f)).toEqual([]);
+      }),
+    );
+  });
+
+  it.effect("the item goes when self_update is turned off: no tag is tried again", () => {
+    const f = fixture();
+    f.answers.refs = ["refs/tags/v0.2.0"];
+    f.answers.minPlugin = "0.2.0";
+    landPlugin(f, "0.1.0");
+    return withUpdater(f, true, () =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(updateItems(f)).toHaveLength(1);
+        f.answers.enabled = false;
+        yield* TestClock.adjust(TEN_MINUTES);
+        expect(commands(f)).toEqual(REFUSED);
         expect(updateItems(f)).toEqual([]);
       }),
     );

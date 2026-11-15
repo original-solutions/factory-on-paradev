@@ -49,12 +49,14 @@ import {
   gateDecided,
   gateItem,
   liveWorld,
+  localPluginCheck,
   newShared,
   regateWords,
   type LiveShared,
   type RuntimeOptions,
   version,
 } from "./main.ts";
+import { landedPluginPath } from "./plugin.ts";
 import { readFixture } from "./paradev/fake-superset.ts";
 import { AgentProcess } from "./paradev/sessions.ts";
 import { writeThread } from "./paradev/state.ts";
@@ -4628,11 +4630,17 @@ describe("liveWorld: the hosts", () => {
         const MISSING = "the factory plugin is not on this Mac: /home/me/.agents/skills/factory-build/VERSION is missing";
         let answer: string | null = MISSING;
         const worlds: Array<PassWorld> = [];
+        // What each world had read when it was handed over: the check runs at the config load.
+        const atLoad: Array<string | null> = [];
         const { loop, factoryDir, attention } = yield* started(configFor([["a/b", "/b"]], "/gh"), noGhProcess, {
           checkLocalPlugin: () => answer,
-          onWorld: (world) => worlds.push(world),
+          onWorld: (world) => {
+            worlds.push(world);
+            atLoad.push(world.localPlugin.notReady);
+          },
         });
         yield* idleAfter(loop, factoryDir, 1);
+        assert.deepStrictEqual(atLoad, [MISSING]);
         assert.strictEqual(worlds[0]!.localPlugin.notReady, MISSING);
         const items = (yield* attention.list()).filter((item) => item.id === "plugin-not-ready");
         assert.strictEqual(items.length, 1);
@@ -4647,14 +4655,36 @@ describe("liveWorld: the hosts", () => {
         yield* loop.reload;
         assert.strictEqual(worlds.length, 2);
         yield* idleAfter(loop, factoryDir, 2);
+        assert.deepStrictEqual(atLoad, [MISSING, null]);
         assert.strictEqual(worlds[1]!.localPlugin.notReady, null);
         assert.deepStrictEqual(
           (yield* attention.list()).filter((item) => item.id === "plugin-not-ready"),
           [],
         );
+        yield* waitUntil("the local row ready again", () => local()?.ready === true && local()?.reason === null);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it("this Mac's live plugin check holds the landed VERSION against this runner's own factory.minPluginVersion", () => {
+    const { factory } = JSON.parse(NodeFS.readFileSync(NodePath.resolve(import.meta.dirname, "../package.json"), "utf8")) as {
+      factory: { minPluginVersion: string };
+    };
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "factory-plugin-home-"));
+    try {
+      const file = landedPluginPath(home);
+      NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
+      NodeFS.writeFileSync(file, "0.0.0\n");
+      assert.strictEqual(
+        localPluginCheck(home),
+        `the factory plugin on this Mac is 0.0.0, older than the ${factory.minPluginVersion} this runner needs`,
+      );
+      NodeFS.writeFileSync(file, `${factory.minPluginVersion}\n`);
+      assert.isNull(localPluginCheck(home));
+    } finally {
+      NodeFS.rmSync(home, { recursive: true, force: true });
+    }
+  });
 
   it.effect("a world starts with every host not checked yet, so placement sees none as ready", () =>
     Effect.scoped(
