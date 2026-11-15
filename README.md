@@ -16,7 +16,7 @@ The runner is a small process on a machine where Paradev is signed in: your Mac,
 
 It drives Paradev through the signed-in `superset` CLI, so your Paradev and agent logins stay on that machine. The runner works on its own, with no account anywhere. The hosted Factory dashboard by Original Solutions is a separate, optional product.
 
-The repo will also be a Paradev plugin marketplace, so `superset plugins install factory@factory-on-paradev` gives every agent the skills it needs.
+The repo is also the organization's Paradev plugin source: `superset plugins install factory@organization` lands the factory skill as `/factory-build` (see [The factory plugin](#the-factory-plugin)).
 
 ## Develop
 
@@ -26,6 +26,22 @@ npm run check
 ```
 
 Scripts run with Node's built-in type stripping (`node file.ts`), so there is no build step. `make build` is the same two commands.
+
+## The factory plugin
+
+The `factory` plugin in this repo carries the skill the runner's agents follow. Paradev lands it at `~/.agents/skills/factory-build/`, where a session calls it `/factory-build`. The runner's first message still calls `/factory` until it switches to `/factory-build` (#97), so until then a Mac also keeps its old `factory` skill. Set the plugin up once:
+
+```sh
+superset plugins organization sources add original-solutions/factory-on-paradev   # once per organization
+superset plugins install factory@organization                                     # once per account, and on each Mac
+launchctl kickstart -k gui/$(id -u)/sh.superset.host                              # on a host, after its install
+```
+
+On this Mac, restart the Paradev desktop app after the install. The install only records the plugin. A host's service copies the skill when it starts, and the app is expected to do the same.
+
+The runner reads `~/.agents/skills/factory-build/VERSION` right after each config load, every 5 minutes while the check fails, and every hour while it passes. While that file is missing, empty, not a version, or older than `factory.minPluginVersion` in the runner's `package.json`, this Mac takes no run: placement drops it with `not ready: <reason>`, `factory-runner status` shows the reason on the `local` row, and the `plugin-not-ready` attention item prints the fix. Run `superset plugins install factory@organization`, restart the Paradev app, and this Mac takes runs again at the next check. The runner never installs the plugin and never restarts the app.
+
+Self-update holds back a tag whose `factory.minPluginVersion` is newer than this Mac's plugin, and a tag where either version cannot be read. It logs one line with the tag, the plugin it needs and the fix, raises `plugin-update-needed`, and stays on the running version, which keeps taking runs. Ten minutes later it tries the tag again, so the update goes through by itself once the plugin is new enough. A tag with no `factory.minPluginVersion` installs as before.
 
 ## Release and deploy
 

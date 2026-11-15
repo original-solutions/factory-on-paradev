@@ -9,18 +9,16 @@ import * as NodePath from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { compareVersions, parseVersion } from "../src/version.ts";
+
 const root = NodePath.resolve(import.meta.dirname, "..");
 const fixtures = NodePath.join(root, "spike/fixtures/2.0.8");
 const SKILL = "plugins/factory/skills/build";
 
 const readJson = (path: string): any => JSON.parse(NodeFS.readFileSync(path, "utf8"));
 
-/** Three numbers, so 0.3.10 is newer than 0.3.9. */
-const compareVersions = (a: string, b: string): number => {
-  const [x, y] = [a, b].map((v) => v.split(".").map(Number));
-  for (let i = 0; i < 3; i++) if (x![i] !== y![i]) return x![i]! - y![i]!;
-  return 0;
-};
+/** The runner's own comparison, so 0.3.10 is newer than 0.3.9. */
+const compare = (a: string, b: string): number => compareVersions(parseVersion(a)!, parseVersion(b)!);
 
 let tmp: string;
 
@@ -44,7 +42,7 @@ describe("the plugin's version fields", () => {
     expect(row?.version).toBe(pkg.version);
     expect(file).toBe(`${pkg.version}\n`);
     expect(pkg.factory?.minPluginVersion).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(compareVersions(pkg.factory.minPluginVersion, pkg.version)).toBeLessThanOrEqual(0);
+    expect(compare(pkg.factory.minPluginVersion, pkg.version)).toBeLessThanOrEqual(0);
   });
 });
 
@@ -446,12 +444,14 @@ esac
 
   it("fails, with the rerun command and no tag push, when a superset call never answers", () => {
     const started = Date.now();
-    const out = finish("hang", { origin: OLD, ancestor: false, hang: true, env: { RELEASE_FINISH_CALL_TIMEOUT_MS: "500" } });
+    // Long enough that every stub that answers does so on a loaded machine (a gate runs under nice
+    // beside other suites); only the `sources list` that sleeps 30 s reaches it.
+    const out = finish("hang", { origin: OLD, ancestor: false, hang: true, env: { RELEASE_FINISH_CALL_TIMEOUT_MS: "4000" } });
 
     expect(out.status).toBe(1);
     expect(Date.now() - started).toBeLessThan(20_000);
     expect(synced(out.calls)).toBe(true);
-    expect(out.stderr).toContain("superset plugins organization sources list --json did not answer within 0.5 s");
+    expect(out.stderr).toContain("superset plugins organization sources list --json did not answer within 4 s");
     expect(out.stderr).toContain(`make release-finish VERSION=${VERSION}`);
     expectNoTagPush(out.calls);
   });

@@ -11,6 +11,7 @@ const local = (over: Partial<Extract<Candidate, { kind: "local" }>> = {}): Candi
   slots: { running: 0, max: 2 },
   load: load(0.5),
   held: null,
+  notReady: null,
   ...over,
 });
 
@@ -126,6 +127,31 @@ describe("choosePlacement", () => {
     });
   });
 
+  it("skips this Mac whose plugin check failed, as it skips a host", () => {
+    const placed = choosePlacement([
+      local({ notReady: "the factory plugin is not on this Mac" }),
+      host("a", { load: load(0.9) }),
+    ]);
+    assert.deepStrictEqual(placed, {
+      kind: "placed",
+      target: { kind: "host", machineId: "a", path: "/srv/a" },
+      dropped: [{ id: "local", target: "local", reason: "not ready: the factory plugin is not on this Mac" }],
+    });
+  });
+
+  it("gives this Mac's hold before its plugin check, as a host's load comes before its check", () => {
+    const placed = choosePlacement([local({ held: "low disk", notReady: "x" })]);
+    assert.deepStrictEqual(placed.dropped, [{ id: "local", target: "local", reason: "this Mac holds claims: low disk" }]);
+  });
+
+  it("refuses when this Mac is the only candidate and its plugin check failed", () => {
+    assert.deepStrictEqual(choosePlacement([local({ notReady: "x" })]), {
+      kind: "refused",
+      reason: NO_TARGET_HAS_ROOM,
+      dropped: [{ id: "local", target: "local", reason: "not ready: x" }],
+    });
+  });
+
   it("chooses cloud only when no machine qualifies", () => {
     const placed = choosePlacement([local({ slots: { running: 2, max: 2 } }), host("a", { load: null }), cloud()]);
     assert.deepStrictEqual(placed, {
@@ -202,6 +228,14 @@ describe("targetRow", () => {
   it("gives this Mac's hold as its reason and calls it not ready", () => {
     const row = targetRow(local({ held: "low disk" }));
     assert.deepStrictEqual({ ready: row.ready, reason: row.reason }, { ready: false, reason: "this Mac holds claims: low disk" });
+  });
+
+  it("gives this Mac's failed plugin check as its reason and calls it not ready", () => {
+    const row = targetRow(local({ notReady: "the factory plugin is not on this Mac" }));
+    assert.deepStrictEqual(
+      { ready: row.ready, reason: row.reason },
+      { ready: false, reason: "not ready: the factory plugin is not on this Mac" },
+    );
   });
 
   it("names a host by its name and gives the first reason placement would drop it for", () => {

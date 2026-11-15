@@ -5329,6 +5329,7 @@ describe("the cloud count, one workspace at a time (#85)", () => {
         repoOfProject: () => repo,
         hostLoads: new Map(),
         hostsNotReady: () => new Map(),
+        localNotReady: () => null,
         readLoad: () => ({ oneMinute: 1, cores: 10 }),
         running: t.run((s) => s.runningByTarget),
         record: () => Effect.void,

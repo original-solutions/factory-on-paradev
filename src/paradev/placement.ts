@@ -26,6 +26,8 @@ export type Candidate =
       readonly load: Load;
       /** Why P1's load or disk check holds claims this pass; null when it does not. */
       readonly held: string | null;
+      /** Why this Mac's last plugin check failed; null when it passed. */
+      readonly notReady: string | null;
     }
   | {
       readonly kind: "host";
@@ -88,7 +90,8 @@ const dropReason = (candidate: TargetReading): string | null => {
   if (full !== null) return full;
   switch (candidate.kind) {
     case "local":
-      return candidate.held === null ? null : `this Mac holds claims: ${candidate.held}`;
+      if (candidate.held !== null) return `this Mac holds claims: ${candidate.held}`;
+      return candidate.notReady === null ? null : `not ready: ${candidate.notReady}`;
     case "host": {
       if (candidate.load === null) return "its load was not read this pass";
       const { oneMinute, cores } = candidate.load;
@@ -136,7 +139,7 @@ export const targetRow = (reading: TargetReading): TargetRow => ({
   slots: { used: reading.slots.running, max: reading.slots.max },
   ready:
     reading.kind === "local"
-      ? reading.held === null
+      ? reading.held === null && reading.notReady === null
       : reading.kind === "host"
         ? reading.notReady === null
         : reading.proxy === null,

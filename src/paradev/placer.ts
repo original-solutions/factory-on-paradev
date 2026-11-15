@@ -26,6 +26,8 @@ export interface PlacerDeps {
   readonly hostLoads: ReadonlyMap<string, Load | null>;
   /** The hosts whose last check failed, by host id, with its first failing line. */
   readonly hostsNotReady: () => ReadonlyMap<string, string>;
+  /** Why this Mac's last plugin check failed; null when it passed. */
+  readonly localNotReady: () => string | null;
   readonly readLoad: () => Load;
   /** The running agents per target, one snapshot each. */
   readonly running: Effect.Effect<ReadonlyArray<TargetCount>>;
@@ -79,12 +81,16 @@ export const makePlacer = (deps: PlacerDeps) => {
   /** This Mac's load, read on the first candidate list of the pass and kept for the rest of it. */
   const passLoad = (): Load => (localLoad ??= deps.readLoad());
 
-  /** This Mac as a candidate; `held` is why P1's checks hold claims, which a repo with nowhere else to go ignores. */
+  /**
+   * This Mac as a candidate; `held` is why P1's checks hold claims, which a repo with nowhere else
+   * to go ignores. A failed plugin check drops it for every repo: a session there has no skill.
+   */
   const localOf = (running: ReadonlyMap<string, number | null>, held: string | null, load: Load): Candidate => ({
     kind: "local",
     slots: { running: running.get("local") ?? null, max: deps.machine.local.maxRuns },
     load,
     held,
+    notReady: deps.localNotReady(),
   });
 
   /** A host's readings this pass, whatever repo is placed. */
@@ -225,12 +231,13 @@ export const makePlacer = (deps: PlacerDeps) => {
     ): Effect.Effect<LaunchTarget, NoTargetHasRoom> =>
       Effect.gen(function* () {
         const repo = deps.repoOfProject(request.projectId);
-        // A repo with no hosts and no cloud runs as in P1: on this Mac, with no load or claims check.
+        // A repo with no hosts and no cloud runs as in P1: on this Mac, with no load or claims
+        // check, while its plugin check passes.
         const hosted = (repo?.hosts?.length ?? 0) > 0;
         const clouded = repo?.cloud !== undefined && deps.machine.cloud !== undefined;
         if (repo === null || (!hosted && !clouded)) {
           // The core's cap on runs covers this Mac's slots when local.max_runs reaches it.
-          if (deps.machine.local.maxRuns >= deps.machine.maxConcurrentRuns) {
+          if (deps.machine.local.maxRuns >= deps.machine.maxConcurrentRuns && deps.localNotReady() === null) {
             if (counts !== null) bump(counts, "local");
             inFlight.set(request.commandId, "local");
             return { kind: "local" } as const;
