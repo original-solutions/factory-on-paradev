@@ -15,6 +15,7 @@ import {
   WRONG_ACCOUNT,
   bodyEditMessage,
   checksFailureMessage,
+  cloudLaunchMessage,
   commentMessage,
   failureMessage,
   feedbackMessage,
@@ -123,6 +124,43 @@ describe("hostLaunchMessage", () => {
     assert.ok(host.includes("Open the pull request against release"), host);
     assert.ok(local.includes("never use gh auth token or gh auth switch"), local);
     assert.ok(!host.includes("never use gh auth token"), host);
+  });
+});
+
+/** The paragraph a session placed in Paradev Cloud gets. */
+const CLOUD_IDENTITY_WORDS =
+  "You act on GitHub as the Paradev GitHub App (superset-app[bot]), through the GH_TOKEN the sandbox already has. Do not run gh api user: it answers 403 there. Never set, unset or replace GH_TOKEN, GH_CONFIG_DIR or GH_HOST, and never run gh auth login, gh auth switch or gh auth token, on any command. The repo's permissions object reads all false there, so prove you can push with the factory skill's push dry run, and end with FACTORY-STOP: stuck only when that dry run fails.";
+
+describe("cloudLaunchMessage", () => {
+  it("is the local message with the cloud's account paragraph in place of the local one", () => {
+    const cloud = cloudLaunchMessage("rawphp/softfac", 10);
+    assert.strictEqual(
+      cloud,
+      `/factory rawphp/softfac#10\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${BRANCH_WORDS}\n\n${CLOUD_IDENTITY_WORDS}`,
+    );
+    const local = launchMessage("rawphp/softfac", 10, "tomkaczocha");
+    assert.strictEqual(
+      cloud.slice(0, cloud.lastIndexOf("\n\n")),
+      local.slice(0, local.lastIndexOf("\n\n")),
+    );
+  });
+
+  it("keeps the resume and base paragraphs, names no login and runs no login check", () => {
+    const resumed: EarlierRunResume = {
+      run: { repo: "acme/widgets", issue: "42", attempt: 1 },
+      branch: "t3code/abc",
+      after: "time-limit",
+    };
+    const cloud = cloudLaunchMessage("acme/widgets", 42, resumed, "release");
+    const local = launchMessage("acme/widgets", 42, "alice", resumed, "release");
+    assert.strictEqual(
+      cloud.slice(0, cloud.lastIndexOf("\n\n")),
+      local.slice(0, local.lastIndexOf("\n\n")),
+    );
+    assert.ok(cloud.includes("Open the pull request against release"), cloud);
+    assert.ok(!cloud.includes("alice"), cloud);
+    assert.ok(!cloud.includes("gh api user --jq"), cloud);
+    assert.ok(!cloud.includes("the session's gh account is"), cloud);
   });
 });
 

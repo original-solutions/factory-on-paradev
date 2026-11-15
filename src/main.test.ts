@@ -84,21 +84,23 @@ import { MARKER } from "./tracker/github.ts";
  * The mocks of liveWorldBase.test.ts, hoisted for the whole file: each wrapped function calls
  * through to the real one, unless the test that wants to see a step's context has `stub.on` set.
  */
-const { bases, buildingHostLogins, startContexts, stub, wrapped } = vi.hoisted(() => {
+const { bases, buildingClouds, buildingHostLogins, startContexts, stub, wrapped } = vi.hoisted(() => {
   const stub = { on: false };
   const bases: Array<string> = [];
   const buildingHostLogins: Array<unknown> = [];
+  const buildingClouds: Array<unknown> = [];
   const wrapped = <F>(name: string, actual: F, stubbed: () => unknown): F =>
     ((
-      ctx: { readonly project: { readonly base: string }; readonly hostLogins?: unknown },
+      ctx: { readonly project: { readonly base: string }; readonly hostLogins?: unknown; readonly cloud?: unknown },
       ...rest: Array<unknown>
     ) => {
       if (!stub.on) return (actual as unknown as (...args: Array<unknown>) => unknown)(ctx, ...rest);
       bases.push(`${name} ${ctx.project.base}`);
       buildingHostLogins.push(ctx.hostLogins);
+      buildingClouds.push(ctx.cloud);
       return stubbed();
     }) as unknown as F;
-  return { bases, buildingHostLogins, startContexts: [] as Array<unknown>, stub, wrapped };
+  return { bases, buildingClouds, buildingHostLogins, startContexts: [] as Array<unknown>, stub, wrapped };
 });
 
 vi.mock("./runner/building.ts", async (importOriginal) => {
@@ -4334,6 +4336,40 @@ describe("liveWorld: the login a run acts as on each host", () => {
         ["h2", "repo-bot"],
         ["h3", "rawphp"],
       ]);
+    }),
+  );
+
+  it.effect("a repo that names a cloud environment, and only such a repo, reaches the start and the building contexts as cloud", () =>
+    Effect.gen(function* () {
+      for (const cloud of [true, false]) {
+        const watched = {
+          ...baseRepo.watched,
+          ...(cloud && { cloud: "edad9805-e48d-40f3-a06c-e19a4105f974" }),
+        };
+        const repo: Repo = { ...baseRepo, watched };
+        const machine: MachineConfig = { ...baseMachine, repos: [watched] };
+        assert.strictEqual((yield* started(machine, repo)).cloud, cloud);
+        const world = liveWorld(
+          machine,
+          "/factory-test/data",
+          noGh,
+          NodeServices.layer,
+          stubSessions,
+          () => T0,
+          "mac-mini",
+          noAttention,
+          baseLive(yield* Scope.make()),
+        );
+        buildingClouds.length = 0;
+        stub.on = true;
+        yield* Effect.ensuring(
+          world.advance(repo, newRunId("rawphp/softfac", "10", 1), "feature/x"),
+          Effect.sync(() => {
+            stub.on = false;
+          }),
+        );
+        assert.deepStrictEqual(buildingClouds, [cloud]);
+      }
     }),
   );
 });

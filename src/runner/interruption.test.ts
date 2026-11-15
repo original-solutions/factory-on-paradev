@@ -525,6 +525,7 @@ const rigFor = (
     repo: REPO,
     trackerUser: "rawphp",
     hostLogins: new Map(),
+    cloud: false,
     machine: "mac-mini",
     project: projectConfig(),
     repoProject: projectConfig(),

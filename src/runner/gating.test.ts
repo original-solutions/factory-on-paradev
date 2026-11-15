@@ -866,6 +866,7 @@ const rigFor = (events: ReadonlyArray<RunEvent> = STARTED): Rig => {
     repo: REPO,
     trackerUser: "rawphp",
     hostLogins: new Map(),
+    cloud: false,
     machine: "mac-mini",
     get project() {
       return rig.project;

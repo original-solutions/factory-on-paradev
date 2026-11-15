@@ -49,6 +49,7 @@ import {
   NO_PROJECT,
   otherRepoProject,
   TEXT_CHANGED,
+  cloudLaunchMessage,
   hostLaunchMessage,
   launchMessage,
   sessionMayExistNote,
@@ -327,6 +328,7 @@ const ctxFor = (
   repo: REPO,
   trackerUser: USER,
   hostLogins: new Map(),
+  cloud: false,
   machine: "mac-mini",
   project: project(),
   dataDir,
@@ -490,6 +492,7 @@ describe("start: a fresh ready issue", () => {
             baseRef: "main",
             message: launchMessage(REPO, 7, USER),
             hostMessage: "function",
+            cloudMessage: cloudLaunchMessage(REPO, 7),
             model: MODEL,
           },
         ],
@@ -509,6 +512,25 @@ describe("start: a fresh ready issue", () => {
       assert.strictEqual(hostMessage!("other"), hostLaunchMessage(REPO, 7, USER));
       assert.ok(hostMessage!("h1").includes("gh auth token --user tomkaczocha"));
       assert.strictEqual(t3.launchRequests[0]!.message, launchMessage(REPO, 7, USER));
+    }),
+  );
+
+  it.effect("sends the cloud message, which names no login, beside the local and host ones", () =>
+    Effect.gen(function* () {
+      const dataDir = tempDir();
+      const { tracker } = fakeTracker({});
+      const t3 = fakeSessions(dataDir, {});
+      yield* startIn(dataDir, tracker, t3.sessions, {
+        cloud: true,
+        hostLogins: new Map([["h1", "tomkaczocha"]]),
+      });
+      const request = t3.launchRequests[0]!;
+      assert.strictEqual(request.cloudMessage, cloudLaunchMessage(REPO, 7));
+      // The repo is rawphp/softfac, so the runner's login shows only in the repo's name.
+      assert.ok(!request.cloudMessage!.includes(`act on GitHub as ${USER}`), request.cloudMessage);
+      assert.ok(!request.cloudMessage!.includes("tomkaczocha"), request.cloudMessage);
+      assert.strictEqual(request.message, launchMessage(REPO, 7, USER));
+      assert.strictEqual(request.hostMessage!("h1"), hostLaunchMessage(REPO, 7, "tomkaczocha"));
     }),
   );
 
@@ -2861,6 +2883,32 @@ describe("start: the resume onto an open pull request of an earlier attempt", ()
     }),
   );
 
+  it.effect("finds an open pull request by the Paradev GitHub App only on a cloud launch branch of the issue, for a repo with a cloud environment", () =>
+    Effect.gen(function* () {
+      const CLOUD_BRANCH = "superset/fac-7-1-a2bc69cb";
+      const byApp = (head: string) => closingDraft(head, { author: "app/superset-app" });
+      const launchedOn = (head: string, extra: Partial<StartContext> = {}) =>
+        Effect.gen(function* () {
+          const dataDir = tempDir();
+          const sessions = fakeSessions(dataDir, {});
+          yield* startIn(dataDir, fakeTracker({ closing: [byApp(head)] }).tracker, sessions.sessions, extra);
+          return sessions.launchRequests[0]!;
+        });
+
+      const request = yield* launchedOn(CLOUD_BRANCH, { cloud: true });
+      assert.strictEqual(request.baseRef, CLOUD_BRANCH);
+      assert.ok(request.cloudMessage!.includes(URL12), request.cloudMessage);
+      assert.ok(request.cloudMessage!.includes("Do not open another pull request"), request.cloudMessage);
+
+      // The app is every cloud workspace's author, so a person's branch, another issue's launch
+      // branch and a local launch branch under the app's name are not the run's own.
+      for (const head of ["t3code/abc", "superset/my-fix-a2bc69cb", "superset/fac-8-1-a2bc69cb", "fac/7-1"]) {
+        assert.strictEqual((yield* launchedOn(head, { cloud: true })).baseRef, "main", head);
+      }
+      assert.strictEqual((yield* launchedOn(CLOUD_BRANCH)).baseRef, "main");
+    }),
+  );
+
   it.effect("does not take another login's pull request when no host has that login", () =>
     Effect.gen(function* () {
       const dataDir = tempDir();
@@ -3019,6 +3067,7 @@ describe("start: an issue that names its base", () => {
         request.hostMessage!("h1").includes("Open the pull request against feature/x"),
         request.hostMessage!("h1"),
       );
+      assert.strictEqual(request.cloudMessage, cloudLaunchMessage(REPO, 7, undefined, "feature/x"));
       assert.strictEqual(baseOf(dataDir), "feature/x");
     }),
   );

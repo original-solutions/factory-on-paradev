@@ -16,6 +16,7 @@ import { isNoTargetHasRoom, type FactorySessions } from "../sessions.ts";
 import {
   END_WITH_DONE,
   LAUNCH_FAILED,
+  cloudLaunchMessage,
   hostLaunchMessage,
   launchMessage,
   sessionMayExistNote,
@@ -106,6 +107,7 @@ export const relaunchSession = Effect.fn("RunnerRelaunch.relaunchSession")(funct
       message,
       hostMessage: (machineId) =>
         `${hostLaunchMessage(ctx.repo, issue, hostLoginOf(ctx, machineId), resumed)}${tail}`,
+      cloudMessage: `${cloudLaunchMessage(ctx.repo, issue, resumed)}${tail}`,
       model: project.model,
       pullRequestUrl: from.prUrl,
     }),

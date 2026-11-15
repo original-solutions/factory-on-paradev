@@ -255,7 +255,7 @@ const launchScript = (r: ReturnType<typeof repos>): ReadonlyArray<Step> => [
 ];
 
 describe("launch", () => {
-  it.live("a local launch keeps message as the prompt, whatever hostMessage says", () =>
+  it.live("a local launch keeps message as the prompt, whatever hostMessage and cloudMessage say", () =>
     Effect.gen(function* () {
       const r = repos();
       r.addWorktree("fac/x8", "main");
@@ -263,7 +263,7 @@ describe("launch", () => {
         [...launchScript(r), { argv: argvIs("agents", "explain"), fixture: "agents-explain-local-starting" }],
         { config: { remoteBase: r.remoteBase } },
       );
-      yield* t.run((s) => s.launch(request({ hostMessage: () => "host message" })));
+      yield* t.run((s) => s.launch(request({ hostMessage: () => "host message", cloudMessage: "cloud message" })));
       const argv = t.calls.find(argvIs("agents", "create"))!;
       assert.strictEqual(argv[argv.indexOf("--prompt") + 1], "/factory original-solutions/factory-paradev-spike#1");
     }),
@@ -2758,7 +2758,9 @@ describe("launch on a host", () => {
       const r = repos();
       const ssh = fakeSsh((command) => (command.includes("'rev-parse'") ? { tail: `${r.main}\n` } : { exitCode: 1 }));
       const t = rig(hostScript(r), { config: { remoteBase: r.remoteBase, ssh: ssh.runner, ...onHost } });
-      yield* t.run((s) => s.launch(request({ hostMessage: (machineId) => `host message for ${machineId}` })));
+      yield* t.run((s) =>
+        s.launch(request({ hostMessage: (machineId) => `host message for ${machineId}`, cloudMessage: "cloud message" })),
+      );
       const argv = t.calls.find(argvIs("agents", "create"))!;
       assert.strictEqual(argv[argv.indexOf("--prompt") + 1], `host message for ${HOST}`);
     }),
@@ -2840,7 +2842,23 @@ describe("launch in the cloud", () => {
   ];
   const getArgv = ["workspaces", "get", C3_WS, "--host", "cloud"];
 
-  it.live("a cloud launch keeps message as the prompt, whatever hostMessage says", () =>
+  it.live("a cloud launch starts the agent with cloudMessage, whatever hostMessage says", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
+        ],
+        { config: onCloud },
+      );
+      yield* t.run((s) => s.launch(request({ hostMessage: () => "host message", cloudMessage: "cloud message" })));
+      const argv = t.calls.find(argvIs("agents", "create"))!;
+      assert.strictEqual(argv[argv.indexOf("--prompt") + 1], "cloud message");
+    }),
+  );
+
+  it.live("a cloud launch with no cloudMessage keeps message as the prompt", () =>
     Effect.gen(function* () {
       const t = rig(
         [
