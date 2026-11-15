@@ -4508,6 +4508,8 @@ describe("the cloud count, one workspace at a time (#85)", () => {
   };
   const MINE = `factory-${RUNNER}`;
   const OTHER_WS = "f2e2d3c4-0000-4000-8000-000000000020";
+  const THIRD_WS = "f3e2d3c4-0000-4000-8000-000000000030";
+  const OTHER_TERM = "f2e2d3c4-0000-4000-8000-0000000000aa";
   const listArgv = ["workspaces", "list", "--host", "cloud"];
   /** The listing, as the recorded row with each of `rows` laid over it. */
   const listOf = (...rows: ReadonlyArray<Record<string, unknown>>): Step => ({
@@ -4531,9 +4533,9 @@ describe("the cloud count, one workspace at a time (#85)", () => {
         [
           localStep,
           bareCloud,
-          // Another runner's, one with no runner's mark, and one of this runner's that is gone.
+          // Another runner's, one with no runner's mark, and the live record's own, which is gone.
           listOf(
-            { id: C3_WS, tags: ["factory", "factory-ffffffff-0000-4000-8000-00000000ffff"] },
+            { id: THIRD_WS, tags: ["factory", "factory-ffffffff-0000-4000-8000-00000000ffff"] },
             { id: OTHER_WS, tags: ["factory"] },
             { id: C3_WS, tags: ["factory", MINE], status: "deleted" },
           ),
@@ -4598,6 +4600,53 @@ describe("the cloud count, one workspace at a time (#85)", () => {
       assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
         { target: { kind: "local" }, running: 1 },
         { target: { kind: "cloud" }, running: 1 },
+      ]);
+      assert.deepStrictEqual(bare(t.calls), []);
+      assert.deepStrictEqual(t.unused(), [bareCloud]);
+    }),
+  );
+
+  it.effect("two working agents in two tagged workspaces: the count is 2, whichever is listed first", () =>
+    Effect.gen(function* () {
+      for (const order of [[C3_WS, OTHER_WS], [OTHER_WS, C3_WS]] as const) {
+        const t = rig(
+          [
+            localStep,
+            bareCloud,
+            listOf(...order.map((id) => ({ id, tags: ["factory", MINE] }))),
+            snapshotAt(C3_WS),
+            snapshotAt(OTHER_WS, [{ id: OTHER_TERM, title: "Claude Code", agent: { id: "claude", state: "working" } }]),
+          ],
+          { config: { cloud: true } },
+        );
+        yield* seedCloud(t.data);
+        yield* seed(t.data, cloudRecord({ threadId: `cloud:${OTHER_WS}`, workspaceId: OTHER_WS, terminals: [OTHER_TERM] }));
+        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "cloud" }, running: 2 },
+        ]);
+      }
+    }),
+  );
+
+  it.effect("a live record's workspace the listing shows without this runner's tag, or not at all, is still read: the count never drops it", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          localStep,
+          bareCloud,
+          // The listing does not echo the tag for C3_WS, and leaves OTHER_WS out.
+          listOf({ id: C3_WS, tags: [] }),
+          snapshotAt(C3_WS),
+          snapshotAt(OTHER_WS, [{ id: OTHER_TERM, title: "Claude Code", agent: { id: "claude", state: "working" } }]),
+        ],
+        { config: { cloud: true } },
+      );
+      yield* seedCloud(t.data);
+      yield* seed(t.data, cloudRecord({ threadId: `cloud:${OTHER_WS}`, workspaceId: OTHER_WS, terminals: [OTHER_TERM] }));
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 1 },
+        { target: { kind: "cloud" }, running: 2 },
       ]);
       assert.deepStrictEqual(bare(t.calls), []);
       assert.deepStrictEqual(t.unused(), [bareCloud]);
@@ -4674,7 +4723,7 @@ describe("the cloud count, one workspace at a time (#85)", () => {
     }),
   );
 
-  it.effect("snapshot refuses a cloud target with no workspace id before any CLI call, naming the missing workspace", () =>
+  it.effect("snapshotArgv, which builds every snapshot's argv, refuses a cloud target with no workspace id before any CLI call, naming the missing workspace", () =>
     Effect.gen(function* () {
       const error = yield* snapshotArgv({ kind: "cloud" }, ["--host", "cloud"]).pipe(Effect.flip);
       assert.include(error.message, "workspace");
