@@ -1004,6 +1004,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     Effect.gen(function* () {
       if (!isSafeBranchName(request.baseRef)) return yield* fail(`the base ${request.baseRef} is not a plain branch name`);
       const target: Target = { kind: "cloud", environmentId: placed.environmentId };
+      // The runner id before the create: a launch that cannot tag its workspace makes none.
+      yield* mine;
       // 1. Not retried: a cloud create is not idempotent by branch, so a repeat makes a second
       // workspace. One that failed after making its workspace has no tags yet, so the orphan
       // sweep cannot see it.
@@ -1570,10 +1572,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
 
   /**
    * Archives, once per pass, every cloud workspace with this runner's tag (`factory-<runner id>`,
-   * which only its own creates carry) and no thread record file,
-   * whole or torn, created over 10 minutes ago: a launch that died between its create and its
-   * record left it, and an idle box bills. A workspace with a record is the core's, whatever state
-   * the record is in, unless the core can never reach it: the record has `pendingArchive` (its
+   * which only its own launches set) and no thread record file,
+   * whole or torn, created over 10 minutes ago: a launch that died between its tags and its
+   * record left it, and an idle box bills. A workspace with a record is this runner's, tagged or
+   * not (a failed update leaves it untagged), and the core's, whatever state the record is in,
+   * unless the core can never reach it: the record has `pendingArchive` (its
    * launch failed and could not archive it), or it has no agent and no launch file names it (the
    * launch died between its record and its launch file, so a repeat of it creates another
    * workspace). A record with an agent is the core's whatever its launch file says. One log line
@@ -1584,7 +1587,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     const rows = yield* listCloud;
     const now = yield* Clock.currentTimeMillis;
     for (const row of rows) {
-      if (row.status === "deleted" || !hasTag(row.tags, tag) || !isPlainId(row.id)) continue;
+      if (row.status === "deleted" || !isPlainId(row.id)) continue;
       if (!(now - Date.parse(row.createdAt) > ORPHAN_AGE_MS)) continue;
       if (yield* local(threadFileExists(dataDir, row.id))) {
         const record = yield* local(readThread(dataDir, row.id));
@@ -1605,6 +1608,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         );
         continue;
       }
+      if (!hasTag(row.tags, tag)) continue;
       yield* cloudTarget.archiveWorkspace(row.id).pipe(
         Effect.andThen(
           Effect.logInfo(
