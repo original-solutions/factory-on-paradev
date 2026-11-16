@@ -9,7 +9,7 @@ The open-source runner for Factory by Original Solutions. Label a GitHub issue `
 The runner is a small process on a machine where Paradev is signed in: your Mac, a Mac mini, or a Linux box added to Paradev as a host. It watches the repos you choose, or every repo in an account, for issues labelled `factory:ready`. For each one it:
 
 1. Claims the issue and picks where the agent runs: this machine, another of your Paradev hosts, or Paradev Cloud.
-2. Starts an isolated Paradev workspace with an agent running the `/factory` skill.
+2. Starts an isolated Paradev workspace with an agent running the `/factory-build` skill.
 3. Waits for the agent's result line (`FACTORY-DONE: <PR URL>` or `FACTORY-STOP: <reason>`).
 4. Runs the repo's gate commands on a fresh checkout of the pull request, and sends failures back to the same agent.
 5. Marks the draft pull request ready for review, or posts the agent's questions on the issue.
@@ -29,7 +29,7 @@ Scripts run with Node's built-in type stripping (`node file.ts`), so there is no
 
 ## The factory plugin
 
-The `factory` plugin in this repo carries the skill the runner's agents follow. Paradev lands it at `~/.agents/skills/factory-build/`, where a session calls it `/factory-build`. The runner's first message still calls `/factory` until it switches to `/factory-build` (#97), so until then a Mac also keeps its old `factory` skill. Set the plugin up once:
+The `factory` plugin in this repo carries the skill the runner's agents follow. Paradev lands it at `~/.agents/skills/factory-build/`, where a session calls it `/factory-build`. Set the plugin up once:
 
 ```sh
 superset plugins organization sources add original-solutions/factory-on-paradev   # once per organization
@@ -40,6 +40,8 @@ launchctl kickstart -k gui/$(id -u)/sh.superset.host                            
 On this Mac, restart the Paradev desktop app after the install. The install only records the plugin. A host's service copies the skill when it starts, and the app is expected to do the same.
 
 The runner reads `~/.agents/skills/factory-build/VERSION` right after each config load, every 5 minutes while the check fails, and every hour while it passes. While that file is missing, empty, not a version, or older than `factory.minPluginVersion` in the runner's `package.json`, this Mac takes no run: placement drops it with `not ready: <reason>`, `factory-runner status` shows the reason on the `local` row, and the `plugin-not-ready` attention item prints the fix. Run `superset plugins install factory@organization`, restart the Paradev app, and this Mac takes runs again at the next check. The runner never installs the plugin and never restarts the app.
+
+Cloud is checked only when the machine config has a `cloud` block, on the same cadence. The runner reads `superset plugins organization list` for a `factory` row at `factory.minPluginVersion` or newer, and `superset plugins list` for a `factory` row from an `organization-` marketplace whose status is `installed`. While either read fails or either row is missing or old, cloud takes no run, and `factory-runner status` shows the reason on the `cloud` row. A `cloud` block also makes the CLI check at start need both commands in `superset schema`: a CLI without them fails that check as a CLI missing any command the runner needs does, so no target takes a run until the CLI is updated. When the organization's plugin is missing or old, the reason prints `make release-finish VERSION=<the runner's version>`, to run in a checkout of this repo. That step syncs only while `main` is still at that version's release commit; once `main` has moved on, it stops before the sync and says so, the reason says the same, and the fix is the next release (`make release`). When the runner's account has not installed it, the reason prints `superset plugins install factory@organization`. A cloud sandbox boots with the account's plugins at the version the organization last synced, so nothing is installed at launch, and the account row's own version is not checked.
 
 Self-update holds back a tag whose `factory.minPluginVersion` is newer than this Mac's plugin, and a tag where either version cannot be read. It logs one line with the tag, the plugin it needs and the fix, raises `plugin-update-needed`, and stays on the running version, which keeps taking runs. Ten minutes later it tries the tag again, so the update goes through by itself once the plugin is new enough. A tag with no `factory.minPluginVersion` installs as before.
 

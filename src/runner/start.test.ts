@@ -2198,7 +2198,7 @@ describe("start: the resume after a time limit", () => {
         }),
       );
       assert.ok(request.message.includes(RESUME_WORDS), request.message);
-      assert.ok(request.message.startsWith("/factory rawphp/softfac#7\n\n"), request.message);
+      assert.ok(request.message.startsWith("/factory-build rawphp/softfac#7\n\n"), request.message);
       // The ledger shows the choice, on the launch line and as its reason.
       const line = launchLineOf(dataDir);
       assert.deepStrictEqual((line.data as { resumed_from: unknown }).resumed_from, {

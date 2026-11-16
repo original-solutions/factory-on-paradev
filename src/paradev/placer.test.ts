@@ -70,6 +70,8 @@ const setup = (
     notReady?: ReadonlyMap<string, string>;
     /** Why this Mac's plugin check failed; none by default. */
     localNotReady?: string;
+    /** Why cloud's plugin check failed; none by default. */
+    cloudNotReady?: string;
     /** Effect run before `running` answers: a slow read. */
     slowRead?: Effect.Effect<void>;
   } = {},
@@ -90,6 +92,7 @@ const setup = (
     hostLoads: new Map<string, Load | null>([["h1", options.hostLoad === undefined ? quiet : options.hostLoad]]),
     hostsNotReady: () => options.notReady ?? new Map(),
     localNotReady: () => options.localNotReady ?? null,
+    cloudNotReady: () => options.cloudNotReady ?? null,
     readLoad: () => {
       reads.load += 1;
       return quiet;
@@ -202,6 +205,26 @@ describe("placer", () => {
         { ready: row!.ready, reason: row!.reason },
         { ready: false, reason: "not ready: the factory plugin is not on this Mac" },
       );
+    }),
+  );
+
+  it.effect("cloud is dropped while its plugin check fails, and shows the reason on its row", () =>
+    Effect.gen(function* () {
+      const reason = "the organization has no factory plugin; run make release-finish VERSION=0.3.5";
+      // This Mac is full, so cloud is the one place the launch could go.
+      const t = setup({
+        cloudNotReady: reason,
+        counts: [full({ kind: "local" }), full({ kind: "host", machineId: "h1" }), { target: { kind: "cloud" }, running: 0 }],
+      });
+      t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
+      const error = yield* t.placer.place(request("cloudy")).pipe(Effect.flip);
+      assert.instanceOf(error, NoTargetHasRoom);
+      assert.include(
+        drops(t.events).map((drop) => drop.reason),
+        `not ready: ${reason}`,
+      );
+      const cloud = (yield* t.placer.targets).find((row) => row.kind === "cloud")!;
+      assert.deepStrictEqual({ ready: cloud.ready, reason: cloud.reason }, { ready: false, reason: `not ready: ${reason}` });
     }),
   );
 

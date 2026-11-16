@@ -6,7 +6,7 @@ import * as NodeFS from "node:fs";
 
 import { layer } from "./cli.ts";
 import { FIXTURES_DIR, fakeSuperset } from "./fake-superset.ts";
-import { check, checkSchema, describeFailure, REQUIRED } from "./schema.ts";
+import { CLOUD_REQUIRED, check, checkSchema, describeFailure, REQUIRED } from "./schema.ts";
 
 const recorded = (): any =>
   JSON.parse(NodeFS.readFileSync(`${FIXTURES_DIR}/schema.json`, "utf8"));
@@ -29,14 +29,14 @@ const editing = (path: string, edit: (siblings: Array<any>, at: number) => void)
 it.effect("the recorded 2.0.8 schema passes, read through the CLI", () =>
   Effect.gen(function* () {
     const fake = fakeSuperset([{ argv: ["schema"], fixture: "schema" }]);
-    const result = yield* check.pipe(Effect.provide(layer().pipe(Layer.provide(fake.layer))));
+    const result = yield* check(false).pipe(Effect.provide(layer().pipe(Layer.provide(fake.layer))));
     assert.deepStrictEqual(result, { version: "2.0.8", missing: [] });
     assert.isNull(describeFailure(result));
   }),
 );
 
 it("a schema without agents explain fails, naming it and the version found", () => {
-  const result = checkSchema(editing("agents explain", (list, at) => list.splice(at, 1)));
+  const result = checkSchema(editing("agents explain", (list, at) => list.splice(at, 1)), false);
   assert.deepStrictEqual(result, { version: "2.0.8", missing: ["agents explain"] });
   const text = describeFailure(result)!;
   assert.include(text, "agents explain");
@@ -47,24 +47,24 @@ it("a missing option is named with its command", () => {
   const schema = editing("pages publish", (list, at) => {
     list[at].options = list[at].options.filter((option: any) => option.name !== "workspace");
   });
-  assert.deepStrictEqual(checkSchema(schema).missing, ["pages publish --workspace"]);
+  assert.deepStrictEqual(checkSchema(schema, false).missing, ["pages publish --workspace"]);
 });
 
 it("a missing global --json is named", () => {
   const schema = recorded();
   schema.globalOptions = schema.globalOptions.filter((option: any) => option.name !== "json");
-  assert.deepStrictEqual(checkSchema(schema).missing, ["--json"]);
+  assert.deepStrictEqual(checkSchema(schema, false).missing, ["--json"]);
 });
 
 it("a missing terminals create --command is named", () => {
   const schema = editing("terminals create", (list, at) => {
     list[at].options = list[at].options.filter((option: any) => option.name !== "command");
   });
-  assert.deepStrictEqual(checkSchema(schema).missing, ["terminals create --command"]);
+  assert.deepStrictEqual(checkSchema(schema, false).missing, ["terminals create --command"]);
 });
 
 it("an answer that is not a schema misses everything, at version unknown", () => {
-  const result = checkSchema("2.0.9");
+  const result = checkSchema("2.0.9", false);
   assert.strictEqual(result.version, "unknown");
   assert.strictEqual(result.missing.length, REQUIRED.length);
 });
@@ -90,4 +90,31 @@ it("the list is the spec's table", () => {
     "pages storage: key scope set",
     ": json",
   ]);
+});
+
+it("the cloud list is the two plugin reads the check makes", () => {
+  assert.deepStrictEqual(
+    CLOUD_REQUIRED.map(({ command, options }) => `${command.join(" ")}: ${options.join(" ")}`),
+    ["plugins organization list: ", "plugins list: "],
+  );
+});
+
+it.effect("the recorded schema passes with a cloud block, read through the CLI", () =>
+  Effect.gen(function* () {
+    const fake = fakeSuperset([{ argv: ["schema"], fixture: "schema" }]);
+    const result = yield* check(true).pipe(Effect.provide(layer().pipe(Layer.provide(fake.layer))));
+    assert.deepStrictEqual(result, { version: "2.0.8", missing: [] });
+  }),
+);
+
+it("a schema without plugins organization list fails with a cloud block and passes without one", () => {
+  const schema = editing("plugins organization list", (list, at) => list.splice(at, 1));
+  assert.deepStrictEqual(checkSchema(schema, true).missing, ["plugins organization list"]);
+  assert.deepStrictEqual(checkSchema(schema, false).missing, []);
+});
+
+it("a schema without plugins list fails with a cloud block and passes without one", () => {
+  const schema = editing("plugins list", (list, at) => list.splice(at, 1));
+  assert.deepStrictEqual(checkSchema(schema, true).missing, ["plugins list"]);
+  assert.deepStrictEqual(checkSchema(schema, false).missing, []);
 });

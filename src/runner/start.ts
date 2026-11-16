@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - a gate lock is a file, checked the way gate.ts makes it.
 /**
- * The claim: takes a `ready` issue to `factory:triage` with a run file, launches the `/factory`
+ * The claim: takes a `ready` issue to `factory:triage` with a run file, launches the `/factory-build`
  * session and moves the issue to `factory:building`. A fresh start builds only when an instructor
  * applied `factory:ready` and every later edit was an instructor's; otherwise it is `refused`, with
  * a comment posted before the label goes back to `factory:proposed`. Calling it again resumes.

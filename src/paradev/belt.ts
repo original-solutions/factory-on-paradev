@@ -121,7 +121,7 @@ const fit = (payload: BeltV2): BeltV2 => {
 const NOT_READY: Readonly<Record<TargetRow["kind"], string>> = {
   local: "this Mac's load, disk or plugin check failed; factory-runner status says why",
   host: "its hosts check failed; factory-runner status says why",
-  cloud: "its proxy check has not passed; factory-runner status says why",
+  cloud: "its proxy or plugin check has not passed; factory-runner status says why",
 };
 
 /**

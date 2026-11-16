@@ -204,6 +204,13 @@ const makeParadev = (input: {
     const [a = "", b = ""] = args;
     if (a === "schema") return ok(readFixture("schema").stdout);
     if (a === "status") return ok("{}\n");
+    // Cloud's plugin check: the organization has the factory plugin at a version any runner takes, installed here.
+    if (a === "plugins" && b === "organization" && args.length === 3) {
+      return ok(`${json([{ name: "factory", version: "99.0.0", marketplace: "organization-e2e" }])}\n`);
+    }
+    if (a === "plugins" && b === "list" && args.length === 2) {
+      return ok(`${json([{ name: "factory", version: "99.0.0", marketplace: "organization-e2e", status: "installed" }])}\n`);
+    }
     // The host the placement test lists: online, so its checks pass.
     if (a === "hosts" && b === "list") return ok(`${json([{ id: HOST_ID, name: HOST_NAME, online: "yes" }])}\n`);
     if (a === "projects" && b === "list") {

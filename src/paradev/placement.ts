@@ -49,6 +49,8 @@ export type Candidate =
       readonly slots: Slots;
       /** Null when the proxy check passed this pass; else why it did not. */
       readonly proxy: string | null;
+      /** Why cloud's last plugin check failed; null when it passed. */
+      readonly notReady: string | null;
     };
 
 /**
@@ -101,7 +103,7 @@ const dropReason = (candidate: TargetReading): string | null => {
       return candidate.notReady === null ? null : `not ready: ${candidate.notReady}`;
     }
     case "cloud":
-      return candidate.proxy;
+      return candidate.proxy ?? (candidate.notReady === null ? null : `not ready: ${candidate.notReady}`);
   }
 };
 
@@ -142,7 +144,7 @@ export const targetRow = (reading: TargetReading): TargetRow => ({
       ? reading.held === null && reading.notReady === null
       : reading.kind === "host"
         ? reading.notReady === null
-        : reading.proxy === null,
+        : reading.proxy === null && reading.notReady === null,
   reason: dropReason(reading),
 });
 

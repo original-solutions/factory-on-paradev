@@ -445,6 +445,13 @@ export interface PassWorld {
   /** Reads this Mac's landed plugin against the running runner's minimum: why it does not do, null when it does. Never throws. */
   readonly checkLocalPlugin: () => string | null;
   /**
+   * Cloud's plugin check: why it failed, null when it passed, and when it last ran, as
+   * `localPlugin`. Placement reads `notReady`; `checkCloudPlugin` sets it.
+   */
+  readonly cloudPlugin: { notReady: string | null; checkedAt: number | null };
+  /** Reads the organization's and the account's plugin lists against the runner's minimum: why cloud does not do, null when it does. Never fails. */
+  readonly checkCloudPlugin: () => Effect.Effect<string | null>;
+  /**
    * The free space of the fuller of the volumes that hold the sessions' worktrees and the gate's
    * checkouts; not read when `min_free_gib` is 0.
    */
@@ -1302,11 +1309,7 @@ export type LocalPluginWorld = Pick<PassWorld, "localPlugin" | "checkLocalPlugin
  */
 export const checkLocalPlugin = Effect.fn("Pass.checkLocalPlugin")(function* (world: LocalPluginWorld) {
   const now = world.nowMs();
-  const { checkedAt, notReady } = world.localPlugin;
-  if (checkedAt !== null) {
-    const every = notReady === null ? HOST_READY_RECHECK_EVERY_MS : HOST_RECHECK_EVERY_MS;
-    if (now - checkedAt < every) return;
-  }
+  if (!pluginCheckDue(world.localPlugin, now)) return;
   const reason = world.checkLocalPlugin();
   world.localPlugin.checkedAt = now;
   world.localPlugin.notReady = reason;
@@ -1324,6 +1327,29 @@ export const checkLocalPlugin = Effect.fn("Pass.checkLocalPlugin")(function* (wo
     run: null,
     message,
   });
+});
+
+/** Whether a plugin check is due at `now`: never run since this world was built, or past its period for its last answer. */
+const pluginCheckDue = (check: { notReady: string | null; checkedAt: number | null }, now: number): boolean =>
+  check.checkedAt === null ||
+  now - check.checkedAt >= (check.notReady === null ? HOST_READY_RECHECK_EVERY_MS : HOST_RECHECK_EVERY_MS);
+
+/** What cloud's plugin check reads and writes: its reading and the clock. */
+export type CloudPluginWorld = Pick<PassWorld, "cloudPlugin" | "checkCloudPlugin" | "nowMs">;
+
+/**
+ * Checks cloud's plugin when due, on this Mac's cadence (see {@link checkLocalPlugin}). The runner
+ * forks it beside the pass, one at a time, so a Paradev that does not answer holds up no claim.
+ * Placement reads the last finished answer, and after a config load cloud stays "not checked yet"
+ * until the first answer lands, as a host does. A failure is cloud's `notReady`, which
+ * `factory-runner status` shows on the `cloud` row; it raises no attention item.
+ */
+export const checkCloudPlugin = Effect.fn("Pass.checkCloudPlugin")(function* (world: CloudPluginWorld) {
+  const now = world.nowMs();
+  if (!pluginCheckDue(world.cloudPlugin, now)) return;
+  const reason = yield* world.checkCloudPlugin();
+  world.cloudPlugin.checkedAt = now;
+  world.cloudPlugin.notReady = reason;
 });
 
 /** How long after its last check a host that is not ready is checked again. */
