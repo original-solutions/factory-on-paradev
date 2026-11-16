@@ -24,12 +24,16 @@ export const LOCAL_PLUGIN_FIX = "superset plugins install factory@organization, 
 export const HOST_PLUGIN_FIX =
   "superset plugins install factory@organization && launchctl kickstart -k gui/$(id -u)/sh.superset.host";
 
+/** The repo whose checkout holds the release step; `status` shows the fix where no repo is in view. */
+const FACTORY_REPO = "original-solutions/factory-on-paradev";
+
 /**
- * Cloud's fix for an organization whose plugin is missing or old, run in a checkout of this repo:
+ * Cloud's fix for an organization whose plugin is missing or old, run in a checkout of {@link FACTORY_REPO}:
  * the release's own step, with the runner's `version`. A bare `sources sync` would take `main` as
  * it is, under whatever version `main` carries, so the runner never prints one.
  */
-export const cloudOrganizationFix = (version: string): string => `make release-finish VERSION=${version}`;
+export const cloudOrganizationFix = (version: string): string =>
+  `in a checkout of ${FACTORY_REPO} run make release-finish VERSION=${version}`;
 
 /** Cloud's fix for a plugin the organization has but the runner's account has not installed. */
 export const CLOUD_ACCOUNT_FIX = "superset plugins install factory@organization";
@@ -129,7 +133,7 @@ export const cloudPluginReason = (
   const inOrganization = rowsOf(orgList.ok);
   if (inOrganization === null) return "superset plugins organization list answered something that is not a list";
   const factory = inOrganization.filter((row) => row["name"] === "factory");
-  if (factory.length === 0) return `the organization has no factory plugin; in a checkout of this repo run ${fix}`;
+  if (factory.length === 0) return `the organization has no factory plugin; ${fix}`;
   if (minimum.ok !== null) {
     const versions = factory.map((row) => row["version"]);
     const good = versions.some(
@@ -141,7 +145,7 @@ export const cloudPluginReason = (
         found === undefined
           ? `the organization's factory plugin has a version that is not a version, so not the ${minimum.ok} this runner needs`
           : `the organization's factory plugin is ${found as string}, older than the ${minimum.ok} this runner needs`;
-      return `${what}; in a checkout of this repo run ${fix}`;
+      return `${what}; ${fix}`;
     }
   }
   if ("failed" in accountList) return `superset plugins list failed: ${accountList.failed}`;
@@ -164,7 +168,7 @@ export const cloudPluginReason = (
  * judges them with {@link cloudPluginReason}. A runner whose minimum did not read asks nothing.
  * Never fails: a call that fails is a failed read.
  */
-export const checkCloudPlugin = (
+export const readCloudPlugin = (
   call: (argv: ReadonlyArray<string>) => Effect.Effect<unknown, string>,
   minimum: Read<string | null>,
   runnerVersion: string,

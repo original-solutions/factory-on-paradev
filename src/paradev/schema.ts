@@ -6,11 +6,14 @@ import * as Effect from "effect/Effect";
 
 import { type CliError, SupersetCli } from "./cli.ts";
 
-/** Each command the runner runs, and the options it passes to it. `[]` is the global options. */
-export const REQUIRED: ReadonlyArray<{
+/** A command the runner runs, and the options it passes to it. `[]` is the global options. */
+export interface RequiredCommand {
   readonly command: ReadonlyArray<string>;
   readonly options: ReadonlyArray<string>;
-}> = [
+}
+
+/** Each command the runner runs. */
+export const REQUIRED: ReadonlyArray<RequiredCommand> = [
   { command: ["projects", "list"], options: ["local"] },
   {
     command: ["workspaces", "create"],
@@ -41,10 +44,7 @@ export const REQUIRED: ReadonlyArray<{
 ];
 
 /** What only a machine with a `cloud` block runs: the two plugin reads of cloud's check. */
-export const CLOUD_REQUIRED: ReadonlyArray<{
-  readonly command: ReadonlyArray<string>;
-  readonly options: ReadonlyArray<string>;
-}> = [
+export const CLOUD_REQUIRED: ReadonlyArray<RequiredCommand> = [
   { command: ["plugins", "organization", "list"], options: [] },
   { command: ["plugins", "list"], options: [] },
 ];

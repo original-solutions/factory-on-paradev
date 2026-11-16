@@ -52,7 +52,7 @@ import { readLowestFreeSpace, type FreeSpace } from "./disk.ts";
 import { overload, readLoad, type Load } from "./load.ts";
 import { checkHost, type CliCall } from "./paradev/hostsCheck.ts";
 import { liveSshSpawn, type SshSpawn } from "./paradev/ssh.ts";
-import { checkCloudPlugin as readCloudPlugin, localPluginReason, readMinPluginVersion } from "./plugin.ts";
+import { localPluginReason, readCloudPlugin, readMinPluginVersion } from "./plugin.ts";
 import { clearAfterPass, makeSelfUpdate, type SelfUpdate, type SelfUpdateOptions } from "./selfUpdate.ts";
 import * as Gate from "./gate.ts";
 import { guardLogStreams } from "./logStreams.ts";
@@ -1131,6 +1131,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
   let afterPassRunning = false;
   let sweeping = false;
   let checkingHosts = false;
+  let checkingCloudPlugin = false;
   let updating = false;
   const selfUpdate = yield* (options.selfUpdate ?? makeSelfUpdate)({
     home: NodeOS.homedir(),
@@ -1169,7 +1170,20 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     // This Mac's plugin check is one file read, so it runs here, before the pass places anything,
     // on the host checks' cadence: first after each config load.
     yield* checkLocalPlugin(current.world);
-    yield* checkCloudPlugin(current.world);
+    // Cloud's plugin check goes beside the pass like the host checks: it is two CLI calls, and a
+    // Paradev that does not answer must hold up no claim. One check runs at a time.
+    if (!checkingCloudPlugin) {
+      checkingCloudPlugin = true;
+      yield* checkCloudPlugin(current.world).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            checkingCloudPlugin = false;
+          }),
+        ),
+        Effect.interruptible,
+        Effect.forkIn(scope),
+      );
+    }
     // The self-update goes beside the pass too, once per start: it reads the tags every ten
     // minutes, and `self_update` from the config current at each read, not pinned to the first pass's.
     if (!updating) {
