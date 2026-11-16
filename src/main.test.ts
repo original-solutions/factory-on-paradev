@@ -4882,6 +4882,9 @@ describe("liveWorld: the hosts", () => {
           worlds[0]!.cloudPlugin.checkedAt = Date.now() - HOST_RECHECK_EVERY_MS;
           yield* onePassMore(loop, factoryDir);
           yield* waitUntil("two organization reads", () => orgReads() === 2);
+          // The check is forked beside the pass, so its answer reaches the rows with the pass after it.
+          yield* waitUntil("the second check to end", () => worlds[0]!.cloudPlugin.notReady === null);
+          yield* onePassMore(loop, factoryDir);
           yield* waitUntil("cloud ready", () => cloudRow(factoryDir)?.ready === true);
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
