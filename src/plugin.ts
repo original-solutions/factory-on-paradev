@@ -122,7 +122,9 @@ const rowsOf = (list: unknown): ReadonlyArray<Record<string, unknown>> | null =>
  * null when they do. `orgList` is `plugins organization list`, `accountList` is `plugins list`, and
  * `minimum` is the runner's `factory.minPluginVersion`. The organization needs a `factory` row at
  * the minimum or newer (any row when there is no minimum); the account needs a `factory` row from
- * an `organization-` marketplace whose status is `installed`.
+ * an `organization-` marketplace whose status is `installed`. The account row's own version is not
+ * compared: a sandbox boots with the account's plugins at the version the organization last synced
+ * (`docs/specs/P3-plugin.md`, finding 3 and V7), so the organization's row is the version cloud gets.
  */
 export const cloudPluginReason = (
   orgList: Read<unknown>,

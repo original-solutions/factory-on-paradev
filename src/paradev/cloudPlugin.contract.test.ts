@@ -147,6 +147,12 @@ describe("cloudPluginReason", () => {
     assert.isNull(judge([row({ version: "not a version" })], [mine()], { ok: null }));
   });
 
+  it("an account row older than the minimum passes: a sandbox gets the organization's synced version, not the account row's", () => {
+    // docs/specs/P3-plugin.md, finding 3 and V7: the account needs the plugin installed; the version is the organization's.
+    assert.isNull(judge([row({ version: "0.1.1" })], [mine({ version: "0.1.0" })], { ok: "0.1.1" }));
+    assert.isNull(judge([row({ version: "0.1.1" })], [mine({ version: "not a version" })], { ok: "0.1.1" }));
+  });
+
   it("a row from a marketplace that does not start organization- is not the organization's install", () => {
     const reason = judge([row()], [mine({ marketplace: "superset" })]);
     assert.include(reason!, INSTALL);

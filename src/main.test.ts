@@ -4919,8 +4919,8 @@ describe("liveWorld: the hosts", () => {
           assert.isNull(worlds[1]!.cloudPlugin.notReady);
           // The old world keeps its own answer: the new world was checked, not handed the old one.
           assert.include(worlds[0]!.cloudPlugin.notReady ?? "", "the organization has no factory plugin");
-          yield* onePassMore(loop, factoryDir);
-          yield* waitUntil("cloud ready", () => cloudRow(factoryDir)?.ready === true);
+          // The rows go beside the pass, so the answer reaches them with a later pass.
+          yield* passesUntil(loop, factoryDir, "cloud ready", () => cloudRow(factoryDir)?.ready === true);
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
     );
@@ -4959,12 +4959,11 @@ describe("liveWorld: the hosts", () => {
           yield* waitUntil("the old world's check to end", () => worlds[0]!.cloudPlugin.checkedAt !== null);
           assert.isNull(worlds[1]!.cloudPlugin.checkedAt);
           assert.strictEqual(orgReads(), 1);
-          yield* onePassMore(loop, factoryDir);
-          yield* waitUntil("the new world's check to end", () => worlds[1]!.cloudPlugin.checkedAt !== null);
+          // The held check lets go of its turn a moment after its answer, so a pass soon after may still skip.
+          yield* passesUntil(loop, factoryDir, "the new world's check to end", () => worlds[1]!.cloudPlugin.checkedAt !== null);
           assert.strictEqual(orgReads(), 2);
           assert.isNull(worlds[1]!.cloudPlugin.notReady);
-          yield* onePassMore(loop, factoryDir);
-          yield* waitUntil("cloud ready", () => cloudRow(factoryDir)?.ready === true);
+          yield* passesUntil(loop, factoryDir, "cloud ready", () => cloudRow(factoryDir)?.ready === true);
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
     );
