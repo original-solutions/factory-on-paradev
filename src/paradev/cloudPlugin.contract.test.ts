@@ -2,14 +2,14 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { checkCloudPlugin, cloudPluginReason, type Read } from "../plugin.ts";
+import { cloudPluginReason, readCloudPlugin, type Read } from "../plugin.ts";
 import { layer, SupersetCli } from "./cli.ts";
 import { fakeSuperset, readFixture, type Step } from "./fake-superset.ts";
 
 const RUNNER = "0.3.5";
 const ORG = ["plugins", "organization", "list"];
 const ACCOUNT = ["plugins", "list"];
-const RELEASE = `make release-finish VERSION=${RUNNER}`;
+const RELEASE = `in a checkout of original-solutions/factory-on-paradev run make release-finish VERSION=${RUNNER}`;
 const INSTALL = "superset plugins install factory@organization";
 
 const org = (fixture: string): Step => ({ argv: ORG, fixture });
@@ -22,7 +22,7 @@ const run = (script: ReadonlyArray<Step>, minimum: Read<string | null>) => {
     const cli = yield* SupersetCli;
     const call = (argv: ReadonlyArray<string>) =>
       cli.run(argv).pipe(Effect.mapError((error) => error.text.split("\n")[0] ?? error.text));
-    const reason = yield* checkCloudPlugin(call, minimum, RUNNER);
+    const reason = yield* readCloudPlugin(call, minimum, RUNNER);
     return { reason, fake };
   }).pipe(Effect.provide(layer().pipe(Layer.provide(fake.layer))));
 };
@@ -133,6 +133,10 @@ describe("cloudPluginReason", () => {
 
   it("passes with a factory row at the minimum and an installed organization row", () => {
     assert.isNull(judge([row()], [mine()]));
+  });
+
+  it("two factory rows in the organization pass when one is at the minimum", () => {
+    assert.isNull(judge([row({ version: "0.1.0" }), row({ version: "0.1.1" })], [mine()], { ok: "0.1.1" }));
   });
 
   it("a null minimum needs only the organization's row, whatever its version", () => {

@@ -1411,6 +1411,70 @@ describe("on the Paradev CLI", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  describe("a schema with no `plugins organization list`", () => {
+    const withoutOrgList = (answer: unknown): unknown => {
+      const without = (list: unknown): unknown =>
+        Array.isArray(list)
+          ? list
+              .filter(
+                (command: { path?: ReadonlyArray<string> }) => command.path?.join(" ") !== "plugins organization list",
+              )
+              .map((command: { commands?: unknown }) => ({
+                ...command,
+                ...(command.commands === undefined ? {} : { commands: without(command.commands) }),
+              }))
+          : list;
+      return { ...(answer as object), commands: without((answer as { commands: unknown }).commands) };
+    };
+    const cloudBlock = "cloud:\n  proxy: https://proxy.example\n";
+
+    it.effect("holds no claim on a machine with no cloud block", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const paradev = newParadev();
+          paradev.schema = withoutOrgList;
+          const { loop, attention, factoryDir } = yield* started(VALID, noGhProcess, {}, paradev);
+          yield* idleAfter(loop, factoryDir, 1);
+          assert.deepStrictEqual(
+            (yield* attention.list()).filter((item) => item.id === PARADEV_OFFLINE_ITEM_ID),
+            [],
+          );
+          assert.strictEqual(
+            eventsOf(factoryDir, "claim_skipped").filter(
+              (entry) => (entry.data as { reason?: string }).reason === "paradev-offline",
+            ).length,
+            0,
+          );
+          assert.strictEqual(paradev.calls.filter((argv) => argv[0] === "status").length, 1);
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect("is a cli-check failure naming it on a machine with a cloud block", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const paradev = newParadev();
+          paradev.schema = withoutOrgList;
+          const { loop, attention, logs, factoryDir } = yield* started(
+            configFor([["a/b", "/b"]], "/gh", cloudBlock),
+            noGhProcess,
+            {},
+            paradev,
+          );
+          yield* idleAfter(loop, factoryDir, 1);
+          yield* onePassMore(loop, factoryDir);
+          yield* onePassMore(loop, factoryDir);
+          const hold = logs.find((line) => line.startsWith("paradev offline: "));
+          assert.ok(hold?.includes("plugins organization list"), logs.join("\n"));
+          const items = (yield* attention.list()).filter((item) => item.id === PARADEV_OFFLINE_ITEM_ID);
+          assert.strictEqual(items.length, 1);
+          assert.include(items[0]!.message, "plugins organization list");
+          assert.strictEqual(paradev.calls.filter((argv) => argv[0] === "status").length, 0);
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+  });
+
   it.effect("a repo whose path is no Paradev project is skipped with one item, until the project appears", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -4769,8 +4833,30 @@ describe("liveWorld: the hosts", () => {
           assert.deepStrictEqual(pluginCalls(paradev), ["plugins organization list", "plugins list"]);
           const row = cloudRow(factoryDir)!;
           assert.isFalse(row.ready);
-          assert.include(row.reason ?? "", `make release-finish VERSION=${version}`);
+          assert.include(
+            row.reason ?? "",
+            `in a checkout of original-solutions/factory-on-paradev run make release-finish VERSION=${version}`,
+          );
           assert.notInclude(row.reason ?? "", "sources sync");
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect("a hung plugin read holds up no pass, and cloud stays not checked yet", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const paradev = newParadev();
+          paradev.hangs = (argv) => argv.join(" ") === "plugins organization list";
+          const { loop, factoryDir } = yield* started(named, noGhProcess, guarded, paradev);
+          yield* idleAfter(loop, factoryDir, 1);
+          yield* onePassMore(loop, factoryDir);
+          yield* waitUntil("the cloud row", () => cloudRow(factoryDir) !== undefined);
+          assert.deepStrictEqual(
+            { ready: cloudRow(factoryDir)!.ready, reason: cloudRow(factoryDir)!.reason },
+            { ready: false, reason: "not ready: not checked yet since the config load" },
+          );
+          // One check is in flight at a time: the hung read was asked once.
+          assert.deepStrictEqual(pluginCalls(paradev), ["plugins organization list"]);
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
     );
