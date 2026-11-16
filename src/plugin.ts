@@ -30,10 +30,13 @@ const FACTORY_REPO = "original-solutions/factory-on-paradev";
 /**
  * Cloud's fix for an organization whose plugin is missing or old, run in a checkout of {@link FACTORY_REPO}:
  * the release's own step, with the runner's `version`. A bare `sources sync` would take `main` as
- * it is, under whatever version `main` carries, so the runner never prints one.
+ * it is, under whatever version `main` carries, so the runner never prints one. The step syncs only
+ * while `main` is still at that version's release commit; once `main` has moved on it stops before
+ * the sync, and the fix is the next release (`docs/specs/P3-plugin.md`, "The check, per target").
  */
 export const cloudOrganizationFix = (version: string): string =>
-  `in a checkout of ${FACTORY_REPO} run make release-finish VERSION=${version}`;
+  `in a checkout of ${FACTORY_REPO} run make release-finish VERSION=${version}; ` +
+  `when main has moved past v${version} it stops before the sync, and the fix is the next release`;
 
 /** Cloud's fix for a plugin the organization has but the runner's account has not installed. */
 export const CLOUD_ACCOUNT_FIX = "superset plugins install factory@organization";

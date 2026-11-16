@@ -11,6 +11,8 @@ const ORG = ["plugins", "organization", "list"];
 const ACCOUNT = ["plugins", "list"];
 const RELEASE = `in a checkout of original-solutions/factory-on-paradev run make release-finish VERSION=${RUNNER}`;
 const INSTALL = "superset plugins install factory@organization";
+/** What the release's step does once `main` has moved past the runner's tag (docs/specs/P3-plugin.md, "The check, per target"). */
+const MOVED_ON = `when main has moved past v${RUNNER} it stops before the sync, and the fix is the next release`;
 
 const org = (fixture: string): Step => ({ argv: ORG, fixture });
 const account = (fixture: string): Step => ({ argv: ACCOUNT, fixture });
@@ -65,6 +67,7 @@ describe("the cloud plugin check, replayed", () => {
       assert.include(reason!, "0.1.0");
       assert.include(reason!, "older than the 0.1.1");
       assert.include(reason!, RELEASE);
+      assert.include(reason!, MOVED_ON);
       assert.notInclude(reason!, "sources sync");
     }),
   );
@@ -76,6 +79,7 @@ describe("the cloud plugin check, replayed", () => {
       });
       assert.include(reason!, "no factory plugin");
       assert.include(reason!, RELEASE);
+      assert.include(reason!, MOVED_ON);
       assert.notInclude(reason!, "sources sync");
       assert.deepStrictEqual(fake.calls, [ORG, ACCOUNT]);
       assert.deepStrictEqual(fake.unused(), []);
