@@ -63,7 +63,7 @@ import { writeThread } from "./paradev/state.ts";
 import * as Paths from "./paths.ts";
 import type { SelfUpdateOptions } from "./selfUpdate.ts";
 import { LOAD_COMMAND, PLUGIN_VERSION_READ, PROXY_ENV_READ, type SshSpawn } from "./paradev/ssh.ts";
-import { PARADEV_HOLD_PASSES, PARADEV_OFFLINE_ITEM_ID, type PassWorld, type Repo } from "./pass.ts";
+import { HOST_RECHECK_EVERY_MS, PARADEV_HOLD_PASSES, PARADEV_OFFLINE_ITEM_ID, type PassWorld, type Repo } from "./pass.ts";
 import {
   FactoryProcess,
   layer as processLayer,
@@ -4857,6 +4857,32 @@ describe("liveWorld: the hosts", () => {
           );
           // One check is in flight at a time: the hung read was asked once.
           assert.deepStrictEqual(pluginCalls(paradev), ["plugins organization list"]);
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect("cloud's plugin is checked again after its first check ends, when it is due", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const paradev = newParadev();
+          paradev.orgPlugins = [];
+          const worlds: Array<PassWorld> = [];
+          const { loop, factoryDir } = yield* started(
+            named,
+            noGhProcess,
+            { ...guarded, onWorld: (world) => worlds.push(world) },
+            paradev,
+          );
+          const orgReads = () => pluginCalls(paradev).filter((call) => call === "plugins organization list").length;
+          yield* idleAfter(loop, factoryDir, 1);
+          yield* waitUntil("cloud dropped", () => cloudRow(factoryDir)?.ready === false && orgReads() === 1);
+          yield* waitUntil("the first check to end", () => worlds[0]!.cloudPlugin.checkedAt !== null);
+          // The organization has the plugin now; the check is due again after five minutes.
+          paradev.orgPlugins = [{ name: "factory", version: "99.0.0", marketplace: "organization-x" }];
+          worlds[0]!.cloudPlugin.checkedAt = Date.now() - HOST_RECHECK_EVERY_MS;
+          yield* onePassMore(loop, factoryDir);
+          yield* waitUntil("two organization reads", () => orgReads() === 2);
+          yield* waitUntil("cloud ready", () => cloudRow(factoryDir)?.ready === true);
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
     );
