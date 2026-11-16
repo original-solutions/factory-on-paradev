@@ -1339,7 +1339,9 @@ export type CloudPluginWorld = Pick<PassWorld, "cloudPlugin" | "checkCloudPlugin
 
 /**
  * Checks cloud's plugin when due, on this Mac's cadence (see {@link checkLocalPlugin}). The runner
- * runs it beside the pass, before the pass places anything. A failure is cloud's `notReady`, which
+ * forks it beside the pass, one at a time, so a Paradev that does not answer holds up no claim.
+ * Placement reads the last finished answer, and after a config load cloud stays "not checked yet"
+ * until the first answer lands, as a host does. A failure is cloud's `notReady`, which
  * `factory-runner status` shows on the `cloud` row; it raises no attention item.
  */
 export const checkCloudPlugin = Effect.fn("Pass.checkCloudPlugin")(function* (world: CloudPluginWorld) {
