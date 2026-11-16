@@ -211,10 +211,10 @@ const STAY_ON_BRANCH =
 
 /** Everything of the first message but its account paragraph. */
 const launchBody = (repo: string, issue: number, resumed?: ResumeFrom, base?: string): string =>
-  `/factory ${repo}#${issue}\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${STAY_ON_BRANCH}${base === undefined ? "" : ` Open the pull request against ${base}, not the repo's default base.`}${resumed === undefined ? "" : `\n\n${resumeParagraph(resumed)}`}`;
+  `/factory-build ${repo}#${issue}\n\nThe factory daemon launched this session unattended, in a worktree it created for you. Nobody is in the chat. The daemon owns the issue's labels and comments and runs its own gate after your draft PR. ${STAY_ON_BRANCH}${base === undefined ? "" : ` Open the pull request against ${base}, not the repo's default base.`}${resumed === undefined ? "" : `\n\n${resumeParagraph(resumed)}`}`;
 
 /**
- * The first message of a session for a GitHub issue: invokes `/factory`, says nobody is in the
+ * The first message of a session for a GitHub issue: invokes `/factory-build`, says nobody is in the
  * chat, tells it to stay on its branch, names the base branch when the issue's `## Base` differs from the repo's (`base`), adds the
  * resume paragraph for a continued branch, and names the GitHub identity the session acts as
  * (`login`) with what to do when `gh` says otherwise. Paradev starts the session with this Mac's

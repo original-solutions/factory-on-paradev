@@ -40,6 +40,15 @@ export const REQUIRED: ReadonlyArray<{
   { command: [], options: ["json"] },
 ];
 
+/** What only a machine with a `cloud` block runs: the two plugin reads of cloud's check. */
+export const CLOUD_REQUIRED: ReadonlyArray<{
+  readonly command: ReadonlyArray<string>;
+  readonly options: ReadonlyArray<string>;
+}> = [
+  { command: ["plugins", "organization", "list"], options: [] },
+  { command: ["plugins", "list"], options: [] },
+];
+
 export interface SchemaCheck {
   /** The CLI's version as `schema` reports it; `unknown` when it does not. */
   readonly version: string;
@@ -81,14 +90,14 @@ const commandsOf = (schema: Record<string, unknown>): Map<string, Node> => {
   return found;
 };
 
-/** Checks a parsed `superset schema --json` answer against {@link REQUIRED}. */
-export const checkSchema = (schema: unknown): SchemaCheck => {
+/** Checks a parsed `superset schema --json` answer against {@link REQUIRED}, and {@link CLOUD_REQUIRED} when `cloud` is true. */
+export const checkSchema = (schema: unknown, cloud: boolean): SchemaCheck => {
   const root =
     typeof schema === "object" && schema !== null ? (schema as Record<string, unknown>) : {};
   const version = typeof root.version === "string" ? root.version : "unknown";
   const commands = commandsOf(root);
   const missing: Array<string> = [];
-  for (const { command, options } of REQUIRED) {
+  for (const { command, options } of cloud ? [...REQUIRED, ...CLOUD_REQUIRED] : REQUIRED) {
     const name = command.join(" ");
     const node = commands.get(name);
     if (node === undefined) {
@@ -110,8 +119,9 @@ export const describeFailure = (check: SchemaCheck): string | null =>
     ? null
     : `superset ${check.version} lacks what the runner uses: ${check.missing.join(", ")}`;
 
-/** Runs `superset schema --json` and checks it. */
-export const check: Effect.Effect<SchemaCheck, CliError, SupersetCli> = Effect.gen(function* () {
-  const cli = yield* SupersetCli;
-  return checkSchema(yield* cli.run(["schema"]));
-});
+/** Runs `superset schema --json` and checks it; `cloud` is whether the machine config has a `cloud` block. */
+export const check = (cloud: boolean): Effect.Effect<SchemaCheck, CliError, SupersetCli> =>
+  Effect.gen(function* () {
+    const cli = yield* SupersetCli;
+    return checkSchema(yield* cli.run(["schema"]), cloud);
+  });

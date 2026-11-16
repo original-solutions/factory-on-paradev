@@ -52,7 +52,7 @@ import { readLowestFreeSpace, type FreeSpace } from "./disk.ts";
 import { overload, readLoad, type Load } from "./load.ts";
 import { checkHost, type CliCall } from "./paradev/hostsCheck.ts";
 import { liveSshSpawn, type SshSpawn } from "./paradev/ssh.ts";
-import { localPluginReason, readMinPluginVersion } from "./plugin.ts";
+import { checkCloudPlugin as readCloudPlugin, localPluginReason, readMinPluginVersion } from "./plugin.ts";
 import { clearAfterPass, makeSelfUpdate, type SelfUpdate, type SelfUpdateOptions } from "./selfUpdate.ts";
 import * as Gate from "./gate.ts";
 import { guardLogStreams } from "./logStreams.ts";
@@ -72,6 +72,7 @@ import {
   errorKind,
   gateQueued,
   checkHosts,
+  checkCloudPlugin,
   checkLocalPlugin,
   lastGoodCopy,
   plain,
@@ -863,6 +864,13 @@ export const liveWorld = (
     // Not ready until its check passes, as a host: a new world is a new config load.
     localPlugin: { notReady: "not checked yet since the config load", checkedAt: null },
     checkLocalPlugin: live.checkLocalPlugin ?? (() => localPluginCheck(NodeOS.homedir())),
+    // Not ready until its check passes, as this Mac's: the first pass of a world checks it.
+    cloudPlugin: { notReady: "not checked yet since the config load", checkedAt: null },
+    // No cloud block, no call: the plugin lists are asked only for a machine that has cloud.
+    checkCloudPlugin: () =>
+      machine.cloud === undefined
+        ? Effect.succeed(null)
+        : readCloudPlugin(live.superset ?? (() => Effect.fail("no Paradev CLI to ask")), minPluginVersion, version),
     checkHost: (host) =>
       checkHost(
         {
@@ -1090,6 +1098,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     readonly machine: MachineConfig;
     readonly hostsNotReady: () => ReadonlyMap<string, string>;
     readonly localNotReady: () => string | null;
+    readonly cloudNotReady: () => string | null;
     readonly running: Effect.Effect<ReadonlyArray<TargetCount>>;
     readonly record: (event: MachineEvent) => Effect.Effect<void>;
   } | null = null;
@@ -1110,6 +1119,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     hostLoads: shared.hostLoads,
     hostsNotReady: () => placingNow().hostsNotReady(),
     localNotReady: () => placingNow().localNotReady(),
+    cloudNotReady: () => placingNow().cloudNotReady(),
     readLoad: options.readLoad ?? readLoad,
     running: Effect.suspend(() => placingNow().running),
     record: (event) => Effect.suspend(() => placingNow().record(event)),
@@ -1159,6 +1169,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     // This Mac's plugin check is one file read, so it runs here, before the pass places anything,
     // on the host checks' cadence: first after each config load.
     yield* checkLocalPlugin(current.world);
+    yield* checkCloudPlugin(current.world);
     // The self-update goes beside the pass too, once per start: it reads the tags every ten
     // minutes, and `self_update` from the config current at each read, not pinned to the first pass's.
     if (!updating) {
@@ -1261,7 +1272,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     let paradevOnline = false;
     const readParadevDown = Effect.fn("Factory.paradevDown")(function* () {
       if (!cliChecked) {
-        const checked = yield* Effect.result(checkCli.pipe(Effect.provideService(SupersetCli, cli)));
+        const checked = yield* Effect.result(checkCli(machine.cloud !== undefined).pipe(Effect.provideService(SupersetCli, cli)));
         if (Result.isFailure(checked)) return downOf(checked.failure);
         cliVersion = checked.success.version;
         const failure = describeFailure(checked.success);
@@ -1463,6 +1474,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       machine,
       hostsNotReady: () => base.hostsNotReady,
       localNotReady: () => base.localPlugin.notReady,
+      cloudNotReady: () => base.cloudPlugin.notReady,
       running: Effect.suspend(() => sessions.runningByTarget),
       record: (event) =>
         base.record(event).pipe(

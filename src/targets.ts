@@ -23,7 +23,7 @@ const TargetRowSchema = Schema.Struct({
   load: Schema.NullOr(Schema.Struct({ oneMinute: Schema.Number, cores: Schema.Number })),
   /** The runs on it and its `max_runs`; `used` is null when they could not be counted. */
   slots: Schema.Struct({ used: Schema.NullOr(Schema.Number), max: Schema.Number }),
-  /** Its own check passed: P1's load and disk checks and the plugin check for this Mac, `hosts check` for a host, the proxy check for cloud. */
+  /** Its own check passed: P1's load and disk checks and the plugin check for this Mac, `hosts check` for a host, the proxy check and the plugin check for cloud. */
   ready: Schema.Boolean,
   /** Why placement would not use it now; null when it would. */
   reason: Schema.NullOr(Schema.String),

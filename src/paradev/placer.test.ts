@@ -211,7 +211,11 @@ describe("placer", () => {
   it.effect("cloud is dropped while its plugin check fails, and shows the reason on its row", () =>
     Effect.gen(function* () {
       const reason = "the organization has no factory plugin; run make release-finish VERSION=0.3.5";
-      const t = setup({ cloudNotReady: reason });
+      // This Mac is full, so cloud is the one place the launch could go.
+      const t = setup({
+        cloudNotReady: reason,
+        counts: [full({ kind: "local" }), full({ kind: "host", machineId: "h1" }), { target: { kind: "cloud" }, running: 0 }],
+      });
       t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
       const error = yield* t.placer.place(request("cloudy")).pipe(Effect.flip);
       assert.instanceOf(error, NoTargetHasRoom);

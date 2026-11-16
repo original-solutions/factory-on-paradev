@@ -28,6 +28,8 @@ export interface PlacerDeps {
   readonly hostsNotReady: () => ReadonlyMap<string, string>;
   /** Why this Mac's last plugin check failed; null when it passed. */
   readonly localNotReady: () => string | null;
+  /** Why cloud's last plugin check failed; null when it passed. */
+  readonly cloudNotReady: () => string | null;
   readonly readLoad: () => Load;
   /** The running agents per target, one snapshot each. */
   readonly running: Effect.Effect<ReadonlyArray<TargetCount>>;
@@ -117,6 +119,7 @@ export const makePlacer = (deps: PlacerDeps) => {
     machineSize: cloud.machineSize,
     slots: { running: running.get("cloud") ?? null, max: cloud.maxRuns },
     proxy: checkedUnder === deps.machine ? proxyReason : PROXY_NOT_CHECKED,
+    notReady: deps.cloudNotReady(),
   });
 
   const candidatesOf = (repo: WatchedRepo, running: ReadonlyMap<string, number | null>): Array<Candidate> => {
