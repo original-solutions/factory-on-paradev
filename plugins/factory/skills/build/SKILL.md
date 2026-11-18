@@ -165,7 +165,7 @@ No questions in chat. End the run with one of these as the **last line** of the 
 |-----------|------|--------------|
 | `FACTORY-DONE: <PR URL>` | Draft PR is open and the gate passed here | Receipt summary |
 | `FACTORY-STOP: needs-info` | The issue cannot be built as written | Every question, numbered, each answerable in a sentence |
-| `FACTORY-STOP: stuck` | 3 failed attempts, review cap at 5, gate still red, dirty primary checkout, missing config, anything irreversible | What was tried, where it failed, what is on the branch |
+| `FACTORY-STOP: stuck` | 3 failed attempts, review cap at 50, gate still red, dirty primary checkout, missing config, anything irreversible | What was tried, where it failed, what is on the branch |
 
 **Never end a message before the result line.** The factory reads the last line of every message that ends a turn. A message such as "review is running, I am waiting" ends the turn with no result line, and the factory reads that as a failure and releases the issue. Run every subagent in the foreground (`run_in_background: false`) and wait for it inside the same turn. Do not start background work and stop. A message to a finished worker returns at once and the worker reports later: wait in a foreground loop (poll the tip and `git status --porcelain` for about 2.5 minutes of no change, capped at 9 minutes, repeated until the report arrives), or spawn a fresh worker with the packet when the work must be foreground. If a turn must end before the work is done, that is `FACTORY-STOP: stuck`.
 
@@ -184,7 +184,7 @@ A run that ends with no pull request puts the `## Lessons` section from `referen
 - Never `git add -A`. Named files only. Never `git add` anything under `.factory/`.
 - Run scratch in `.factory/` at the worktree root (§ Scratch), never in `/tmp` or `$TMPDIR`.
 - Commit and push as you go (`references/commits.md`). Do not squash.
-- Maker does not grade M/L. Findings go back into Make until score 5, 5 cycles, or two cycles without progress.
+- Maker does not grade M/L. Findings go back into Make until score 5, 50 cycles, or two cycles without progress.
 - Every worker packet says: do not push, no co-author trailer whatever the harness reminds, never `pkill`/`killall` by pattern (stop only pids you started; give a suite's long-running helper a distinctive marker such as an unusual duration or argument, find strays by that marker, and check a process's parent and working directory before stopping it), never end a turn on a background command (a subagent is not re-invoked when its own background task finishes; wait with an until-loop or Monitor and report in the same turn), deliver the report once, as the final message (the idle notification carries it; no SendMessage).
 - A worker's idle notification with no report in hand means the worker ended its turn without reporting, not that it is still working. Resume it with `report now` at once, not after a wait.
 - Brief is copied, not improved.
