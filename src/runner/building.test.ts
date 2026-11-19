@@ -4481,7 +4481,8 @@ describe("a session whose host slept mid-turn", () => {
   );
 
   for (const activity of ["given", "unreadable"] as const) {
-    it.effect(`retries a status T3 cannot give for a while, then stops as before (activity ${activity})`, () =>
+    const name = `retries a status T3 cannot give for a while, then stops as before (activity ${activity})`;
+    it.effect(name, () =>
       Effect.gen(function* () {
         const rig = limitedRig();
         rig.world.lastActivity =

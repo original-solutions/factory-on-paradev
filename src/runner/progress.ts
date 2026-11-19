@@ -235,6 +235,11 @@ export interface Seen {
   readonly workedMs: number;
   /** When the stint that is running began; null when the run is not working. */
   readonly workingSince: number | null;
+  /**
+   * When the newest run of `time-limit-status-unread` steps began, with no other line since: the
+   * time limit has been waiting this long for a status T3 could not give. Null for none.
+   */
+  readonly statusUnreadSince: number | null;
   /** The attempts that have a `gate_command` line. */
   readonly commandAttempts: ReadonlySet<number>;
   /** The attempts that were sent back into the session. */
@@ -368,6 +373,8 @@ export const RESULT_LINE_REMINDED = "result-line-reminded";
 export const INTERRUPTION_SENT = "interruption-sent";
 /** The ledger step written once the resume of a `session_rate_limited` line was sent: `rate-limited-sent <run ordinal>`. */
 export const RATE_LIMITED_SENT = "rate-limited-sent";
+/** The ledger step `timeLimit` writes when T3 could not give the status of a run past its limit. */
+export const STATUS_UNREAD = "time-limit-status-unread";
 /** The ledger step written once a run whose agent process died was sent the resume message: `agent-died-resumed <k>`, `k` the ordinal of that run. */
 export const AGENT_DIED_RESUMED = "agent-died-resumed";
 /** The ledger step that waits for a run newer than `k` (a forwarded comment); read here for the steps that write it. */
@@ -489,6 +496,7 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
   let model: Model | null = null;
   let workedMs = 0;
   let workingSince: number | null = entries[0]?.ms ?? null;
+  let statusUnreadSince: number | null = null;
   const commandAttempts = new Set<number>();
   const sentBackAttempts = new Set<number>();
   const passedAttempts = new Set<number>();
@@ -526,6 +534,11 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
   };
   const number = (value: unknown): number | null => (typeof value === "number" ? value : null);
   for (const entry of entries) {
+    // Any other line ends the wait for a readable status.
+    statusUnreadSince =
+      entry.event === "step_changed" && dataField(entry.data, "step") === STATUS_UNREAD
+        ? (statusUnreadSince ?? entry.ms)
+        : null;
     switch (entry.event) {
       case "claimed": {
         if (!claimed) {
@@ -1024,6 +1037,7 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
     model,
     workedMs,
     workingSince,
+    statusUnreadSince,
     commandAttempts,
     sentBackAttempts,
     passedAttempts,

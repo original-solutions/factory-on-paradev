@@ -83,6 +83,7 @@ import {
   RATE_LIMITED_SENT,
   RESULT_LINE_REMINDED,
   RESULT_LINE_REMINDING,
+  STATUS_UNREAD,
   readProgress,
   regateBranch,
   runNames,
@@ -418,10 +419,18 @@ export type LimitOutcome =
         | "pr-reported"
         | "pr-merged"
         /** The session's host slept mid-turn and its run waits for `advance` to resume it. */
-        | "host-slept";
+        | "host-slept"
+        /** T3 could not give the run's status: it is asked again, for `STATUS_READ_GRACE_MS`. */
+        | "status-unread";
     };
 
 const MINUTE_MS = 60_000;
+
+/**
+ * How long the time limit asks again for a status T3 cannot give, from the first failed read: a
+ * host that has just woken may not answer yet. After it, the limit stops the run as before.
+ */
+const STATUS_READ_GRACE_MS = 15 * MINUTE_MS;
 
 const issueOf = (run: RunId) => Number(run.issue);
 
@@ -1760,14 +1769,31 @@ export const timeLimit = Effect.fn("RunnerBuilding.timeLimit")(function* (
   const quiet = lastAt === null || lastAt === undefined ? null : now - lastAt;
   // A session that did something, or that T3 cannot say about, may have ended its turn on the
   // host's sleep: `advance` resumes that run, and the sleep is not counted once it has. One with
-  // no activity has no turn to read. A status read that fails after T3 gave the activity fails
-  // the call, which writes nothing, and the next pass asks again. When T3 gives neither, it
-  // cannot read the run at all, and the limit stops it as before.
+  // no activity has no turn to read. A status T3 cannot give is asked for again on later passes,
+  // from the first failure for `STATUS_READ_GRACE_MS`; after that the limit stops the run as
+  // before, so a run T3 can no longer read is still stopped.
   if (live && seen.threadId !== null && lastAt !== null) {
-    const read = threadStatus(ctx, seen.threadId);
-    const status =
-      lastAt === undefined ? yield* read.pipe(Effect.orElseSucceed(() => null)) : yield* read;
-    if (status !== null && sleptMidTurn(status) && !sessionBusy(seen, status)) {
+    const read = yield* Effect.result(threadStatus(ctx, seen.threadId));
+    if (read._tag === "Failure") {
+      const since = seen.statusUnreadSince;
+      if (since === null || now - since < STATUS_READ_GRACE_MS) {
+        if (since === null) {
+          yield* withLedger(ctx, run, (out) =>
+            append(
+              out,
+              { event: "step_changed", data: { step: STATUS_UNREAD } },
+              "pass",
+              "status-unread",
+            ),
+          );
+        }
+        return { kind: "skipped", why: "status-unread" } as const;
+      }
+    } else if (
+      read.success !== null &&
+      sleptMidTurn(read.success) &&
+      !sessionBusy(seen, read.success)
+    ) {
       return { kind: "skipped", why: "host-slept" } as const;
     }
   }
