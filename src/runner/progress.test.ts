@@ -482,6 +482,7 @@ describe("readProgress: an interruption", () => {
       sent: false,
       rateLimited: false,
       model: null,
+      sleptAt: null,
     });
     const sent = readProgress([launched(1), interrupted(2), step(3, "interruption-sent 1")]);
     assert.strictEqual(sent.interruption?.sent, true);
@@ -527,6 +528,7 @@ describe("readProgress: an interruption", () => {
       sent: false,
       rateLimited: false,
       model: null,
+      sleptAt: null,
     });
     // A count that is not a number is no line at all, so the older decision stands.
     const odd = readProgress([

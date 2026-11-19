@@ -54,6 +54,7 @@ import {
   CANNOT_CONFIRM,
   CANNOT_VERIFY_DURING_BUILD,
   CHANGED_DURING_BUILD,
+  HOST_SLEPT,
   INTERRUPTION_MESSAGE,
   RESULT_LINE_REMINDER,
   STOPPED_BY_HAND,
@@ -214,6 +215,11 @@ export type AdvanceOutcome =
   /** The session's agent process died mid-run: it was sent the resume message, once for that run. */
   | { readonly kind: "agent-resumed" }
   /**
+   * The session's host went to sleep mid-turn (`sleptMidTurn`): it was sent the resume message,
+   * once for that run, and the run stays `building`. `resumes` of `limit` are used, this one included.
+   */
+  | { readonly kind: "slept"; readonly resumes: number; readonly limit: number }
+  /**
    * The session's draft pull request is bound to the run and waits for the gate. Also what
    * `advance` says when the ledger already records that the gate passed and the move to
    * `pr-open` is not finished: the gate finishes it.
@@ -310,6 +316,19 @@ const cutByRestart = (
   return null;
 };
 
+/** How Claude Code ends a turn that the host's sleep cut off. */
+const SLEEP_MESSAGE = "API Error: Your computer went to sleep mid-response";
+
+/**
+ * Whether the session's latest run ended because its host went to sleep mid-turn: `completed` or
+ * `failed`, with the sleep message as its last assistant message, and an ordinal to wait for the
+ * resumed run by. The message is the evidence: no T3 trouble is needed.
+ */
+const sleptMidTurn = (status: ThreadStatus): boolean =>
+  (status.run === "completed" || status.run === "failed") &&
+  status.runOrdinal !== null &&
+  status.lastAssistantMessage?.trimStart().startsWith(SLEEP_MESSAGE) === true;
+
 /** What `interrupted` did. */
 export type InterruptOutcome =
   /** The run is no longer one that ended badly (its thread has a newer run, say), or a relaunch is already decided. Nothing was written. */
@@ -395,7 +414,9 @@ export type LimitOutcome =
         | "not-running"
         | "launch-unrecorded"
         | "pr-reported"
-        | "pr-merged";
+        | "pr-merged"
+        /** The session's host slept mid-turn and its run waits for `advance` to resume it. */
+        | "host-slept";
     };
 
 const MINUTE_MS = 60_000;
@@ -957,6 +978,43 @@ export const advance = (
           );
         }
         return { kind: "paused" } as const;
+      }
+      // A run the host's sleep cut off is resumed in its thread, as an interruption is, with no
+      // reminder and no T3 evidence: the message is the evidence. The `session_interrupted` line
+      // waits for the newer run, so the same run is never resumed twice, and records when the
+      // run ended, so the sleep is not counted as work (`readProgress`).
+      if (sleptMidTurn(status) && status.runOrdinal !== null) {
+        const limit = ctx.project.limits.interruptionResumes;
+        const used = yield* resumesUsed(ctx, run, seen);
+        if (used >= limit) return yield* stuck("host-slept", stopOf(HOST_SLEPT, message), status);
+        const n = used + 1;
+        yield* append(
+          out,
+          {
+            event: "session_interrupted",
+            data: {
+              resumes: n,
+              relaunch: false,
+              run_ordinal: status.runOrdinal,
+              branch: status.branch,
+              t3_error: null,
+              ended_in_pass: 0,
+              slept_at_ms: status.runCompletedAt,
+            },
+          },
+          "advance",
+          "host-slept",
+        );
+        // A thread gone at the send is the pass's to decide, as for any interruption.
+        const sent = yield* sendInterruption(ctx, run, threadId, n);
+        if (sent === "gone") return { kind: "ended-badly", what: "thread-gone" } as const;
+        yield* append(
+          out,
+          { event: "step_changed", data: { step: `${INTERRUPTION_SENT} ${n}` } },
+          "advance",
+          "interruption-sent",
+        );
+        return { kind: "slept", resumes: n, limit } as const;
       }
       const endedBadly = endedBadlyNow(seen, status, result);
       if (endedBadly !== null) {
@@ -1674,7 +1732,8 @@ export const timeLimit = Effect.fn("RunnerBuilding.timeLimit")(function* (
   const now = ctx.clock();
   const worked =
     seen.workedMs + (seen.workingSince === null ? 0 : Math.max(0, now - seen.workingSince));
-  if (worked <= ctx.project.limits.minutes * MINUTE_MS) return { kind: "within" } as const;
+  const limitMs = ctx.project.limits.minutes * MINUTE_MS;
+  if (worked <= limitMs) return { kind: "within" } as const;
   // Only a run that has reported a pull request can have been closed by its own merge: no read
   // for any other.
   if (seen.opened.length > 0) {
@@ -1689,6 +1748,16 @@ export const timeLimit = Effect.fn("RunnerBuilding.timeLimit")(function* (
     seen.threadId === null || thread === undefined || thread.archived
       ? null
       : yield* quietFor(ctx, seen.threadId, now);
+  // A session that went quiet within its limit may have slept: if its run ended on the host's
+  // sleep and is not resumed yet, `advance` resumes it, and the sleep is not counted once it has.
+  // A run that was past its limit before it went quiet is stopped whatever it ended on. A read
+  // that fails writes nothing, and the next pass asks again.
+  if (seen.threadId !== null && quiet !== null && worked - quiet <= limitMs) {
+    const status = yield* threadStatus(ctx, seen.threadId);
+    if (status !== null && sleptMidTurn(status) && !sessionBusy(seen, status)) {
+      return { kind: "skipped", why: "host-slept" } as const;
+    }
+  }
   const prepared = branch === undefined ? "" : prepareSessionText(branch);
   const stop: Stop = {
     reason: timeLimitReason(worked, quiet),

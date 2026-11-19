@@ -98,6 +98,8 @@ export type RunEvent =
         branch: string | null;
         t3_error: string | null;
         ended_in_pass: number;
+        /** When the run that ended on the host's sleep message ended; set only for such a resume. */
+        slept_at_ms?: number | null;
       };
     }
   | {
@@ -231,6 +233,7 @@ export const RUN_EVENT_FIELDS = {
     "branch",
     "t3_error",
     "ended_in_pass",
+    "slept_at_ms",
   ],
   session_rate_limited: ["run_ordinal", "branch", "resumes", "model"],
   session_paused: ["run_ordinal"],

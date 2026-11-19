@@ -2199,6 +2199,11 @@ const advanceRun = Effect.fn("Pass.advanceRun")(function* (
     case "agent-resumed":
       notes.parts.push("the session's agent process was gone, sent it the resume message");
       break;
+    case "slept":
+      notes.parts.push(
+        `the session's host slept mid-turn, sent it a resume (${advanced.success.resumes} of ${advanced.success.limit})`,
+      );
+      break;
     case "paused":
       notes.parts.push(
         "session stopped by hand, waiting for an instructor's comment on the pull request or the issue",
@@ -2249,6 +2254,7 @@ const advanceRun = Effect.fn("Pass.advanceRun")(function* (
     kind === "running" ||
     kind === "reminded" ||
     kind === "agent-resumed" ||
+    kind === "slept" ||
     kind === "paused" ||
     kind === "ready-for-gate";
   let pending = false;

@@ -317,6 +317,9 @@ export const timeLimitReason = (workedMs: number, quietMs: number | null): strin
   return `${TIME_LIMIT} (${minutes(workedMs)} min worked; last session activity ${minutes(quietMs)} min before the stop${idle})`;
 };
 
+/** The public reason when the session's host slept mid-turn and the run has no resumes left. */
+export const HOST_SLEPT = "the host went to sleep mid-turn and the session has no resumes left";
+
 /** The public reason when T3 no longer has the session's thread. */
 export const THREAD_GONE = "the T3 thread no longer exists";
 
