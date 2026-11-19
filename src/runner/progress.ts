@@ -534,11 +534,11 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
   };
   const number = (value: unknown): number | null => (typeof value === "number" ? value : null);
   for (const entry of entries) {
-    // Any other line ends the wait for a readable status.
-    statusUnreadSince =
-      entry.event === "step_changed" && dataField(entry.data, "step") === STATUS_UNREAD
-        ? (statusUnreadSince ?? entry.ms)
-        : null;
+    // Any other line ends the wait for a readable status, but the `error` line a failed pass
+    // writes, which is the same failure again.
+    if (entry.event === "step_changed" && dataField(entry.data, "step") === STATUS_UNREAD) {
+      statusUnreadSince ??= entry.ms;
+    } else if (entry.event !== "error") statusUnreadSince = null;
     switch (entry.event) {
       case "claimed": {
         if (!claimed) {
