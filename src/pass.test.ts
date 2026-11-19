@@ -4485,6 +4485,18 @@ describe("following a building run", () => {
     }),
   );
 
+  it.effect("a pending gate send starts the gate after a resume for a host that slept", () =>
+    Effect.gen(function* () {
+      for (const pending of [true, false]) {
+        const fake = building();
+        if (pending) fake.pendingSends = [runIdToString(fake.runs[0]!.id)];
+        fake.advances[`${REPO}#40`] = [{ kind: "slept", resumes: 1, limit: 3 }];
+        yield* pass(fake, [REPO], 3);
+        assert.equal(callsOf(fake).includes(`gate ${REPO}#40`), pending, `pending=${pending}`);
+      }
+    }),
+  );
+
   it.effect("a pending gate send wins over the gate waiting for a sent comment", () =>
     Effect.gen(function* () {
       const fake = building();
@@ -4621,6 +4633,10 @@ describe("following a building run", () => {
     [{ kind: "running" }, "session still running"],
     [{ kind: "reminded" }, "session ended without a result line, sent it a reminder"],
     [{ kind: "agent-resumed" }, "the session's agent process was gone, sent it the resume message"],
+    [
+      { kind: "slept", resumes: 1, limit: 3 },
+      "the session's host slept mid-turn, sent it a resume (1 of 3)",
+    ],
     [
       { kind: "paused" },
       "session stopped by hand, waiting for an instructor's comment on the pull request or the issue",

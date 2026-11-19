@@ -4479,4 +4479,34 @@ describe("a session whose host slept mid-turn", () => {
       assert.ok(!linesOf(rig).some((line) => line.event === "stuck"));
     }),
   );
+
+  it.effect("is stopped as before when T3 can say neither its activity nor its status", () =>
+    Effect.gen(function* () {
+      const rig = limitedRig();
+      rig.world.lastActivity = sessionsFailure("last-activity");
+      rig.world.status = sessionsFailure("status");
+      rig.clock.now = T0 + 10 * 60 * MINUTE;
+      assert.strictEqual((yield* timeLimit(rig.ctx, rig.run)).kind, "stopped");
+    }),
+  );
+
+  it.effect("is stopped as before when T3 knows no activity of the session", () =>
+    Effect.gen(function* () {
+      const rig = limitedRig();
+      slept(rig, "completed", T0 + 30 * MINUTE);
+      rig.world.lastActivity = null;
+      rig.clock.now = T0 + 10 * 60 * MINUTE;
+      assert.strictEqual((yield* timeLimit(rig.ctx, rig.run)).kind, "stopped");
+    }),
+  );
+
+  it.effect("counts no time past the resume decision when T3's clock is ahead", () =>
+    Effect.gen(function* () {
+      // The sleep message is stamped an hour after the line that decided the resume.
+      const rig = rigFor([...STARTED, interruptedLine(1, 1, T0 + 60 * MINUTE) as RunEvent]);
+      const seen = readProgress(readRun(rig.dataDir, rig.run).entries);
+      assert.strictEqual(seen.workedMs, 0);
+      assert.strictEqual(seen.workingSince, T0);
+    }),
+  );
 });
