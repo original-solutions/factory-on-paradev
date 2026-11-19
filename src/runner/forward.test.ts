@@ -1929,3 +1929,20 @@ describe("forward: a send T3 refuses", () => {
       }),
   );
 });
+
+describe("forward: a session whose host slept mid-turn", () => {
+  const SLEPT =
+    "API Error: Your computer went to sleep mid-response. The response above may be incomplete.";
+
+  it.effect("sends nothing until advance has resumed it, so the resume goes first", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      rig.world.status = statusOf("completed", SLEPT, { runCompletedAt: T0 });
+      script(rig, [comment(101, "rawphp", "Use serde here.")]);
+      const before = linesOf(rig);
+      assert.deepStrictEqual(yield* forwardIn(rig), skipped("host-slept"));
+      assert.deepStrictEqual(linesOf(rig), before);
+      assert.ok(!rig.t3.some((call) => call.startsWith("send ")));
+    }),
+  );
+});

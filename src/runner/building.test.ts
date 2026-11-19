@@ -4406,4 +4406,77 @@ describe("a session whose host slept mid-turn", () => {
       assert.strictEqual((yield* timeLimit(rig.ctx, rig.run)).kind, "stopped");
     }),
   );
+
+  it.effect("is stopped on the time limit as before when its run ended on any other text", () =>
+    Effect.gen(function* () {
+      const rig = limitedRig();
+      const at = T0 + 30 * MINUTE;
+      setStatus(rig, "completed", WORKING_MESSAGE, { runCompletedAt: at });
+      rig.world.lastActivity = at;
+      rig.clock.now = T0 + 10 * 60 * MINUTE;
+      assert.strictEqual((yield* timeLimit(rig.ctx, rig.run)).kind, "stopped");
+      assert.ok(linesOf(rig).some((line) => line.event === "stuck"));
+    }),
+  );
+
+  it.effect("is left for the resume when T3 cannot say when the session was last active", () =>
+    Effect.gen(function* () {
+      const rig = limitedRig();
+      slept(rig, "completed", T0 + 30 * MINUTE);
+      rig.world.lastActivity = sessionsFailure("last-activity");
+      rig.clock.now = T0 + 10 * 60 * MINUTE;
+      assert.deepStrictEqual(yield* timeLimit(rig.ctx, rig.run), {
+        kind: "skipped",
+        why: "host-slept",
+      });
+    }),
+  );
+
+  it.effect("is left for the resume when it had worked past its limit before the sleep", () =>
+    Effect.gen(function* () {
+      const rig = limitedRig();
+      const at = T0 + LIMIT_MS + 5 * MINUTE;
+      slept(rig, "completed", at);
+      rig.world.lastActivity = at;
+      rig.clock.now = T0 + 10 * 60 * MINUTE;
+      assert.deepStrictEqual(yield* timeLimit(rig.ctx, rig.run), {
+        kind: "skipped",
+        why: "host-slept",
+      });
+    }),
+  );
+
+  it.effect("is stopped once its resume is sent and the time after the resume runs out", () =>
+    Effect.gen(function* () {
+      const rig = limitedRig();
+      const at = T0 + 30 * MINUTE;
+      const resumedAt = T0 + 10 * 60 * MINUTE;
+      slept(rig, "completed", at);
+      rig.world.lastActivity = at;
+      rig.clock.now = resumedAt;
+      assert.strictEqual((yield* advanceIn(rig)).kind, "slept");
+      // T3 has not started the resumed run: its status still reads the sleep.
+      rig.clock.now = resumedAt + 60 * MINUTE + 1;
+      assert.strictEqual((yield* timeLimit(rig.ctx, rig.run)).kind, "stopped");
+    }),
+  );
+
+  it.effect("whose resume send fails is not stopped on the time limit, and is sent again", () =>
+    Effect.gen(function* () {
+      const rig = limitedRig();
+      const at = T0 + 30 * MINUTE;
+      slept(rig, "failed", at);
+      rig.world.lastActivity = at;
+      rig.clock.now = T0 + 10 * 60 * MINUTE;
+      rig.world.sendFailure = { error: sessionsFailure("send"), delivered: false };
+      assert.strictEqual((yield* Effect.flip(advanceIn(rig)))._tag, "FactorySessionsError");
+      // The next pass: the sleep is already out of the time worked.
+      rig.clock.now += 5 * MINUTE;
+      assert.deepStrictEqual(yield* timeLimit(rig.ctx, rig.run), { kind: "within" });
+      assert.deepStrictEqual(yield* advanceIn(rig), { kind: "running" });
+      assert.deepStrictEqual(sends(rig), [resumeCall(1), resumeCall(1)]);
+      assert.deepStrictEqual(linesOf(rig).at(-1), sentLine(1));
+      assert.ok(!linesOf(rig).some((line) => line.event === "stuck"));
+    }),
+  );
 });
