@@ -911,7 +911,7 @@ export const recordApproval = (
 
 /** The run before `run` and its ledger lines; null for a first attempt or an earlier run with no ledger. */
 export const previousRun = Effect.fn("RunnerStart.previousRun")(function* (
-  ctx: StartContext,
+  ctx: Pick<StartContext, "dataDir">,
   run: RunId,
 ) {
   if (run.attempt < 2) return null;

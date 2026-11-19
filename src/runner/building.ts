@@ -1591,8 +1591,15 @@ export const forward = (
       const status = yield* threadStatus(ctx, threadId);
       if (status === null) return skip("no-thread");
       // A run the host's sleep cut off is resumed by `advance` first, which takes the sleep out of
-      // the time worked; a message sent now would start a run with the sleep still counted.
-      if (sleptMidTurn(status) && !sessionBusy(seen, status)) return skip("host-slept");
+      // the time worked; a message sent now would start a run with the sleep still counted. With
+      // no resume left, `advance` would stop the run instead: the message goes in as before.
+      if (
+        sleptMidTurn(status) &&
+        !sessionBusy(seen, status) &&
+        (yield* resumesUsed(ctx, run, seen)) < ctx.project.limits.interruptionResumes
+      ) {
+        return skip("host-slept");
+      }
       // The ordinal this call's messages would start a run after. An earlier call's marker for it
       // counts as working once a send under it went in, so this call writes none.
       const marker =
@@ -1753,9 +1760,12 @@ export const timeLimit = Effect.fn("RunnerBuilding.timeLimit")(function* (
   const quiet = lastAt === null || lastAt === undefined ? null : now - lastAt;
   // A session that did something, or that T3 cannot say about, may have ended its turn on the
   // host's sleep: `advance` resumes that run, and the sleep is not counted once it has. One with
-  // no activity has no turn to read. A read that fails writes nothing, and the next pass asks again.
+  // no activity has no turn to read. Only a status T3 gives skips the stop: when it cannot say,
+  // the limit stops the run as before, so a run T3 can no longer read is still stopped.
   if (live && seen.threadId !== null && lastAt !== null) {
-    const status = yield* threadStatus(ctx, seen.threadId);
+    const status = yield* threadStatus(ctx, seen.threadId).pipe(
+      Effect.orElseSucceed(() => null),
+    );
     if (status !== null && sleptMidTurn(status) && !sessionBusy(seen, status)) {
       return { kind: "skipped", why: "host-slept" } as const;
     }
@@ -1884,7 +1894,7 @@ const stuckEnded = Effect.fn("RunnerBuilding.stuckEnded")(function* (
  * a person's retry, starts again from zero.
  */
 const resumesUsed = Effect.fn("RunnerBuilding.resumesUsed")(function* (
-  ctx: InterruptContext,
+  ctx: Pick<StartContext, "dataDir">,
   run: RunId,
   seen: Seen,
 ) {
