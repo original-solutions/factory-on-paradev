@@ -4480,27 +4480,41 @@ describe("a session whose host slept mid-turn", () => {
     }),
   );
 
-  it.effect("is stopped as before when T3 can say neither its activity nor its status", () =>
-    Effect.gen(function* () {
-      const rig = limitedRig();
-      rig.world.lastActivity = sessionsFailure("last-activity");
-      rig.world.status = sessionsFailure("status");
-      rig.clock.now = T0 + 10 * 60 * MINUTE;
-      assert.strictEqual((yield* timeLimit(rig.ctx, rig.run)).kind, "stopped");
-    }),
-  );
+  for (const activity of ["given", "unreadable"] as const) {
+    it.effect(`retries a status T3 cannot give for a while, then stops as before (activity ${activity})`, () =>
+      Effect.gen(function* () {
+        const rig = limitedRig();
+        rig.world.lastActivity =
+          activity === "given" ? T0 + 30 * MINUTE : sessionsFailure("last-activity");
+        rig.world.status = sessionsFailure("status");
+        rig.clock.now = T0 + 10 * 60 * MINUTE;
+        const before = linesOf(rig);
+        const unread = { kind: "skipped", why: "status-unread" } as const;
+        assert.deepStrictEqual(yield* timeLimit(rig.ctx, rig.run), unread);
+        assert.deepStrictEqual(linesOf(rig), [...before, step("time-limit-status-unread")]);
+        // Asked again on later passes, with the first failure kept as the start of the wait.
+        rig.clock.now += 15 * MINUTE - 1;
+        assert.deepStrictEqual(yield* timeLimit(rig.ctx, rig.run), unread);
+        assert.strictEqual(linesOf(rig).length, before.length + 1);
+        assert.deepStrictEqual(rig.gh, []);
+        rig.clock.now += 1;
+        assert.strictEqual((yield* timeLimit(rig.ctx, rig.run)).kind, "stopped");
+      }),
+    );
+  }
 
-  it.effect("is left for the next pass when T3 gives its activity but not its status", () =>
+  it.effect("waits afresh for the status when a read in between succeeded", () =>
     Effect.gen(function* () {
       const rig = limitedRig();
       rig.world.lastActivity = T0 + 30 * MINUTE;
-      rig.world.status = sessionsFailure("status");
       rig.clock.now = T0 + 10 * 60 * MINUTE;
-      const bytes = bytesOf(rig);
-      const failed = yield* Effect.flip(timeLimit(rig.ctx, rig.run));
-      assert.strictEqual(failed._tag, "FactorySessionsError");
-      assert.strictEqual(bytesOf(rig), bytes);
-      assert.deepStrictEqual(rig.gh, []);
+      rig.world.status = sessionsFailure("status");
+      assert.strictEqual((yield* timeLimit(rig.ctx, rig.run)).kind, "skipped");
+      // The status comes back: advance resumes the run and writes its lines.
+      slept(rig, "completed", T0 + 30 * MINUTE);
+      assert.strictEqual((yield* advanceIn(rig)).kind, "slept");
+      const seen = readProgress(readRun(rig.dataDir, rig.run).entries);
+      assert.strictEqual(seen.statusUnreadSince, null);
     }),
   );
 
