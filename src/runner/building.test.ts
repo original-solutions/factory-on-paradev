@@ -4490,6 +4490,20 @@ describe("a session whose host slept mid-turn", () => {
     }),
   );
 
+  it.effect("is left for the next pass when T3 gives its activity but not its status", () =>
+    Effect.gen(function* () {
+      const rig = limitedRig();
+      rig.world.lastActivity = T0 + 30 * MINUTE;
+      rig.world.status = sessionsFailure("status");
+      rig.clock.now = T0 + 10 * 60 * MINUTE;
+      const bytes = bytesOf(rig);
+      const failed = yield* Effect.flip(timeLimit(rig.ctx, rig.run));
+      assert.strictEqual(failed._tag, "FactorySessionsError");
+      assert.strictEqual(bytesOf(rig), bytes);
+      assert.deepStrictEqual(rig.gh, []);
+    }),
+  );
+
   it.effect("is stopped as before when T3 knows no activity of the session", () =>
     Effect.gen(function* () {
       const rig = limitedRig();
