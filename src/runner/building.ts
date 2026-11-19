@@ -1760,12 +1760,13 @@ export const timeLimit = Effect.fn("RunnerBuilding.timeLimit")(function* (
   const quiet = lastAt === null || lastAt === undefined ? null : now - lastAt;
   // A session that did something, or that T3 cannot say about, may have ended its turn on the
   // host's sleep: `advance` resumes that run, and the sleep is not counted once it has. One with
-  // no activity has no turn to read. Only a status T3 gives skips the stop: when it cannot say,
-  // the limit stops the run as before, so a run T3 can no longer read is still stopped.
+  // no activity has no turn to read. A status read that fails after T3 gave the activity fails
+  // the call, which writes nothing, and the next pass asks again. When T3 gives neither, it
+  // cannot read the run at all, and the limit stops it as before.
   if (live && seen.threadId !== null && lastAt !== null) {
-    const status = yield* threadStatus(ctx, seen.threadId).pipe(
-      Effect.orElseSucceed(() => null),
-    );
+    const read = threadStatus(ctx, seen.threadId);
+    const status =
+      lastAt === undefined ? yield* read.pipe(Effect.orElseSucceed(() => null)) : yield* read;
     if (status !== null && sleptMidTurn(status) && !sessionBusy(seen, status)) {
       return { kind: "skipped", why: "host-slept" } as const;
     }
