@@ -389,7 +389,9 @@ export type SkipReason =
   /** The run's own pull request was merged and closed the issue: `advance` ends it. */
   | "pr-merged"
   /** T3 no longer has the session's thread. */
-  | "no-thread";
+  | "no-thread"
+  /** The session's host slept mid-turn and `advance` resumes it first: the messages wait for the next pass. */
+  | "host-slept";
 
 /**
  * What `forward` did: how many comments and whether the edited body went into the session. What T3
@@ -982,7 +984,8 @@ export const advance = (
       // A run the host's sleep cut off is resumed in its thread, as an interruption is, with no
       // reminder and no T3 evidence: the message is the evidence. The `session_interrupted` line
       // waits for the newer run, so the same run is never resumed twice, and records when the
-      // run ended, so the sleep is not counted as work (`readProgress`).
+      // run ended: from then to the line is not counted as work (`readProgress`), so a send that
+      // fails is sent again by the next call, not stopped on the time limit first.
       if (sleptMidTurn(status) && status.runOrdinal !== null) {
         const limit = ctx.project.limits.interruptionResumes;
         const used = yield* resumesUsed(ctx, run, seen);
@@ -1587,6 +1590,9 @@ export const forward = (
       // new run, and the gate must wait for that run, not judge the old one again.
       const status = yield* threadStatus(ctx, threadId);
       if (status === null) return skip("no-thread");
+      // A run the host's sleep cut off is resumed by `advance` first, which takes the sleep out of
+      // the time worked; a message sent now would start a run with the sleep still counted.
+      if (sleptMidTurn(status) && !sessionBusy(seen, status)) return skip("host-slept");
       // The ordinal this call's messages would start a run after. An earlier call's marker for it
       // counts as working once a send under it went in, so this call writes none.
       const marker =
@@ -1697,13 +1703,6 @@ export const forward = (
 const threadOf = (ctx: BuildingContext, threadId: string) =>
   ctx.sessions.thread(threadId).pipe(Effect.orElseSucceed(() => undefined));
 
-/** How long before `now` the thread last did anything, or `null` when T3 cannot say: a read that fails is not a stop. */
-const quietFor = (ctx: BuildingContext, threadId: string, now: number) =>
-  ctx.sessions.lastActivity(threadId).pipe(
-    Effect.map((at) => (at === null ? null : now - at)),
-    Effect.orElseSucceed(() => null),
-  );
-
 /**
  * Stops a run that has worked longer than `limits.minutes`, counting `triage` and `building` time
  * from the ledger, not `pr-open`. The thread is archived and the run goes `stuck` (`timeLimitReason`).
@@ -1732,8 +1731,7 @@ export const timeLimit = Effect.fn("RunnerBuilding.timeLimit")(function* (
   const now = ctx.clock();
   const worked =
     seen.workedMs + (seen.workingSince === null ? 0 : Math.max(0, now - seen.workingSince));
-  const limitMs = ctx.project.limits.minutes * MINUTE_MS;
-  if (worked <= limitMs) return { kind: "within" } as const;
+  if (worked <= ctx.project.limits.minutes * MINUTE_MS) return { kind: "within" } as const;
   // Only a run that has reported a pull request can have been closed by its own merge: no read
   // for any other.
   if (seen.opened.length > 0) {
@@ -1744,15 +1742,19 @@ export const timeLimit = Effect.fn("RunnerBuilding.timeLimit")(function* (
   const thread = seen.threadId === null ? undefined : yield* threadOf(ctx, seen.threadId);
   const branch = thread?.branch ?? undefined;
   // An archived thread is a stop retried after its archive: the session ended at the first try.
-  const quiet =
-    seen.threadId === null || thread === undefined || thread.archived
-      ? null
-      : yield* quietFor(ctx, seen.threadId, now);
-  // A session that went quiet within its limit may have slept: if its run ended on the host's
-  // sleep and is not resumed yet, `advance` resumes it, and the sleep is not counted once it has.
-  // A run that was past its limit before it went quiet is stopped whatever it ended on. A read
-  // that fails writes nothing, and the next pass asks again.
-  if (seen.threadId !== null && quiet !== null && worked - quiet <= limitMs) {
+  const live = seen.threadId !== null && thread !== undefined && !thread.archived;
+  // When the session last did anything: a time, none, or `undefined` when T3 cannot say.
+  const lastAt =
+    live && seen.threadId !== null
+      ? yield* ctx.sessions
+          .lastActivity(seen.threadId)
+          .pipe(Effect.orElseSucceed((): number | null | undefined => undefined))
+      : null;
+  const quiet = lastAt === null || lastAt === undefined ? null : now - lastAt;
+  // A session that did something, or that T3 cannot say about, may have ended its turn on the
+  // host's sleep: `advance` resumes that run, and the sleep is not counted once it has. One with
+  // no activity has no turn to read. A read that fails writes nothing, and the next pass asks again.
+  if (live && seen.threadId !== null && lastAt !== null) {
     const status = yield* threadStatus(ctx, seen.threadId);
     if (status !== null && sleptMidTurn(status) && !sessionBusy(seen, status)) {
       return { kind: "skipped", why: "host-slept" } as const;

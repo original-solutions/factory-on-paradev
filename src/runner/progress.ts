@@ -51,11 +51,6 @@ export interface Interruption {
   readonly rateLimited: boolean;
   /** The model the resume moves the session to, by id on the same instance; null to keep its own. */
   readonly model: string | null;
-  /**
-   * When the run that ended on the host's sleep message ended, for a resume after that sleep;
-   * null for any other. The time from then to the resume is not work.
-   */
-  readonly sleptAt: number | null;
 }
 
 /**
@@ -598,14 +593,8 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
           interruption !== null &&
           !interruption.relaunch &&
           !interruption.rateLimited &&
-          !interruption.sent &&
           interruption.resumes === sentRun
         ) {
-          // The host slept from the sleep message to this resume: that span is not work.
-          if (interruption.sleptAt !== null && workingSince !== null) {
-            workedMs += Math.max(0, interruption.sleptAt - workingSince);
-            workingSince = entry.ms;
-          }
           interruption = sentInterruption(interruption);
         }
         const sentLimited = stepNumber(step, RATE_LIMITED_SENT);
@@ -808,7 +797,13 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
         if (typeof branch === "string") lastBranch = branch;
         if (resumes === null) break;
         const relaunch = dataField(entry.data, "relaunch") === true;
+        // A resume after the host slept: from the sleep message to this line, written just before
+        // the resume is sent, is not work. Never past the line, whatever T3's clock says.
         const sleptAt = number(dataField(entry.data, "slept_at_ms"));
+        if (sleptAt !== null && workingSince !== null) {
+          workedMs += Math.max(0, Math.min(sleptAt, entry.ms) - workingSince);
+          workingSince = entry.ms;
+        }
         interruption = {
           resumes,
           relaunch,
@@ -817,7 +812,6 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
           sent: false,
           rateLimited: false,
           model: null,
-          sleptAt,
         };
         // The resume starts a new run: the session is working until one newer than the run that
         // ended has ended. Like a forward's, only a newer run drops the wait.
@@ -840,7 +834,6 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
           sent: false,
           rateLimited: true,
           model: movedTo,
-          sleptAt: null,
         };
         if (movedTo !== null && model !== null) model = fallbackOf(model, movedTo);
         awaitRun(ordinal, true);
