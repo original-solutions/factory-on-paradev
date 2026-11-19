@@ -4274,3 +4274,136 @@ describe("checkBinding: a Paradev Cloud launch branch", () => {
     assert.strictEqual(checkBinding(pull("fac/10-1"), 12, "main", null, false, null, "/w/p/fac/10-1"), null);
   });
 });
+
+describe("a session whose host slept mid-turn", () => {
+  const SLEPT =
+    "API Error: Your computer went to sleep mid-response. The response above may be incomplete.";
+  const HOST_SLEPT = "the host went to sleep mid-turn and the session has no resumes left";
+  const resumeCall = (n: number) =>
+    `send thread-1 softfac:rawphp__softfac__10__1:interrupted:${n} ${INTERRUPTION_MESSAGE}`;
+  /** Run `ordinal` ended on the sleep message at `at`, read as `status`. */
+  const slept = (rig: Rig, status: "completed" | "failed", at: number, ordinal = 1) =>
+    setStatus(rig, status, SLEPT, {
+      runOrdinal: ordinal,
+      runStartedAt: at - 10 * MINUTE,
+      runCompletedAt: at,
+    });
+  const interruptedLine = (n: number, ordinal: number, at: number): Line => ({
+    event: "session_interrupted",
+    data: {
+      resumes: n,
+      relaunch: false,
+      run_ordinal: ordinal,
+      branch: "t3code/abc",
+      t3_error: null,
+      ended_in_pass: 0,
+      slept_at_ms: at,
+    },
+  });
+  const sentLine = (n: number): Line => step(`interruption-sent ${n}`);
+
+  for (const status of ["completed", "failed"] as const) {
+    it.effect(`is sent one resume when its run reads ${status}, and no reminder`, () =>
+      Effect.gen(function* () {
+        const rig = rigFor();
+        const at = T0 + 30 * MINUTE;
+        slept(rig, status, at);
+        rig.clock.now = T0 + 12 * 60 * MINUTE;
+        assert.deepStrictEqual(yield* advanceIn(rig), {
+          kind: "slept",
+          resumes: 1,
+          limit: rig.ctx.project.limits.interruptionResumes,
+        });
+        assert.deepStrictEqual(sends(rig), [resumeCall(1)]);
+        assert.deepStrictEqual(linesOf(rig).slice(STARTED.length), [
+          interruptedLine(1, 1, at),
+          sentLine(1),
+        ]);
+        assert.deepStrictEqual(rig.gh, []);
+        // A second pass on the same run ordinal waits for the run the resume starts.
+        const bytes = bytesOf(rig);
+        assert.deepStrictEqual(yield* advanceIn(rig), { kind: "running" });
+        assert.strictEqual(bytesOf(rig), bytes);
+        assert.deepStrictEqual(sends(rig), [resumeCall(1)]);
+        // The resumed session sleeps again: the next sleep message resumes it again.
+        slept(rig, status, at + 60 * MINUTE, 2);
+        assert.deepStrictEqual(yield* advanceIn(rig), {
+          kind: "slept",
+          resumes: 2,
+          limit: rig.ctx.project.limits.interruptionResumes,
+        });
+        assert.deepStrictEqual(sends(rig), [resumeCall(1), resumeCall(2)]);
+        assert.deepStrictEqual(rig.gh, []);
+      }),
+    );
+  }
+
+  it.effect("goes stuck saying the host slept once its resumes are used up", () =>
+    Effect.gen(function* () {
+      const limit = 2;
+      const rig = rigFor([
+        ...STARTED,
+        interruptedLine(1, 1, T0) as RunEvent,
+        step("interruption-sent 1"),
+        interruptedLine(2, 2, T0) as RunEvent,
+        step("interruption-sent 2"),
+      ]);
+      rig.ctx = {
+        ...rig.ctx,
+        project: {
+          ...rig.ctx.project,
+          limits: { ...rig.ctx.project.limits, interruptionResumes: limit },
+        },
+      };
+      slept(rig, "completed", T0 + 60 * MINUTE, 3);
+      const outcome = yield* advanceIn(rig);
+      assert.deepStrictEqual(outcome, { kind: "stuck", reason: joined(HOST_SLEPT, SLEPT) });
+      assert.deepStrictEqual(sends(rig), []);
+      assert.deepStrictEqual(stuckCauses(rig), Array(3).fill("advance host-slept"));
+    }),
+  );
+
+  it.effect("is resumed, not stopped, when its run is past the time limit", () =>
+    Effect.gen(function* () {
+      const rig = limitedRig();
+      // Asleep 30 minutes into the run, awake ten hours later.
+      const at = T0 + 30 * MINUTE;
+      slept(rig, "failed", at);
+      rig.world.lastActivity = at;
+      rig.clock.now = T0 + 10 * 60 * MINUTE;
+      const before = linesOf(rig);
+      const limited = yield* timeLimit(rig.ctx, rig.run);
+      assert.deepStrictEqual(limited, { kind: "skipped", why: "host-slept" });
+      assert.deepStrictEqual(linesOf(rig), before);
+      assert.deepStrictEqual(rig.gh, []);
+      assert.deepStrictEqual(yield* advanceIn(rig), {
+        kind: "slept",
+        resumes: 1,
+        limit: rig.ctx.project.limits.interruptionResumes,
+      });
+      assert.deepStrictEqual(sends(rig), [resumeCall(1)]);
+      assert.ok(!linesOf(rig).some((line) => line.event === "stuck"));
+    }),
+  );
+
+  it.effect("leaves the span from the sleep message to the resume out of the time worked", () =>
+    Effect.gen(function* () {
+      const rig = limitedRig();
+      const at = T0 + 30 * MINUTE;
+      const resumedAt = T0 + 10 * 60 * MINUTE;
+      slept(rig, "completed", at);
+      rig.clock.now = resumedAt;
+      assert.strictEqual((yield* advanceIn(rig)).kind, "slept");
+      // 30 minutes before the sleep and none of the ten hours after it.
+      const seen = readProgress(readRun(rig.dataDir, rig.run).entries);
+      assert.strictEqual(seen.workedMs, 30 * MINUTE);
+      assert.strictEqual(seen.workingSince, resumedAt);
+      // The resumed session works: 60 more minutes are within the limit, one more is not.
+      setStatus(rig, "running", null, { runOrdinal: 2 });
+      rig.clock.now = resumedAt + 60 * MINUTE;
+      assert.deepStrictEqual(yield* timeLimit(rig.ctx, rig.run), { kind: "within" });
+      rig.clock.now = resumedAt + 60 * MINUTE + 1;
+      assert.strictEqual((yield* timeLimit(rig.ctx, rig.run)).kind, "stopped");
+    }),
+  );
+});
