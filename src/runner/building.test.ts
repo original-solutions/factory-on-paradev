@@ -4504,6 +4504,28 @@ describe("a session whose host slept mid-turn", () => {
     );
   }
 
+  it.effect("keeps the wait for the status across the error line a failed pass writes", () =>
+    Effect.gen(function* () {
+      const rig = limitedRig();
+      rig.world.lastActivity = T0 + 30 * MINUTE;
+      rig.world.status = sessionsFailure("status");
+      rig.clock.now = T0 + 10 * 60 * MINUTE;
+      assert.strictEqual((yield* timeLimit(rig.ctx, rig.run)).kind, "skipped");
+      // `advance` fails on the same status read, and the pass records the error in the run.
+      const out = Ledger.open(rig.dataDir, rig.run, { clock: () => rig.clock.now });
+      try {
+        out.append(
+          { event: "error", data: { step: "advance", kind: "t3", message: "status failed" } },
+          makeCause("advance", "step-failed"),
+        );
+      } finally {
+        out.close();
+      }
+      rig.clock.now += 15 * MINUTE;
+      assert.strictEqual((yield* timeLimit(rig.ctx, rig.run)).kind, "stopped");
+    }),
+  );
+
   it.effect("waits afresh for the status when a read in between succeeded", () =>
     Effect.gen(function* () {
       const rig = limitedRig();
