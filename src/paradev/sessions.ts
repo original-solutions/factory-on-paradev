@@ -71,7 +71,7 @@ import {
   writePlacement,
   writeThread,
 } from "./state.ts";
-import { CLOUD_WORKTREE, getCloudWorkspace, isCloudGone, isCloudUp, makeCloudTarget } from "./targets/cloud.ts";
+import { CLOUD_WORKTREE, getCloudWorkspace, isCloudGone, isCloudUp, makeCloudStatusCheck, makeCloudTarget } from "./targets/cloud.ts";
 import { makeHostTarget } from "./targets/host.ts";
 import { makeLocalTarget } from "./targets/local.ts";
 import {
@@ -672,7 +672,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const at = (target: Target | ThreadTarget): ReadonlyArray<string> =>
     target.kind === "local" ? ["--local"] : ["--host", target.kind === "host" ? target.machineId : "cloud"];
   const localTarget = makeLocalTarget({ cli, at: at({ kind: "local" }), fs, processes, commandOf, claudeProjectsDir, sessionRepo, git, gitOk });
-  const cloudTarget = makeCloudTarget({ cli, at: at({ kind: "cloud" }), commandOf, aliveReads: cloudAliveReads });
+  const checkCloudStatus = makeCloudStatusCheck();
+  const cloudTarget = makeCloudTarget({ cli, at: at({ kind: "cloud" }), commandOf, aliveReads: cloudAliveReads, checkStatus: checkCloudStatus });
   const hostDeps = { cli, at: (machineId: string) => at({ kind: "host", machineId }), ssh, hostOf, commandOf, trustReads };
 
   /** The module of a target: the one place the adapter tells this Mac, a host and cloud apart. */
@@ -813,7 +814,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     Effect.gen(function* () {
       const started = yield* Clock.currentTimeMillis;
       for (;;) {
-        const got = yield* getCloudWorkspace(cli, cloudTarget.at, record.workspaceId);
+        const got = yield* getCloudWorkspace(cli, cloudTarget.at, record.workspaceId, checkCloudStatus);
         if (isCloudUp(got.status)) return;
         if (isCloudGone(got.status)) {
           return yield* fail(`cloud workspace ${record.workspaceId} was deleted while it provisioned`);
@@ -1184,16 +1185,19 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   /** Every cloud workspace Paradev lists: what the orphan sweep and the cloud count read. */
   const listCloud = Effect.suspend(() => {
     const argv = ["workspaces", "list", ...cloudTarget.at];
-    return callWithRetry(cli, argv, 30_000).pipe(Effect.flatMap((answer) => decodeAnswer(CloudRows, answer, argv)));
+    return callWithRetry(cli, argv, 30_000).pipe(
+      Effect.flatMap((answer) => decodeAnswer(CloudRows, answer, argv)),
+      Effect.tap((rows) => Effect.forEach(rows, (row) => checkCloudStatus(row.id, row.status), { discard: true })),
+    );
   });
 
   /**
    * The workspaces `target`'s snapshots show. This Mac and a host: one snapshot, no `--workspace`.
    * Cloud is not one host, so each workspace of `counted` that the listing shows with this runner's
-   * tag (`factory-<runner id>`) and not deleted is read on its own with `--workspace`, two at a
+   * tag (`factory-<runner id>`) and not archived is read on its own with `--workspace`, two at a
    * time; none such reads no snapshot. A tagged workspace with no record in `counted` (an archived
    * run's, an orphan's) is not read: nothing in it would count, and its failed snapshot would lose
-   * the count. A workspace of `counted` the listing shows neither tagged nor `deleted` fails the
+   * the count. A workspace of `counted` the listing shows neither tagged nor archived fails the
    * read: its agent would count nothing, and a count that misses a running agent lets cloud take
    * more runs than it has room for. With no record in `counted`, cloud is not read at all.
    */

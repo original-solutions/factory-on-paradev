@@ -257,6 +257,17 @@ const launchScript = (r: ReturnType<typeof repos>): ReadonlyArray<Step> => [
   { argv: argvIs("agents", "create"), fixture: "agents-create-local-resume" },
 ];
 
+/** The warnings the body logged, as text. */
+const warned = <A, E>(body: Effect.Effect<A, E, never>) =>
+  Effect.gen(function* () {
+    const logs: Array<string> = [];
+    const capture = Logger.make(({ logLevel, message }) => {
+      logs.push(`${logLevel} ${(Array.isArray(message) ? message : [message]).join(" ")}`);
+    });
+    yield* body.pipe(Effect.provide(Logger.layer([capture], { mergeWithExisting: false })));
+    return logs;
+  });
+
 describe("launch", () => {
   it.live("a local launch keeps message as the prompt, whatever hostMessage and cloudMessage say", () =>
     Effect.gen(function* () {
@@ -2517,17 +2528,6 @@ describe("showGateLog", () => {
   // No fixture of `terminals create` was recorded: the adapter reads only the exit code.
   const created = (path: string): Step => ({ argv: createArgv(path), answer: { id: "t-new" } });
 
-  /** The warnings the body logged, as text. */
-  const warned = <A, E>(body: Effect.Effect<A, E, never>) =>
-    Effect.gen(function* () {
-      const logs: Array<string> = [];
-      const capture = Logger.make(({ logLevel, message }) => {
-        logs.push(`${logLevel} ${(Array.isArray(message) ? message : [message]).join(" ")}`);
-      });
-      yield* body.pipe(Effect.provide(Logger.layer([capture], { mergeWithExisting: false })));
-      return logs;
-    });
-
   it.live("creates one terminal that follows the log, and records the attempt, terminals untouched", () =>
     Effect.gen(function* () {
       const t = rig([created(logPath)]);
@@ -3846,6 +3846,51 @@ describe("archive, removeWorktree and showGateLog off this Mac", () => {
       const t = rig([{ argv: ["workspaces", "get", C6_WS, "--host", "cloud"], fixture: "../2.0.11/ws-get-cloud-archived" }]);
       yield* seed(t.data, c6);
       assert.deepInclude(yield* t.run((s) => s.thread(c6.threadId)), { archived: true });
+    }),
+  );
+
+  it.live("a cloud status no CLI version recorded here uses is one warning that names it, and reads as live", () =>
+    Effect.gen(function* () {
+      const get = {
+        argv: ["workspaces", "get", C6_WS, "--host", "cloud"],
+        fixture: "../2.0.11/ws-get-cloud-archived",
+        edit: (answer: unknown) => ({ ...(answer as object), status: "removed" }),
+      };
+      const t = rig([get, get]);
+      yield* seed(t.data, c6);
+      const logs = yield* warned(
+        t.run((s) =>
+          Effect.gen(function* () {
+            assert.deepInclude(yield* s.thread(c6.threadId), { archived: false });
+            // The second read of the same status says nothing more.
+            yield* s.thread(c6.threadId);
+          }),
+        ),
+      );
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.match(logs[0]!, /^Warn /);
+      assert.include(logs[0]!, C6_WS);
+      assert.include(logs[0]!, "the status removed");
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("every recorded cloud status is read with no warning", () =>
+    Effect.gen(function* () {
+      const statuses = ["provisioning", "ready", "awake", "asleep", "deleted", "archived"];
+      const t = rig(
+        statuses.map((status) => ({
+          argv: ["workspaces", "get", C6_WS, "--host", "cloud"],
+          fixture: "../2.0.11/ws-get-cloud-archived",
+          edit: (answer: unknown) => ({ ...(answer as object), status }),
+        })),
+      );
+      yield* seed(t.data, c6);
+      const logs = yield* warned(
+        t.run((s) => Effect.forEach(statuses, () => s.thread(c6.threadId), { discard: true })),
+      );
+      assert.deepStrictEqual(logs, []);
+      assert.deepStrictEqual(t.unused(), []);
     }),
   );
 
@@ -5216,6 +5261,22 @@ describe("the cloud count, one workspace at a time (#85)", () => {
         { target: { kind: "cloud" }, running: 0 },
       ]);
       assert.deepStrictEqual(t.calls.filter((argv) => argv[0] === "snapshot" && argv.includes("cloud")), []);
+    }),
+  );
+
+  it.effect("a listed status the runner does not know is one warning, and its workspace still counts as live", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [localStep, bareCloud, listOf({ id: C3_WS, tags: ["factory", MINE], status: "removed" }), snapshotAt(C3_WS)],
+        { config: { cloud: true } },
+      );
+      yield* seedCloud(t.data);
+      const logs = yield* warned(t.run((s) => s.runningByTarget));
+      assert.strictEqual(logs.length, 1, logs.join("\n"));
+      assert.match(logs[0]!, /^Warn /);
+      assert.include(logs[0]!, C3_WS);
+      assert.include(logs[0]!, "the status removed");
+      assert.strictEqual(t.calls.filter((argv) => argv[0] === "snapshot" && argv.includes("cloud")).length, 1);
     }),
   );
 
