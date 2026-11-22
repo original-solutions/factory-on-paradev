@@ -330,6 +330,15 @@ const sleptMidTurn = (status: ThreadStatus): boolean =>
   status.runOrdinal !== null &&
   status.lastAssistantMessage?.trimStart().startsWith(SLEEP_MESSAGE) === true;
 
+/**
+ * When the turn the sleep cut off ended, which `readProgress` stops counting work at: the run's
+ * end, as the session's last hook gives it. On the run #109 measures (foundry#10, run 2) that hook
+ * came about 16 minutes after the Mac slept and a day before it woke. With no end the run's start
+ * stands in, and with neither the start of the stint: a resumed run never keeps its sleep as work.
+ */
+const sleptAt = (status: ThreadStatus, seen: Seen): number | null =>
+  status.runCompletedAt ?? status.runStartedAt ?? seen.workingSince;
+
 /** What `interrupted` did. */
 export type InterruptOutcome =
   /** The run is no longer one that ended badly (its thread has a newer run, say), or a relaunch is already decided. Nothing was written. */
@@ -1000,32 +1009,15 @@ export const advance = (
         const used = yield* resumesUsed(ctx, run, seen);
         if (used >= limit) return yield* stuck("host-slept", stopOf(HOST_SLEPT, message), status);
         const n = used + 1;
-        yield* append(
-          out,
-          {
-            event: "session_interrupted",
-            data: {
-              resumes: n,
-              relaunch: false,
-              run_ordinal: status.runOrdinal,
-              branch: status.branch,
-              t3_error: null,
-              ended_in_pass: 0,
-              slept_at_ms: status.runCompletedAt,
-            },
-          },
-          "advance",
-          "host-slept",
-        );
         // A thread gone at the send is the pass's to decide, as for any interruption.
-        const sent = yield* sendInterruption(ctx, run, threadId, n);
+        const sent = yield* resumeInThread(ctx, run, out, threadId, n, "host-slept", {
+          run_ordinal: status.runOrdinal,
+          branch: status.branch,
+          t3_error: null,
+          ended_in_pass: 0,
+          slept_at_ms: sleptAt(status, seen),
+        });
         if (sent === "gone") return { kind: "ended-badly", what: "thread-gone" } as const;
-        yield* append(
-          out,
-          { event: "step_changed", data: { step: `${INTERRUPTION_SENT} ${n}` } },
-          "advance",
-          "interruption-sent",
-        );
         return { kind: "slept", resumes: n, limit } as const;
       }
       const endedBadly = endedBadlyNow(seen, status, result);
@@ -1841,6 +1833,37 @@ const sendInterruption = (
     );
 
 /**
+ * One resume of an interruption in the session's own thread: the `session_interrupted` line for
+ * resume `n` with `data`, the send, then the `interruption-sent <n>` step. `"gone"` when T3 no
+ * longer has the thread: the line stays without its step, and the caller decides what the run does.
+ */
+const resumeInThread = Effect.fn("RunnerBuilding.resumeInThread")(function* (
+  ctx: BuildingContext,
+  run: RunId,
+  out: Out,
+  threadId: string,
+  n: number,
+  reason: string,
+  data: Omit<Extract<RunEvent, { event: "session_interrupted" }>["data"], "resumes" | "relaunch">,
+) {
+  yield* append(
+    out,
+    { event: "session_interrupted", data: { resumes: n, relaunch: false, ...data } },
+    "advance",
+    reason,
+  );
+  const sent = yield* sendInterruption(ctx, run, threadId, n);
+  if (sent === "gone") return sent;
+  yield* append(
+    out,
+    { event: "step_changed", data: { step: `${INTERRUPTION_SENT} ${n}` } },
+    "advance",
+    "interruption-sent",
+  );
+  return sent;
+});
+
+/**
  * Sends a run whose agent process died its resume message under `softfac:<run>:agent-died:<k>`,
  * `k` the ordinal of that run: a send repeated after a crash is the same command. The caller
  * writes the `agent-died-resumed <k>` step after. T3 not having the thread, or the session, is
@@ -2024,25 +2047,14 @@ export const interrupted = Effect.fn("RunnerBuilding.interrupted")(function* (
     );
   }
   const n = used + 1;
-  yield* withLedger(ctx, run, (out) =>
-    append(
-      out,
-      {
-        event: "session_interrupted",
-        data: {
-          resumes: n,
-          relaunch: false,
-          run_ordinal: status.runOrdinal,
-          branch: status.branch,
-          t3_error: t3Error ?? (cutAt === null ? null : t3Started(cutAt)),
-          ended_in_pass: evidence.endedInPass,
-        },
-      },
-      "advance",
-      "session-interrupted",
-    ),
+  const sent = yield* withLedger(ctx, run, (out) =>
+    resumeInThread(ctx, run, out, threadId, n, "session-interrupted", {
+      run_ordinal: status.runOrdinal,
+      branch: status.branch,
+      t3_error: t3Error ?? (cutAt === null ? null : t3Started(cutAt)),
+      ended_in_pass: evidence.endedInPass,
+    }),
   );
-  const sent = yield* sendInterruption(ctx, run, threadId, n);
   if (sent === "gone") {
     // The attempt to resume did not happen, so it is one interruption and not two. A stop by
     // hand that landed meanwhile wins, as above.
@@ -2051,14 +2063,6 @@ export const interrupted = Effect.fn("RunnerBuilding.interrupted")(function* (
     if (latest.approvedAt !== null) return yield* relaunch(latest, n);
     return yield* goneStuck(latest);
   }
-  yield* withLedger(ctx, run, (out) =>
-    append(
-      out,
-      { event: "step_changed", data: { step: `${INTERRUPTION_SENT} ${n}` } },
-      "advance",
-      "interruption-sent",
-    ),
-  );
   return { kind: "resumed", resumes: n, limit, status: ended.what } as const;
 });
 

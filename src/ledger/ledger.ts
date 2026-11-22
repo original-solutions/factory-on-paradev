@@ -24,8 +24,11 @@ import { isU32 } from "./limits.ts";
 import {
   RUN_EVENT_FIELDS,
   causeObject,
+  makeCause,
   runEventData,
   type Cause,
+  type CauseStep,
+  type ErrorKind,
   type Outcome,
   type PrEnd,
   type RunEvent,
@@ -257,5 +260,22 @@ const ensureDirAt = (dir: string): void => {
     ensureDir(dir);
   } catch (error) {
     throw new LedgerIoError({ path: dir, cause: error });
+  }
+};
+
+/** Appends the `error` line a pass writes in the ledger of `run` when its `step` failed. */
+export const appendStepError = (
+  dataDir: string,
+  run: RunId,
+  options: LedgerOptions,
+  step: CauseStep,
+  kind: ErrorKind,
+  message: string,
+): void => {
+  const out = Ledger.open(dataDir, run, options);
+  try {
+    out.append({ event: "error", data: { step, kind, message } }, makeCause(step, "step-failed"));
+  } finally {
+    out.close();
   }
 };
