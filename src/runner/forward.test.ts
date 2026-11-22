@@ -1929,3 +1929,68 @@ describe("forward: a send T3 refuses", () => {
       }),
   );
 });
+
+describe("forward: a session whose host slept mid-turn", () => {
+  const SLEPT =
+    "API Error: Your computer went to sleep mid-response. The response above may be incomplete.";
+
+  it.effect("sends nothing until advance has resumed it, so the resume goes first", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      rig.world.status = statusOf("completed", SLEPT, { runCompletedAt: T0 });
+      script(rig, [comment(101, "rawphp", "Use serde here.")]);
+      const before = linesOf(rig);
+      assert.deepStrictEqual(yield* forwardIn(rig), skipped("host-slept"));
+      assert.deepStrictEqual(linesOf(rig), before);
+      assert.ok(!rig.t3.some((call) => call.startsWith("send ")));
+    }),
+  );
+});
+
+describe("forward: a session whose host slept mid-turn, later", () => {
+  const SLEPT =
+    "API Error: Your computer went to sleep mid-response. The response above may be incomplete.";
+  const interrupted = (n: number, ordinal: number): RunEvent => ({
+    event: "session_interrupted",
+    data: {
+      resumes: n,
+      relaunch: false,
+      run_ordinal: ordinal,
+      branch: "t3code/abc",
+      t3_error: null,
+      ended_in_pass: 0,
+      slept_at_ms: T0,
+    },
+  });
+
+  it.effect("sends the comment once the resume is sent, while T3 still reads the sleep", () =>
+    Effect.gen(function* () {
+      const rig = rigFor([...STARTED, interrupted(1, 1), step("interruption-sent 1")]);
+      rig.world.status = statusOf("completed", SLEPT, { runCompletedAt: T0 });
+      script(rig, [comment(101, "rawphp", "Use serde here.")]);
+      assert.deepStrictEqual(yield* forwardIn(rig), outcome(1, false));
+    }),
+  );
+
+  it.effect("sends the comment when no resume is left for the sleep", () =>
+    Effect.gen(function* () {
+      const rig = rigFor([
+        ...STARTED,
+        interrupted(1, 1),
+        step("interruption-sent 1"),
+        interrupted(2, 2),
+        step("interruption-sent 2"),
+      ]);
+      rig.ctx = {
+        ...rig.ctx,
+        project: {
+          ...rig.ctx.project,
+          limits: { ...rig.ctx.project.limits, interruptionResumes: 2 },
+        },
+      };
+      rig.world.status = statusOf("completed", SLEPT, { runOrdinal: 3, runCompletedAt: T0 });
+      script(rig, [comment(101, "rawphp", "Use serde here.")]);
+      assert.deepStrictEqual(yield* forwardIn(rig), outcome(1, false));
+    }),
+  );
+});

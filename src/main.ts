@@ -59,8 +59,8 @@ import { guardLogStreams } from "./logStreams.ts";
 import { FactoryGate, clearGateLocks, gateLockFile } from "./gate.ts";
 import type { State } from "./domain/lifecycle.ts";
 import { ledgerCall as ledger } from "./ledger/errors.ts";
-import { makeCause, type CauseStep, type ErrorKind, type MachineEvent } from "./ledger/events.ts";
-import { Ledger } from "./ledger/ledger.ts";
+import type { CauseStep, ErrorKind, MachineEvent } from "./ledger/events.ts";
+import { appendStepError } from "./ledger/ledger.ts";
 import { listUnfinishedRuns, runsByThread, type RunReadCache } from "./ledger/listRuns.ts";
 import { readRun } from "./ledger/read.ts";
 import { asciiLower, runIdToString, type RunId } from "./ledger/runId.ts";
@@ -600,17 +600,7 @@ export const liveWorld = (
     },
   });
   const recordError = (run: RunId, step: CauseStep, kind: ErrorKind, message: string) =>
-    ledger(() => {
-      const out = Ledger.open(dataDir, run, { clock });
-      try {
-        out.append(
-          { event: "error", data: { step, kind, message } },
-          makeCause(step, "step-failed"),
-        );
-      } finally {
-        out.close();
-      }
-    });
+    ledger(() => appendStepError(dataDir, run, { clock }, step, kind, message));
   /**
    * Whether GitHub says the run's pull request conflicts with its base. The gate of such a run
    * takes no slot (it records the conflict without a checkout), so it starts even when every slot
