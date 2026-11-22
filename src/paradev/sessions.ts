@@ -71,7 +71,7 @@ import {
   writePlacement,
   writeThread,
 } from "./state.ts";
-import { CLOUD_WORKTREE, getCloudWorkspace, makeCloudTarget } from "./targets/cloud.ts";
+import { CLOUD_WORKTREE, getCloudWorkspace, isCloudGone, isCloudUp, makeCloudTarget } from "./targets/cloud.ts";
 import { makeHostTarget } from "./targets/host.ts";
 import { makeLocalTarget } from "./targets/local.ts";
 import {
@@ -808,14 +808,14 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       ),
     );
 
-  /** Reads the cloud workspace every `cloudReadyPollMs` until it is `ready`, for `cloudReadyMaxMs` at most. */
+  /** Reads the cloud workspace every `cloudReadyPollMs` until it is up, for `cloudReadyMaxMs` at most. */
   const waitReady = (record: ThreadRecord) =>
     Effect.gen(function* () {
       const started = yield* Clock.currentTimeMillis;
       for (;;) {
         const got = yield* getCloudWorkspace(cli, cloudTarget.at, record.workspaceId);
-        if (got.status === "ready") return;
-        if (got.status === "deleted") {
+        if (isCloudUp(got.status)) return;
+        if (isCloudGone(got.status)) {
           return yield* fail(`cloud workspace ${record.workspaceId} was deleted while it provisioned`);
         }
         if ((yield* Clock.currentTimeMillis) - started >= cloudReadyMaxMs) {
@@ -1205,10 +1205,10 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const rows = yield* listCloud;
       const tagged = new Set(
         rows
-          .filter((row) => row.status !== "deleted" && hasTag(row.tags, tag) && isPlainId(row.id))
+          .filter((row) => !isCloudGone(row.status) && hasTag(row.tags, tag) && isPlainId(row.id))
           .map((row) => row.id),
       );
-      const deleted = new Set(rows.filter((row) => row.status === "deleted").map((row) => row.id));
+      const deleted = new Set(rows.filter((row) => isCloudGone(row.status)).map((row) => row.id));
       const unlisted = counted.find((record) => !tagged.has(record.workspaceId) && !deleted.has(record.workspaceId));
       if (unlisted !== undefined) {
         return yield* fail(`cloud workspace ${unlisted.workspaceId} of ${unlisted.threadId} is not listed with the tag ${tag}`);
@@ -1613,7 +1613,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     const marks = yield* local(listCloudCreates(dataDir));
     const waiting = new Set<string>();
     for (const row of rows) {
-      if (row.status === "deleted" || !isPlainId(row.id)) continue;
+      if (isCloudGone(row.status) || !isPlainId(row.id)) continue;
       // Only a workspace with no tag at all: one that carries any tag has been through a launch's
       // update, this runner's or another's, and a mark's name alone does not make it this runner's.
       const mark =

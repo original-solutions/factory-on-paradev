@@ -3003,6 +3003,63 @@ describe("launch in the cloud", () => {
     }),
   );
 
+  /** CLI 2.0.11 says `awake` where 2.0.8 said `ready`, and `archived` where it said `deleted`. */
+  const awake = "../2.0.11/ws-get-cloud-awake";
+  const archived = "../2.0.11/ws-get-cloud-archived";
+
+  it.live("a workspace that CLI 2.0.11 reads as awake is ready: the agent starts after the first poll", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
+          { argv: getArgv, fixture: awake },
+          { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
+        ],
+        { config: onCloud },
+      );
+      const launched = yield* t.run((s) => s.launch(request()));
+      assert.strictEqual(launched.threadId, `cloud:${C3_WS}`);
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.filter(argvIs("workspaces", "get")).length, 1);
+    }),
+  );
+
+  it.live("a workspace that reads asleep is not ready: the launch times out on it", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
+          { argv: getArgv, fixture: awake, edit: (answer) => ({ ...(answer as object), status: "asleep" }) },
+          { argv: ["workspaces", "archive", C3_WS, "--host", "cloud"], fixture: "ws-archive-cloud" },
+        ],
+        { config: { ...onCloud, cloudReadyMaxMs: 0 } },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), "was not ready within 0 s (still asleep)");
+      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+    }),
+  );
+
+  it.live("a workspace that CLI 2.0.11 reads as archived while it provisions fails the launch at once", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
+          { argv: getArgv, fixture: archived },
+          { argv: ["workspaces", "archive", C3_WS, "--host", "cloud"], fixture: "ws-archive-cloud" },
+        ],
+        { config: onCloud },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), "was deleted while it provisioned");
+      assert.strictEqual(t.calls.filter(argvIs("workspaces", "get")).length, 1);
+      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+    }),
+  );
+
   it.live("a create that cannot connect is not tried again, and nothing is recorded", () =>
     Effect.gen(function* () {
       const t = rig([{ argv: createArgv, fail: "Could not connect to API" }], { config: onCloud });
@@ -3771,6 +3828,27 @@ describe("archive, removeWorktree and showGateLog off this Mac", () => {
     }),
   );
 
+  it.live("a cloud archive that answers failed is archived when a later workspaces get reads archived (CLI 2.0.11)", () =>
+    Effect.gen(function* () {
+      const t = rig([
+        { argv: readFixture("ws-archive-cloud-6").argv, answer: { deleted: [], notFound: [], failed: [{ id: C6_WS }], warnings: [] } },
+        { argv: ["workspaces", "get", C6_WS, "--host", "cloud"], fixture: "../2.0.11/ws-get-cloud-archived" },
+      ]);
+      yield* seed(t.data, c6);
+      yield* t.run((s) => s.archive(c6.threadId));
+      assert.isNotNull((yield* saved(t.data))!.archivedAt);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("thread reads a cloud workspace that CLI 2.0.11 says is archived as archived", () =>
+    Effect.gen(function* () {
+      const t = rig([{ argv: ["workspaces", "get", C6_WS, "--host", "cloud"], fixture: "../2.0.11/ws-get-cloud-archived" }]);
+      yield* seed(t.data, c6);
+      assert.deepInclude(yield* t.run((s) => s.thread(c6.threadId)), { archived: true });
+    }),
+  );
+
   it.live("thread reads a ready cloud workspace's branch, and its worktree from the record", () =>
     Effect.gen(function* () {
       const t = rig([{ argv: ["workspaces", "get", C3_WS, "--host", "cloud"], fixture: "ws-get-cloud-ready" }]);
@@ -3833,6 +3911,7 @@ describe("the orphan sweep", () => {
       { ...tagged, id: "d1e2d3c4-0000-4000-8000-000000000002", tags: [] },
       { ...tagged, id: "e1e2d3c4-0000-4000-8000-000000000003", createdAt: ago(9 * MINUTE) },
       { ...tagged, id: "a1e2d3c4-0000-4000-8000-000000000004", status: "deleted" },
+      { ...tagged, id: "a2e2d3c4-0000-4000-8000-000000000017", status: "archived" }, // CLI 2.0.11's deleted
       { ...tagged, id: OBJECT_TAG, tags: [{ name: "factory" }, { name: MINE }] },
       { ...tagged, id: ONLY_FACTORY, tags: ["factory"] }, // no runner's mark: not this runner's to archive
       { ...tagged, id: OTHER_RUNNER, tags: ["factory", "factory-ffffffff-0000-4000-8000-00000000ffff"] }, // another runner's
@@ -5114,6 +5193,21 @@ describe("the cloud count, one workspace at a time (#85)", () => {
             { id: C3_WS, tags: [], status: "deleted" },
           ),
         ],
+        { config: { cloud: true } },
+      );
+      yield* seedCloud(t.data);
+      assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        { target: { kind: "local" }, running: 1 },
+        { target: { kind: "cloud" }, running: 0 },
+      ]);
+      assert.deepStrictEqual(t.calls.filter((argv) => argv[0] === "snapshot" && argv.includes("cloud")), []);
+    }),
+  );
+
+  it.effect("a workspace CLI 2.0.11 lists as archived is gone: it counts nothing and no snapshot is read", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [localStep, bareCloud, listOf({ id: FOURTH_WS, tags: ["factory", MINE], status: "archived" }, { id: C3_WS, tags: [], status: "archived" })],
         { config: { cloud: true } },
       );
       yield* seedCloud(t.data);

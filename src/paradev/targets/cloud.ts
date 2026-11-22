@@ -29,8 +29,14 @@ const ALIVE_MARK = "FACTORY-ALIVE-DONE";
 const SESSION_MARK = "FACTORY-SESSION-DONE";
 
 const TerminalCreated = Schema.Struct({ terminalId: Schema.String });
-/** A cloud workspace has no worktree path on this Mac; its `status` goes `provisioning`, `ready`, `deleted`. */
+/** A cloud workspace has no worktree path on this Mac; its `status` goes `provisioning`, then up, then gone. */
 const CloudGot = Schema.Struct({ status: Schema.String, branch: Schema.String });
+
+/** A cloud workspace that has booted: CLI 2.0.8 says `ready`, 2.0.11 `awake`. A slept one (`asleep`) is not up. */
+export const isCloudUp = (status: string): boolean => status === "ready" || status === "awake";
+
+/** A cloud workspace that is archived: CLI 2.0.8 says `deleted`, 2.0.11 `archived`. */
+export const isCloudGone = (status: string | null | undefined): boolean => status === "deleted" || status === "archived";
 
 /** `mark` as a helper command echoes it: split by an empty quote, so the echoed command line does not match it. */
 const echoed = (mark: string): string => mark.replace(/-([^-]*)$/, "-''$1");
@@ -133,22 +139,22 @@ export const makeCloudTarget = (deps: CloudDeps): ParadevTarget => {
     checkoutRepo: () => Effect.succeed(null),
     agentAlive: cloudAgentAlive,
     newestSession: (record) => newestCloudSession(record),
-    // A cloud workspace has no worktree here, and reads `deleted` once it is archived.
+    // A cloud workspace has no worktree here, and reads gone once it is archived.
     readWorkspace: (record) =>
       getCloudWorkspace(cli, at, record.workspaceId).pipe(
         Effect.map((got) =>
-          got.status === "deleted" ? null : { worktreePath: record.worktreePath, branch: got.branch },
+          isCloudGone(got.status) ? null : { worktreePath: record.worktreePath, branch: got.branch },
         ),
       ),
     archiveWorkspace: (workspaceId) =>
       Effect.gen(function* () {
         const gone = yield* archiveCall(cli, at, workspaceId);
-        // A cloud workspace that `workspaces get` reads as `deleted` is archived, whatever archive said.
+        // A cloud workspace that `workspaces get` reads as gone is archived, whatever archive said.
         if (gone !== null) {
           const got = yield* getCloudWorkspace(cli, at, workspaceId).pipe(
             Effect.catchIf(isNotFound, () => Effect.succeed(null)),
           );
-          if (got === null || got.status === "deleted") return;
+          if (got === null || isCloudGone(got.status)) return;
           return yield* notArchived(workspaceId, gone);
         }
       }),
