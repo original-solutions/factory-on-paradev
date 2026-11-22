@@ -5207,7 +5207,7 @@ describe("the cloud count, one workspace at a time (#85)", () => {
   it.effect("a workspace CLI 2.0.11 lists as archived is gone: it counts nothing and no snapshot is read", () =>
     Effect.gen(function* () {
       const t = rig(
-        [localStep, bareCloud, listOf({ id: FOURTH_WS, tags: ["factory", MINE], status: "archived" }, { id: C3_WS, tags: [], status: "archived" })],
+        [localStep, bareCloud, listOf({ id: FOURTH_WS, tags: ["factory", MINE], status: "archived" }, { id: C3_WS, tags: ["factory", MINE], status: "archived" })],
         { config: { cloud: true } },
       );
       yield* seedCloud(t.data);
