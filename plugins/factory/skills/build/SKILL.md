@@ -136,7 +136,7 @@ Workers and reviewers get absolute paths under `<worktree>/.factory/` for anythi
 | | S | M (default) | L |
 |---|---|---|---|
 | Shape | Mechanical, no behavior | Behavior, one approach | Auth, schema, payments, secrets, prod |
-| Check | Tests if needed | Review cycle → fix (commit) → cycle, until score 5, max 5 | Same |
+| Check | Tests if needed | Review cycle → fix (commit) → cycle, until score 5, max 50 | Same |
 | Ship | Draft PR | Draft PR | Draft PR, `risk:` named on the receipt |
 
 Unclear WHAT, a real product choice the issue does not settle, or two independent units in one issue → stop `needs-info`.
