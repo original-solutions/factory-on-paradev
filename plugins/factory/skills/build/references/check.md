@@ -7,7 +7,7 @@ tests green
   → review cycle (gate call → panel → collect → decide)
       → score 5 → mutation pass → live → Gate
       → findings → Make → tests → commit → review cycle
-until: score 5 | cycle == 5 | two cycles without progress
+until: score 5 | cycle == 50 | two cycles without progress
 ```
 
 ## 1. Tests
@@ -32,7 +32,7 @@ Before each cycle, `git fetch origin`; when `origin/<base>` moved (another PR la
 
 Cycle starts at 1 after the first review. Score 5 → the mutation pass (`references/review.md` § 6), then § 5 Live, then Gate. Else review again.
 
-**Max 5**, or two consecutive cycles without progress (`references/review.md` § 5): stop `stuck` and list the leftovers. Do not open a "good enough" PR as if it were clean.
+**Max 50**, or two consecutive cycles without progress (`references/review.md` § 5): stop `stuck` and list the leftovers. Do not open a "good enough" PR as if it were clean.
 
 ## 5. Live
 
