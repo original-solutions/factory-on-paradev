@@ -29,8 +29,38 @@ const ALIVE_MARK = "FACTORY-ALIVE-DONE";
 const SESSION_MARK = "FACTORY-SESSION-DONE";
 
 const TerminalCreated = Schema.Struct({ terminalId: Schema.String });
-/** A cloud workspace has no worktree path on this Mac; its `status` goes `provisioning`, `ready`, `deleted`. */
+/** A cloud workspace has no worktree path on this Mac; its `status` goes `provisioning`, then up, then gone. */
 const CloudGot = Schema.Struct({ status: Schema.String, branch: Schema.String });
+
+/** Every cloud workspace status recorded so far: CLI 2.0.8's `provisioning`, `ready` and `deleted`, and 2.0.11's `awake`, `asleep` and `archived`. */
+const CLOUD_STATUSES: ReadonlySet<string> = new Set(["provisioning", "ready", "awake", "asleep", "deleted", "archived"]);
+
+/**
+ * The check every cloud status read goes through: one warning per status that is not in
+ * {@link CLOUD_STATUSES}, naming the workspace it was first seen on. Such a status reads as neither
+ * up nor archived, which is how CLI 2.0.11's renames went unseen (#111). It warns and does not
+ * fail: a status the runner has never seen must not stop the count, the sweep or an archive.
+ * Each adapter makes one, so a status is reported once per run of the runner, not once per pass.
+ */
+export const makeCloudStatusCheck = () => {
+  const warned = new Set<string>();
+  return (workspaceId: string, status: string | null | undefined) =>
+    Effect.suspend(() => {
+      if (status === null || status === undefined || CLOUD_STATUSES.has(status) || warned.has(status)) return Effect.void;
+      warned.add(status);
+      return Effect.logWarning(
+        `cloud workspace ${workspaceId} has the status ${status}, which the runner does not know: it reads as ` +
+          "neither up nor archived. If a Paradev CLI upgrade renamed a status, add it to src/paradev/targets/cloud.ts",
+      );
+    });
+};
+export type CloudStatusCheck = ReturnType<typeof makeCloudStatusCheck>;
+
+/** A cloud workspace that has booted: CLI 2.0.8 says `ready`, 2.0.11 `awake`. A slept one (`asleep`) is not up. */
+export const isCloudUp = (status: string): boolean => status === "ready" || status === "awake";
+
+/** A cloud workspace that is archived: CLI 2.0.8 says `deleted`, 2.0.11 `archived`. */
+export const isCloudGone = (status: string | null | undefined): boolean => status === "deleted" || status === "archived";
 
 /** `mark` as a helper command echoes it: split by an empty quote, so the echoed command line does not match it. */
 const echoed = (mark: string): string => mark.replace(/-([^-]*)$/, "-''$1");
@@ -42,10 +72,11 @@ const lineBefore = (text: string, mark: string): string | null => {
   return end > 0 ? lines[end - 1]! : null;
 };
 
-export const getCloudWorkspace = (cli: Cli, at: ReadonlyArray<string>, workspaceId: string) => {
+export const getCloudWorkspace = (cli: Cli, at: ReadonlyArray<string>, workspaceId: string, checkStatus: CloudStatusCheck) => {
   const argv = ["workspaces", "get", workspaceId, ...at];
   return callWithRetry(cli, argv, 30_000).pipe(
     Effect.flatMap((answer) => decodeAnswer(CloudGot, answer, argv)),
+    Effect.tap((got) => checkStatus(workspaceId, got.status)),
   );
 };
 
@@ -61,10 +92,12 @@ export interface CloudDeps {
    * terminal per 10 minutes. A send never answers from it.
    */
   readonly aliveReads: Map<string, { readonly at: number; readonly alive: boolean | null }>;
+  /** The adapter's one check of every cloud status it reads. */
+  readonly checkStatus: CloudStatusCheck;
 }
 
 export const makeCloudTarget = (deps: CloudDeps): ParadevTarget => {
-  const { cli, at, commandOf, aliveReads } = deps;
+  const { cli, at, commandOf, aliveReads, checkStatus } = deps;
 
   /** The helper command's output: the end mark, echoed so the echoed command line does not match it. */
   const helperRead = (record: ThreadRecord, command: string, mark: string) =>
@@ -133,22 +166,22 @@ export const makeCloudTarget = (deps: CloudDeps): ParadevTarget => {
     checkoutRepo: () => Effect.succeed(null),
     agentAlive: cloudAgentAlive,
     newestSession: (record) => newestCloudSession(record),
-    // A cloud workspace has no worktree here, and reads `deleted` once it is archived.
+    // A cloud workspace has no worktree here, and reads gone once it is archived.
     readWorkspace: (record) =>
-      getCloudWorkspace(cli, at, record.workspaceId).pipe(
+      getCloudWorkspace(cli, at, record.workspaceId, checkStatus).pipe(
         Effect.map((got) =>
-          got.status === "deleted" ? null : { worktreePath: record.worktreePath, branch: got.branch },
+          isCloudGone(got.status) ? null : { worktreePath: record.worktreePath, branch: got.branch },
         ),
       ),
     archiveWorkspace: (workspaceId) =>
       Effect.gen(function* () {
         const gone = yield* archiveCall(cli, at, workspaceId);
-        // A cloud workspace that `workspaces get` reads as `deleted` is archived, whatever archive said.
+        // A cloud workspace that `workspaces get` reads as gone is archived, whatever archive said.
         if (gone !== null) {
-          const got = yield* getCloudWorkspace(cli, at, workspaceId).pipe(
+          const got = yield* getCloudWorkspace(cli, at, workspaceId, checkStatus).pipe(
             Effect.catchIf(isNotFound, () => Effect.succeed(null)),
           );
-          if (got === null || got.status === "deleted") return;
+          if (got === null || isCloudGone(got.status)) return;
           return yield* notArchived(workspaceId, gone);
         }
       }),
