@@ -50,6 +50,18 @@ for (const name of failed) {
   );
 }
 
+// It names the active organization: a CLI switched to another one answers it for every live
+// workspace, so it does not show the workspace is gone and is not NOT_FOUND (#113).
+it.effect("CLI 2.0.11's answer for a cloud workspace not in the active organization is not NOT_FOUND", () =>
+  Effect.gen(function* () {
+    const name = "../2.0.11/ws-get-cloud-gone";
+    const error = yield* runThrough(name);
+    assert.strictEqual(error.kind, "UNKNOWN");
+    assert.isTrue(readFixture(name).stderr.startsWith(`Error: ${error.text}\n`));
+    assert.match(error.text, /^No cloud workspace /);
+  }),
+);
+
 it.effect("a failure keeps the CLI's hint", () =>
   Effect.gen(function* () {
     const error = yield* runThrough("ws-create-local-4-nologin");
