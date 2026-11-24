@@ -1,0 +1,13 @@
+# factory-on-paradev: a Node 24 TypeScript CLI (the factory runner). No services, no build step.
+
+[install]                     # baked into the environment snapshot
+run = ["npm ci --no-audit --no-fund"]
+
+[setup]                       # every boot/resume: re-sync deps in case the branch changed the lockfile
+run = ["npm ci --prefer-offline --no-audit --no-fund"]
+
+[terminals.check]             # the repo's full gate (typecheck, vitest, fixture scan, skill check)
+run = "npm run check"
+
+[terminals.test_watch]
+run = "npx vitest"
