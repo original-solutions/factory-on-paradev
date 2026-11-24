@@ -5350,9 +5350,10 @@ describe("the cloud count, one workspace at a time (#85)", () => {
 
   it.effect("a live record's workspace the listing shows without this runner's tag, or leaves out: the count is null, never 0", () =>
     Effect.gen(function* () {
-      // Untagged in the listing; an empty listing.
-      for (const listing of [listOf({ id: C3_WS, tags: [] }), listOf()]) {
-        const t = rig([localStep, bareCloud, listing], { config: { cloud: true } });
+      // Untagged in the listing; an empty listing, and the workspace on its own still up (#113).
+      const getLive: Step = { argv: ["workspaces", "get", C3_WS, "--host", "cloud"], fixture: "ws-get-cloud-ready" };
+      for (const steps of [[listOf({ id: C3_WS, tags: [] })], [listOf(), getLive]]) {
+        const t = rig([localStep, bareCloud, ...steps], { config: { cloud: true } });
         yield* seedCloud(t.data);
         assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
           { target: { kind: "local" }, running: 1 },
@@ -5360,6 +5361,10 @@ describe("the cloud count, one workspace at a time (#85)", () => {
         ]);
         // Only tagged workspaces are read: no snapshot of the untagged one.
         assert.deepStrictEqual(t.calls.filter((argv) => argv[0] === "snapshot" && argv.includes("cloud")), []);
+        // A workspace the listing shows is not read on its own; one it leaves out is, once.
+        assert.strictEqual(t.calls.filter((argv) => argv[0] === "workspaces" && argv[1] === "get").length, steps.length - 1);
+        const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+        assert.strictEqual(saved?.archivedAt, null);
       }
       // Two live records, the tagged one and an untagged one, in either order of the records: null, not 1.
       for (const [first, second] of [[C3_WS, OTHER_WS], [OTHER_WS, C3_WS]] as const) {
@@ -5381,6 +5386,101 @@ describe("the cloud count, one workspace at a time (#85)", () => {
       }
     }),
   );
+
+  describe("a live record's workspace the listing leaves out, read on its own (#113)", () => {
+    const getC3 = ["workspaces", "get", C3_WS, "--host", "cloud"];
+    const workingOther = snapshotAt(OTHER_WS, [{ id: OTHER_TERM, title: "Claude Code", agent: { id: "claude", state: "working" } }]);
+    const listOther = () => listOf({ id: OTHER_WS, tags: ["factory", MINE] });
+    const seedBoth = (data: string) =>
+      Effect.gen(function* () {
+        yield* seedCloud(data);
+        yield* seed(data, cloudRecord({ threadId: `cloud:${OTHER_WS}`, workspaceId: OTHER_WS, terminals: [OTHER_TERM] }));
+      });
+    const savedC3 = (data: string) => readThread(data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+    const gets = (calls: ReadonlyArray<ReadonlyArray<string>>) =>
+      calls.filter((argv) => argv[0] === "workspaces" && argv[1] === "get");
+
+    it.effect("CLI 2.0.11 lists no archived workspace, and get reads it archived: it is gone, the count goes on from the others, and the record is marked archived", () =>
+      Effect.gen(function* () {
+        const t = rig(
+          [
+            localStep,
+            bareCloud,
+            listOther(),
+            { argv: getC3, fixture: "../2.0.11/ws-get-cloud-archived" },
+            workingOther,
+            // The next pass: the record now has `archivedAt`, so it is not read again.
+            localStep,
+            listOther(),
+            workingOther,
+          ],
+          { config: { cloud: true } },
+        );
+        yield* seedBoth(t.data);
+        assert.strictEqual((yield* savedC3(t.data))?.archivedAt, null);
+        const counted = [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "cloud" }, running: 1 },
+        ];
+        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), counted);
+        assert.isNumber((yield* savedC3(t.data))?.archivedAt);
+        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), counted);
+        assert.deepStrictEqual(gets(t.calls), [getC3]);
+        assert.deepStrictEqual(t.unused(), [bareCloud]);
+      }),
+    );
+
+    it.effect("get reads it deleted (CLI 2.0.8), or no longer finds it: it is gone too", () =>
+      Effect.gen(function* () {
+        const answers: ReadonlyArray<Step> = [
+          { argv: getC3, fixture: "ws-get-cloud-6-archived" },
+          { argv: getC3, fail: `Workspace not found on host cloud: ${C3_WS}` },
+        ];
+        for (const answer of answers) {
+          const t = rig([localStep, bareCloud, listOther(), answer, workingOther], { config: { cloud: true } });
+          yield* seedBoth(t.data);
+          assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+            { target: { kind: "local" }, running: 1 },
+            { target: { kind: "cloud" }, running: 1 },
+          ]);
+          assert.isNumber((yield* savedC3(t.data))?.archivedAt);
+        }
+      }),
+    );
+
+    it.effect("get reads it up, or asleep: its agent could be running, so the count is null and the record is left as it is", () =>
+      Effect.gen(function* () {
+        for (const fixture of ["ws-get-cloud-ready", "../2.0.11/ws-get-cloud-awake", "ws-get-cloud-asleep"]) {
+          const t = rig([localStep, bareCloud, listOther(), { argv: getC3, fixture }, workingOther], { config: { cloud: true } });
+          yield* seedBoth(t.data);
+          assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+            { target: { kind: "local" }, running: 1 },
+            { target: { kind: "cloud" }, running: null },
+          ]);
+          assert.strictEqual((yield* savedC3(t.data))?.archivedAt, null);
+        }
+      }),
+    );
+
+    it.effect("the get fails: no guess, the count is null and the record is left as it is", () =>
+      Effect.gen(function* () {
+        // Any failed read, as a timeout ends once its retry fails too: one the CLI does not
+        // classify, and the host offline.
+        for (const fail of ["boom", "Host is not online"]) {
+          const t = rig(
+            [localStep, bareCloud, listOther(), { argv: getC3, fail }, workingOther],
+            { config: { cloud: true } },
+          );
+          yield* seedBoth(t.data);
+          assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+            { target: { kind: "local" }, running: 1 },
+            { target: { kind: "cloud" }, running: null },
+          ]);
+          assert.strictEqual((yield* savedC3(t.data))?.archivedAt, null);
+        }
+      }),
+    );
+  });
 
   it.effect("one workspace's snapshot that fails: the count is null for the pass, and the pass carries on", () =>
     Effect.gen(function* () {
