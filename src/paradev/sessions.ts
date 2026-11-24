@@ -1195,7 +1195,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * The status of the workspace of `record`, a cloud record the listing leaves out, as `workspaces
    * get` reads it; null when it is gone: archived, deleted, or no such workspace. A gone one's
    * record gets `archivedAt`, so later passes skip it without another read. A read that fails
-   * fails this.
+   * fails this, CLI 2.0.11's `No cloud workspace <id> in this organization` among them: a CLI on
+   * another organization answers that for a live workspace too.
    */
   const unlistedStatus = (record: ThreadRecord) =>
     Effect.gen(function* () {

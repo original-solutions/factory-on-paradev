@@ -67,8 +67,6 @@ const KINDS: ReadonlyArray<readonly [prefix: string | RegExp, kind: CliErrorKind
   ["Not logged in", "PARADEV_SIGNED_OUT"],
   ["No active organization", "PARADEV_SIGNED_OUT"],
   ["Workspace not found on host ", "NOT_FOUND"],
-  // CLI 2.0.11's answer for a cloud workspace that does not exist (#113).
-  ["No cloud workspace ", "NOT_FOUND"],
   ["Could not connect to API", "TRANSIENT"],
   [/^Needs the .+ plan/, "PARADEV_PLAN"],
   ["No agent is running in terminal ", "AGENT_EXITED"],
