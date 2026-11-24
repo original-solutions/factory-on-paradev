@@ -5430,21 +5430,41 @@ describe("the cloud count, one workspace at a time (#85)", () => {
       }),
     );
 
-    it.effect("get reads it deleted (CLI 2.0.8), or no longer finds it: it is gone too", () =>
+    it.effect("get reads it deleted (CLI 2.0.8): it is gone too", () =>
       Effect.gen(function* () {
-        const answers: ReadonlyArray<Step> = [
-          { argv: getC3, fixture: "ws-get-cloud-6-archived" },
-          { argv: getC3, fail: `Workspace not found on host cloud: ${C3_WS}` },
-        ];
-        for (const answer of answers) {
-          const t = rig([localStep, bareCloud, listOther(), answer, workingOther], { config: { cloud: true } });
-          yield* seedBoth(t.data);
-          assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
-            { target: { kind: "local" }, running: 1 },
-            { target: { kind: "cloud" }, running: 1 },
-          ]);
-          assert.isNumber((yield* savedC3(t.data))?.archivedAt);
-        }
+        const t = rig(
+          [localStep, bareCloud, listOther(), { argv: getC3, fixture: "ws-get-cloud-6-archived" }, workingOther],
+          { config: { cloud: true } },
+        );
+        yield* seedBoth(t.data);
+        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "cloud" }, running: 1 },
+        ]);
+        assert.isNumber((yield* savedC3(t.data))?.archivedAt);
+      }),
+    );
+
+    it.effect("the listing leaves out two: get reads one archived and the other up, so the count is null, the first is marked archived and the second is left as it is", () =>
+      Effect.gen(function* () {
+        const t = rig(
+          [
+            localStep,
+            bareCloud,
+            listOf(),
+            { argv: getC3, fixture: "../2.0.11/ws-get-cloud-archived" },
+            { argv: ["workspaces", "get", OTHER_WS, "--host", "cloud"], fixture: "ws-get-cloud-ready" },
+          ],
+          { config: { cloud: true } },
+        );
+        yield* seedBoth(t.data);
+        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "cloud" }, running: null },
+        ]);
+        assert.isNumber((yield* savedC3(t.data))?.archivedAt);
+        const other = yield* readThread(t.data, OTHER_WS).pipe(Effect.provide(NodeServices.layer));
+        assert.strictEqual(other?.archivedAt, null);
       }),
     );
 
@@ -5502,8 +5522,9 @@ describe("the cloud count, one workspace at a time (#85)", () => {
     it.effect("the get fails: no guess, the count is null and the record is left as it is", () =>
       Effect.gen(function* () {
         // Any failed read, as a timeout ends once its retry fails too: one the CLI does not
-        // classify, and the host offline.
-        for (const fail of ["boom", "Host is not online"]) {
+        // classify, the host offline, and not found. No recording shows what the CLI answers for
+        // a cloud workspace that no longer exists, so only a status read marks a record archived.
+        for (const fail of ["boom", "Host is not online", `Workspace not found on host cloud: ${C3_WS}`]) {
           const t = rig(
             [localStep, bareCloud, listOther(), { argv: getC3, fail }, workingOther],
             { config: { cloud: true } },

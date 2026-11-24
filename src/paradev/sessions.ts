@@ -1191,22 +1191,27 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     );
   });
 
+  /** Saves `record` with `archivedAt` set, keeping the time of one already archived. */
+  const markArchived = (record: ThreadRecord) =>
+    Effect.gen(function* () {
+      yield* save({ ...record, archivedAt: record.archivedAt ?? (yield* Clock.currentTimeMillis) });
+    });
+
   /**
    * The status of the workspace of `record`, a cloud record the listing leaves out, as `workspaces
-   * get` reads it; null when it is gone: archived, deleted, or no such workspace. A gone one's
-   * record gets `archivedAt`, so later passes skip it without another read. A read that fails
-   * fails this, CLI 2.0.11's `No cloud workspace <id> in this organization` among them: a CLI on
-   * another organization answers that for a live workspace too.
+   * get` reads it; null when it reads gone (archived or deleted). A gone one's record gets
+   * `archivedAt`, so later passes skip it without another read. A read that fails fails this, and
+   * marks nothing: no recording shows what the CLI answers for a cloud workspace that no longer
+   * exists, and CLI 2.0.11's `No cloud workspace <id> in this organization` is what a CLI on
+   * another organization answers for a live one.
    */
   const unlistedStatus = (record: ThreadRecord) =>
     Effect.gen(function* () {
-      const got = yield* getCloudWorkspace(cli, cloudTarget.at, record.workspaceId, checkCloudStatus).pipe(
-        Effect.catchIf(isNotFound, () => Effect.succeed(null)),
-      );
-      if (got !== null && !isCloudGone(got.status)) return got.status;
+      const got = yield* getCloudWorkspace(cli, cloudTarget.at, record.workspaceId, checkCloudStatus);
+      if (!isCloudGone(got.status)) return got.status;
       const now = yield* local(readThread(dataDir, record.workspaceId));
       if (now !== null && now.archivedAt === null) {
-        yield* save({ ...now, archivedAt: yield* Clock.currentTimeMillis }).pipe(
+        yield* markArchived(now).pipe(
           Effect.catch((error) =>
             Effect.logWarning(
               `cloud workspace ${record.workspaceId} is gone, but its record could not be marked archived (${error.message})`,
@@ -1226,8 +1231,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * the count. A workspace of `counted` the listing shows neither tagged nor archived fails the
    * read: its agent would count nothing, and a count that misses a running agent lets cloud take
    * more runs than it has room for. One the listing leaves out is read on its own
-   * ({@link unlistedStatus}): gone, it counts nothing; not gone, or not read, it fails the read too. With no
-   * record in `counted`, cloud is not read at all.
+   * ({@link unlistedStatus}): gone, it counts nothing; not gone, or not read, it fails the read too,
+   * once every one left out has been read, so a gone one beside it is still marked. With no record
+   * in `counted`, cloud is not read at all.
    */
   const snapshotWorkspaces = (target: ThreadTarget, counted: ReadonlyArray<ThreadRecord>) =>
     Effect.gen(function* () {
@@ -1249,19 +1255,17 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       );
       if (untagged !== undefined) return yield* notTagged(untagged);
       // CLI 2.0.11 lists no archived workspace (#113): one the listing leaves out is read on its own.
-      yield* Effect.forEach(
+      const unlisted = yield* Effect.forEach(
         counted.filter((record) => !listed.has(record.workspaceId)),
-        (record) =>
-          Effect.gen(function* () {
-            const status = yield* unlistedStatus(record);
-            if (status !== null) {
-              return yield* fail(
-                `cloud workspace ${record.workspaceId} of ${record.threadId} is not listed, and workspaces get reads it ${status}`,
-              );
-            }
-          }),
-        { concurrency: 2, discard: true },
+        (record) => unlistedStatus(record).pipe(Effect.map((status) => ({ record, status }))),
+        { concurrency: 2 },
       );
+      const live = unlisted.find(({ status }) => status !== null);
+      if (live !== undefined) {
+        return yield* fail(
+          `cloud workspace ${live.record.workspaceId} of ${live.record.threadId} is not listed, and workspaces get reads it ${live.status}`,
+        );
+      }
       const ids = counted.map((record) => record.workspaceId).filter((id) => tagged.has(id));
       const answers = yield* Effect.forEach(ids, (id) => snapshot(target, id), { concurrency: 2 });
       return answers.flatMap((answer) => answer.workspaces);
@@ -1625,7 +1629,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   const archiveRecord = (record: ThreadRecord) =>
     Effect.gen(function* () {
       yield* targetFor(record.target).archiveWorkspace(record.workspaceId);
-      yield* save({ ...record, archivedAt: record.archivedAt ?? (yield* Clock.currentTimeMillis) });
+      yield* markArchived(record);
     });
 
   const archive = Effect.fn("ParadevSessions.archive")(function* (threadId: string) {
