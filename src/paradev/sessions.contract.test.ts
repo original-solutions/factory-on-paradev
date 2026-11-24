@@ -5448,10 +5448,22 @@ describe("the cloud count, one workspace at a time (#85)", () => {
       }),
     );
 
-    it.effect("get reads it up, or asleep: its agent could be running, so the count is null and the record is left as it is", () =>
+    it.effect("get reads it up, asleep, provisioning or in a status the runner does not know: not gone, so the count is null and the record is left as it is", () =>
       Effect.gen(function* () {
-        for (const fixture of ["ws-get-cloud-ready", "../2.0.11/ws-get-cloud-awake", "ws-get-cloud-asleep"]) {
-          const t = rig([localStep, bareCloud, listOther(), { argv: getC3, fixture }, workingOther], { config: { cloud: true } });
+        const statusOf = (status: string): Step => ({
+          argv: getC3,
+          fixture: "../2.0.11/ws-get-cloud-awake",
+          edit: (answer) => ({ ...(answer as object), status }),
+        });
+        const answers: ReadonlyArray<Step> = [
+          { argv: getC3, fixture: "ws-get-cloud-ready" },
+          { argv: getC3, fixture: "../2.0.11/ws-get-cloud-awake" },
+          { argv: getC3, fixture: "ws-get-cloud-provisioning" },
+          statusOf("asleep"),
+          statusOf("hibernating"),
+        ];
+        for (const answer of answers) {
+          const t = rig([localStep, bareCloud, listOther(), answer, workingOther], { config: { cloud: true } });
           yield* seedBoth(t.data);
           assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
             { target: { kind: "local" }, running: 1 },
