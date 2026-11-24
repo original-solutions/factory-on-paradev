@@ -872,13 +872,10 @@ describe("machine config", () => {
       expect(none[0]!.message).toBe(`${HOST} is not in hosts`);
     });
 
-    it("refuses cloud.max_runs over 3", () => {
-      for (const ok of ["0", "3"]) {
+    it("takes any cloud.max_runs from 0 up", () => {
+      for (const ok of ["0", "3", "4", "25"]) {
         expect(machine(edit(TARGETS, (tree) => set(tree, "cloud.max_runs", ok))).cloud!.maxRuns).toBe(Number(ok));
       }
-      const errs = machineErr(edit(TARGETS, (tree) => set(tree, "cloud.max_runs", "4")));
-      assertOne(errs, "cloud.max_runs", MFILE);
-      expect(errs[0]!.message).toBe("must be at most 3");
     });
 
     it("refuses a host ssh that is not user@host", () => {

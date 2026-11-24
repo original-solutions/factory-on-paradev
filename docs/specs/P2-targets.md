@@ -75,7 +75,7 @@ local:
   max_runs: 1                 # defaults to max_concurrent_runs
 ```
 
-Refused at config load, each with the line to fix: a repo `hosts[].id` not in `hosts`, a `hosts[].id` not in `superset hosts list`, a `cloud` environment id not in `superset environments list`, `cloud.max_runs` over 3, and a `hosts` entry whose `ssh` has no user (`user@box` or a `Host` alias; a bare hostname is refused because BatchMode then guesses the user).
+Refused at config load, each with the line to fix: a repo `hosts[].id` not in `hosts`, a `hosts[].id` not in `superset hosts list`, a `cloud` environment id not in `superset environments list`, and a `hosts` entry whose `ssh` has no user (`user@box` or a `Host` alias; a bare hostname is refused because BatchMode then guesses the user).
 
 A repo with no `hosts` and no `cloud` runs as in P1, so a P1 config loads unchanged.
 

@@ -103,7 +103,7 @@ repos: []
 # cloud:
 #   # small | medium | large. Defaults to small.
 #   machine_size: small
-#   # Cloud runs at once, at most 3. Defaults to 1.
+#   # Cloud runs at once. Defaults to 1.
 #   max_runs: 1
 #   # The https:// Funnel address the org's Claude connection points at.
 #   proxy: https://trilogy-mac.tail459612.ts.net:10000
