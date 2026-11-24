@@ -5419,8 +5419,8 @@ describe("the cloud count, one workspace at a time (#85)", () => {
         yield* seedBoth(t.data);
         assert.strictEqual((yield* savedC3(t.data))?.archivedAt, null);
         const counted = [
-          { target: { kind: "local" }, running: 1 },
-          { target: { kind: "cloud" }, running: 1 },
+          { target: { kind: "local" as const }, running: 1 },
+          { target: { kind: "cloud" as const }, running: 1 },
         ];
         assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), counted);
         assert.isNumber((yield* savedC3(t.data))?.archivedAt);

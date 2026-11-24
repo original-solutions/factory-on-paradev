@@ -1192,6 +1192,30 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   });
 
   /**
+   * Whether the workspace of `record`, a cloud record the listing leaves out, is gone: `workspaces
+   * get` reads it archived or deleted, or finds no such workspace. A gone one's record gets
+   * `archivedAt`, so later passes skip it without another read. A read that fails fails this.
+   */
+  const unlistedGone = (record: ThreadRecord) =>
+    Effect.gen(function* () {
+      const got = yield* getCloudWorkspace(cli, cloudTarget.at, record.workspaceId, checkCloudStatus).pipe(
+        Effect.catchIf(isNotFound, () => Effect.succeed(null)),
+      );
+      if (got !== null && !isCloudGone(got.status)) return false;
+      const now = yield* local(readThread(dataDir, record.workspaceId));
+      if (now !== null && now.archivedAt === null) {
+        yield* save({ ...now, archivedAt: yield* Clock.currentTimeMillis }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning(
+              `cloud workspace ${record.workspaceId} is gone, but its record could not be marked archived (${error.message})`,
+            ),
+          ),
+        );
+      }
+      return true;
+    });
+
+  /**
    * The workspaces `target`'s snapshots show. This Mac and a host: one snapshot, no `--workspace`.
    * Cloud is not one host, so each workspace of `counted` that the listing shows with this runner's
    * tag (`factory-<runner id>`) and not archived is read on its own with `--workspace`, two at a
@@ -1199,7 +1223,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * run's, an orphan's) is not read: nothing in it would count, and its failed snapshot would lose
    * the count. A workspace of `counted` the listing shows neither tagged nor archived fails the
    * read: its agent would count nothing, and a count that misses a running agent lets cloud take
-   * more runs than it has room for. With no record in `counted`, cloud is not read at all.
+   * more runs than it has room for. One the listing leaves out is read on its own
+   * ({@link unlistedGone}): gone, it counts nothing; up, or not read, it fails the read too. With no
+   * record in `counted`, cloud is not read at all.
    */
   const snapshotWorkspaces = (target: ThreadTarget, counted: ReadonlyArray<ThreadRecord>) =>
     Effect.gen(function* () {
@@ -1213,10 +1239,22 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
           .map((row) => row.id),
       );
       const deleted = new Set(rows.filter((row) => isCloudGone(row.status)).map((row) => row.id));
-      const unlisted = counted.find((record) => !tagged.has(record.workspaceId) && !deleted.has(record.workspaceId));
-      if (unlisted !== undefined) {
-        return yield* fail(`cloud workspace ${unlisted.workspaceId} of ${unlisted.threadId} is not listed with the tag ${tag}`);
-      }
+      const listed = new Set(rows.map((row) => row.id));
+      const notTagged = (record: ThreadRecord) =>
+        fail(`cloud workspace ${record.workspaceId} of ${record.threadId} is not listed with the tag ${tag}`);
+      const untagged = counted.find(
+        (record) => listed.has(record.workspaceId) && !tagged.has(record.workspaceId) && !deleted.has(record.workspaceId),
+      );
+      if (untagged !== undefined) return yield* notTagged(untagged);
+      // CLI 2.0.11 lists no archived workspace (#113): one the listing leaves out is read on its own.
+      yield* Effect.forEach(
+        counted.filter((record) => !listed.has(record.workspaceId)),
+        (record) =>
+          Effect.gen(function* () {
+            if (!(yield* unlistedGone(record))) return yield* notTagged(record);
+          }),
+        { concurrency: 2, discard: true },
+      );
       const ids = counted.map((record) => record.workspaceId).filter((id) => tagged.has(id));
       const answers = yield* Effect.forEach(ids, (id) => snapshot(target, id), { concurrency: 2 });
       return answers.flatMap((answer) => answer.workspaces);
