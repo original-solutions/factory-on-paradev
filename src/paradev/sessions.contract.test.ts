@@ -5430,11 +5430,10 @@ describe("the cloud count, one workspace at a time (#85)", () => {
       }),
     );
 
-    it.effect("get reads it deleted (CLI 2.0.8), or no longer finds it (CLI 2.0.11's recorded answer): it is gone too", () =>
+    it.effect("get reads it deleted (CLI 2.0.8), or no longer finds it: it is gone too", () =>
       Effect.gen(function* () {
         const answers: ReadonlyArray<Step> = [
           { argv: getC3, fixture: "ws-get-cloud-6-archived" },
-          { argv: getC3, fixture: "../2.0.11/ws-get-cloud-gone" },
           { argv: getC3, fail: `Workspace not found on host cloud: ${C3_WS}` },
         ];
         for (const answer of answers) {
@@ -5472,6 +5471,31 @@ describe("the cloud count, one workspace at a time (#85)", () => {
           ]);
           assert.strictEqual((yield* savedC3(t.data))?.archivedAt, null);
         }
+      }),
+    );
+
+    it.effect("get answers CLI 2.0.11's \"No cloud workspace … in this organization\": a CLI on another organization says so of a live workspace, so the count is null and the record is left as it is", () =>
+      Effect.gen(function* () {
+        // The CLI is on another organization: the listing shows none of the runner's workspaces,
+        // and get answers the same for each live one. Nothing may be marked archived.
+        const t = rig(
+          [
+            localStep,
+            bareCloud,
+            listOf(),
+            { argv: getC3, fixture: "../2.0.11/ws-get-cloud-gone" },
+            { argv: ["workspaces", "get", OTHER_WS, "--host", "cloud"], fixture: "../2.0.11/ws-get-cloud-gone" },
+          ],
+          { config: { cloud: true } },
+        );
+        yield* seedBoth(t.data);
+        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "cloud" }, running: null },
+        ]);
+        assert.strictEqual((yield* savedC3(t.data))?.archivedAt, null);
+        const other = yield* readThread(t.data, OTHER_WS).pipe(Effect.provide(NodeServices.layer));
+        assert.strictEqual(other?.archivedAt, null);
       }),
     );
 
