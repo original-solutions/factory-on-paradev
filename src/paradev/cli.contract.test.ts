@@ -13,6 +13,7 @@ const SEEN: ReadonlyArray<readonly [string, CliErrorKind]> = [
   ["Host is not online", "PARADEV_OFFLINE"],
   ["Not logged in", "PARADEV_SIGNED_OUT"],
   ["Workspace not found on host ", "NOT_FOUND"],
+  ["No cloud workspace ", "NOT_FOUND"],
   ['Terminal session "', "UNKNOWN"],
   ["No transcript for that terminal", "NO_TRANSCRIPT"],
   ["A stored value is at most 65536 bytes", "TOO_LARGE"],
@@ -49,6 +50,16 @@ for (const name of failed) {
     }),
   );
 }
+
+it.effect("CLI 2.0.11's answer for a cloud workspace that does not exist maps to NOT_FOUND (#113)", () =>
+  Effect.gen(function* () {
+    const name = "../2.0.11/ws-get-cloud-gone";
+    const error = yield* runThrough(name);
+    assert.strictEqual(error.kind, "NOT_FOUND");
+    assert.isTrue(readFixture(name).stderr.startsWith(`Error: ${error.text}\n`));
+    assert.match(error.text, /^No cloud workspace /);
+  }),
+);
 
 it.effect("a failure keeps the CLI's hint", () =>
   Effect.gen(function* () {

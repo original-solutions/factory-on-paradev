@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "workspaces",
+    "get",
+    "00000000-0000-4000-8000-000000000000",
+    "--host",
+    "cloud",
+    "--json"
+  ],
+  "exit": 1,
+  "startedAt": 1795498507128,
+  "durationMs": 805,
+  "stderr": "Error: No cloud workspace 00000000-0000-4000-8000-000000000000 in this organization\nHint: Pass --local for a workspace on this machine, or --host <id> for another host\n"
+}

@@ -5430,10 +5430,11 @@ describe("the cloud count, one workspace at a time (#85)", () => {
       }),
     );
 
-    it.effect("get reads it deleted (CLI 2.0.8), or no longer finds it: it is gone too", () =>
+    it.effect("get reads it deleted (CLI 2.0.8), or no longer finds it (CLI 2.0.11's recorded answer): it is gone too", () =>
       Effect.gen(function* () {
         const answers: ReadonlyArray<Step> = [
           { argv: getC3, fixture: "ws-get-cloud-6-archived" },
+          { argv: getC3, fixture: "../2.0.11/ws-get-cloud-gone" },
           { argv: getC3, fail: `Workspace not found on host cloud: ${C3_WS}` },
         ];
         for (const answer of answers) {
