@@ -1232,7 +1232,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * read: its agent would count nothing, and a count that misses a running agent lets cloud take
    * more runs than it has room for. One the listing leaves out is read on its own
    * ({@link unlistedStatus}): gone, it counts nothing; not gone, or not read, it fails the read too,
-   * once every one left out has been read, so a gone one beside it is still marked. With no record
+   * once every one left out has had its read, so a gone one beside it is still marked. With no record
    * in `counted`, cloud is not read at all.
    */
   const snapshotWorkspaces = (target: ThreadTarget, counted: ReadonlyArray<ThreadRecord>) =>
@@ -1255,16 +1255,20 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       );
       if (untagged !== undefined) return yield* notTagged(untagged);
       // CLI 2.0.11 lists no archived workspace (#113): one the listing leaves out is read on its own.
+      // Every one is read, whatever the others answer: a read that failed the batch would stop the
+      // read beside it before a gone workspace's record is marked.
       const unlisted = yield* Effect.forEach(
         counted.filter((record) => !listed.has(record.workspaceId)),
-        (record) => unlistedStatus(record).pipe(Effect.map((status) => ({ record, status }))),
+        (record) => Effect.result(unlistedStatus(record)).pipe(Effect.map((read) => ({ record, read }))),
         { concurrency: 2 },
       );
-      const live = unlisted.find(({ status }) => status !== null);
-      if (live !== undefined) {
-        return yield* fail(
-          `cloud workspace ${live.record.workspaceId} of ${live.record.threadId} is not listed, and workspaces get reads it ${live.status}`,
-        );
+      for (const { record, read } of unlisted) {
+        if (Result.isFailure(read)) return yield* Effect.fail(read.failure);
+        if (read.success !== null) {
+          return yield* fail(
+            `cloud workspace ${record.workspaceId} of ${record.threadId} is not listed, and workspaces get reads it ${read.success}`,
+          );
+        }
       }
       const ids = counted.map((record) => record.workspaceId).filter((id) => tagged.has(id));
       const answers = yield* Effect.forEach(ids, (id) => snapshot(target, id), { concurrency: 2 });

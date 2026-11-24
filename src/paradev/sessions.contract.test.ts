@@ -5445,26 +5445,29 @@ describe("the cloud count, one workspace at a time (#85)", () => {
       }),
     );
 
-    it.effect("the listing leaves out two: get reads one archived and the other up, so the count is null, the first is marked archived and the second is left as it is", () =>
+    it.effect("the listing leaves out two: get reads one archived, and the other up or not at all, so the count is null, the first is marked archived and the second is left as it is", () =>
       Effect.gen(function* () {
-        const t = rig(
-          [
-            localStep,
-            bareCloud,
-            listOf(),
-            { argv: getC3, fixture: "../2.0.11/ws-get-cloud-archived" },
-            { argv: ["workspaces", "get", OTHER_WS, "--host", "cloud"], fixture: "ws-get-cloud-ready" },
-          ],
-          { config: { cloud: true } },
-        );
-        yield* seedBoth(t.data);
-        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
-          { target: { kind: "local" }, running: 1 },
-          { target: { kind: "cloud" }, running: null },
-        ]);
-        assert.isNumber((yield* savedC3(t.data))?.archivedAt);
-        const other = yield* readThread(t.data, OTHER_WS).pipe(Effect.provide(NodeServices.layer));
-        assert.strictEqual(other?.archivedAt, null);
+        const getOther = ["workspaces", "get", OTHER_WS, "--host", "cloud"];
+        const answers: ReadonlyArray<Step> = [
+          { argv: getOther, fixture: "ws-get-cloud-ready" },
+          { argv: getOther, fail: "boom" },
+          { argv: getOther, fixture: "../2.0.11/ws-get-cloud-gone" },
+        ];
+        for (const answer of answers) {
+          // The other's answer comes first: it does not stop the read of the archived one.
+          const t = rig(
+            [localStep, bareCloud, listOf(), answer, { argv: getC3, fixture: "../2.0.11/ws-get-cloud-archived" }],
+            { config: { cloud: true } },
+          );
+          yield* seedBoth(t.data);
+          assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+            { target: { kind: "local" }, running: 1 },
+            { target: { kind: "cloud" }, running: null },
+          ]);
+          assert.isNumber((yield* savedC3(t.data))?.archivedAt);
+          const other = yield* readThread(t.data, OTHER_WS).pipe(Effect.provide(NodeServices.layer));
+          assert.strictEqual(other?.archivedAt, null);
+        }
       }),
     );
 
