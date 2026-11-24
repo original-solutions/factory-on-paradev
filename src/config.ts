@@ -169,7 +169,7 @@ export type MachineSize = "small" | "medium" | "large";
 /** The `cloud` block: Paradev Cloud's settings. */
 export interface CloudConfig {
   readonly machineSize: MachineSize;
-  /** Cloud runs at once, at most {@link MAX_CLOUD_RUNS}. */
+  /** Cloud runs at once. */
   readonly maxRuns: number;
   /** The `https://` address the org's Claude connection points at, checked before each cloud launch. */
   readonly proxy: string;
@@ -180,9 +180,6 @@ export interface LocalConfig {
   /** Runs this Mac may hold at once; defaults to `max_concurrent_runs`, and is at most that. */
   readonly maxRuns: number;
 }
-
-/** The most runs `cloud.max_runs` may allow. */
-export const MAX_CLOUD_RUNS = 3;
 
 /** A watched repo with the title of the T3 project it comes from, for the settings page. */
 export interface WatchedProject extends WatchedRepo {
@@ -905,11 +902,7 @@ const cloudFrom = (c: Checker, root: Mapping): CloudConfig | null | undefined =>
   const size = Object.hasOwn(block, "machine_size") ? block["machine_size"] : "small";
   const machineSize = MACHINE_SIZES.find((known) => known === size);
   if (machineSize === undefined) c.err("cloud.machine_size", "must be small, medium or large");
-  let maxRuns = c.optionalUint(block, "cloud", "max_runs", 1, 0);
-  if (maxRuns !== undefined && maxRuns > MAX_CLOUD_RUNS) {
-    c.err("cloud.max_runs", `must be at most ${MAX_CLOUD_RUNS}`);
-    maxRuns = undefined;
-  }
+  const maxRuns = c.optionalUint(block, "cloud", "max_runs", 1, 0);
   let proxy = c.nonEmptyString(c.child(block, "cloud", "proxy"), "cloud.proxy");
   if (proxy !== undefined && !isHttpsUrl(proxy)) {
     c.err("cloud.proxy", "must be an https:// URL");
