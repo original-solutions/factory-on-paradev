@@ -1142,15 +1142,13 @@ describe("on the Paradev CLI", () => {
           const process = FactoryProcess.of({
             run: (input) => {
               if (input.command !== "gh") return noGhProcess.run(input);
-              const args = input.args ?? [];
               if (refusing) {
                 return Effect.succeed(
                   reply(1, "", `HTTP 401: Bad credentials (https://api.github.com/graphql) ${PLANTED}\nTry authenticating with:  gh auth login\n`),
                 );
               }
-              return Effect.succeed(
-                args.join(" ") === "api user" ? reply(0, '{"login":"rawphp"}') : reply(1, "", "HTTP 404: Not Found\n"),
-              );
+              // GitHub answers: the answer need not be one the caller can use.
+              return Effect.succeed(reply(0, "{}"));
             },
           });
           const off = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    enabled: false\n`;
