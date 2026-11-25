@@ -309,8 +309,13 @@ const UNTYPED: ReadonlyArray<CliError["kind"]> = [
 export interface TargetCount {
   readonly target: ThreadTarget;
   readonly running: number | null;
-  /** Why `running` is null: the exact error of the read that failed. Absent when it was counted. */
+  /** Why cloud's `running` is null: the exact error of the read that failed (#117). Absent otherwise. */
   readonly error?: string;
+  /**
+   * The exact census errors of the cloud workspaces `running` counts as one used slot each because
+   * they could not be read (#117). Absent when there are none.
+   */
+  readonly uncountable?: ReadonlyArray<string>;
 }
 
 export type ParadevSessions = FactorySessions["Service"] & {
@@ -322,8 +327,9 @@ export type ParadevSessions = FactorySessions["Service"] & {
    * The agents running on each target (this Mac, each configured host in order, then cloud when
    * configured): one snapshot of this Mac or a host, and for cloud one per workspace of this
    * runner's. What placement checks against each target's `max_runs`. `running` is null for a
-   * target whose snapshot or listing could not be read, with that read's error in `error`, which is
-   * logged too. One cloud workspace that cannot be counted counts as one used slot (#117). Never fails.
+   * target whose snapshot or listing could not be read; for cloud, with that read's error in
+   * `error`, which is logged too. One cloud workspace that cannot be counted counts as one used
+   * slot, and its error is in `uncountable` (#117). Never fails.
    */
   readonly runningByTarget: Effect.Effect<ReadonlyArray<TargetCount>>;
   /** Archives the orphaned cloud workspaces; the runner calls it once per pass while a repo names a cloud environment. */
@@ -1345,7 +1351,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
             ?.terminals.find((t) => t.id === terminal)?.agent?.state;
           if (state === "starting" || state === "working") running += 1;
         }
-        return running;
+        return { running, uncountable: uncountable.map(({ error }) => error) };
       }),
     );
   };
@@ -1367,21 +1373,24 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     );
   });
 
-  /** A target whose agents could not be counted: null, with the exact error, which is logged too. */
+  /**
+   * A target whose agents could not be counted: null. Cloud's carries the census's exact error,
+   * which is logged too (#117); this Mac's and a host's are as before.
+   */
   const uncounted = (target: ThreadTarget, error: string): Effect.Effect<TargetCount> =>
-    Effect.logWarning(
-      `the running agents on ${target.kind === "host" ? `host ${target.machineId}` : target.kind} could not be counted: ${error}`,
-    ).pipe(
-      Effect.as({ target, running: null, error }),
-    );
+    target.kind !== "cloud"
+      ? Effect.succeed({ target, running: null })
+      : Effect.logWarning(`cloud's running agents could not be counted: ${error}`).pipe(
+          Effect.as({ target, running: null, error }),
+        );
 
   const runningByTarget = readTargets.pipe(
     Effect.flatMap((read) =>
-      Effect.forEach(read, ({ target, result }) =>
-        Result.isSuccess(result)
-          ? Effect.succeed<TargetCount>({ target, running: result.success })
-          : uncounted(target, result.failure.message),
-      ),
+      Effect.forEach(read, ({ target, result }) => {
+        if (Result.isFailure(result)) return uncounted(target, result.failure.message);
+        const { running, uncountable } = result.success;
+        return Effect.succeed<TargetCount>({ target, running, ...(uncountable.length > 0 && { uncountable }) });
+      }),
     ),
     // The records could not be read: no count can be trusted, so none is given.
     Effect.catch((error) =>
@@ -1395,7 +1404,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     Effect.flatMap((read) => {
       let running = 0;
       for (const { target, result } of read) {
-        if (Result.isSuccess(result)) running += result.success;
+        if (Result.isSuccess(result)) running += result.success.running;
         // This Mac is the one count the pass cannot do without; a host or cloud that cannot be read waits.
         else if (targetFor(target).onThisMac) return Effect.fail(result.failure);
       }

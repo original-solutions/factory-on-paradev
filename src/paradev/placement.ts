@@ -15,6 +15,8 @@ export interface Slots {
   readonly max: number;
   /** Why `running` is null: the read's exact error, which the reason names (#117). */
   readonly error?: string;
+  /** The errors of the workspaces `running` holds as used slots unread, which a full target's reason names (#117). */
+  readonly uncountable?: ReadonlyArray<string>;
 }
 
 /**
@@ -81,12 +83,26 @@ export type Placement =
 
 const perCore = (load: Load): number => load.oneMinute / load.cores;
 
-const slotsReason = ({ running, max, error }: Slots): string | null =>
+const slotsReason = ({ running, max, error, uncountable = [] }: Slots): string | null =>
   running === null
     ? `its running agents could not be counted${error === undefined ? "" : `: ${error}`}`
     : running >= max
-      ? `slots full: ${running} of ${max} running`
+      ? `slots full: ${running} of ${max} running${uncountable.length === 0 ? "" : ` (${uncountable.length} of them could not be counted: ${uncountable.join("; ")})`}`
       : null;
+
+/**
+ * `reason` with the census errors it names cut out, for a page others read (the belt): those
+ * errors can quote ids, tags and CLI output (#117). `status` keeps the whole reason.
+ */
+export const withoutCensusErrors = (reason: string): string => {
+  if (reason.startsWith("its running agents could not be counted")) {
+    return "its running agents could not be counted; factory-runner status says why";
+  }
+  return reason.replace(
+    / \((\d+) of them could not be counted: [\s\S]*\)$/,
+    " ($1 of them could not be counted; factory-runner status says why)",
+  );
+};
 
 /** Why `candidate` cannot take a launch, the first reason that applies; null when it can. */
 const dropReason = (candidate: TargetReading): string | null => {

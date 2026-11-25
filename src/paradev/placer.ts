@@ -9,7 +9,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import type { CloudConfig, HostConfig, MachineConfig, WatchedRepo } from "../config.ts";
 import type { MachineEvent } from "../ledger/events.ts";
-import type { CloudCensus } from "../pass.ts";
+import type { CloudCensus } from "../targets.ts";
 import type { Load } from "../load.ts";
 import { NoTargetHasRoom, type LaunchRequest } from "../sessions.ts";
 import { type Candidate, choosePlacement, targetKey, targetRow, type TargetReading } from "./placement.ts";
@@ -48,6 +48,8 @@ export const PROXY_NOT_CHECKED = "the proxy is not checked yet since the config 
 interface Counts {
   readonly running: Map<string, number | null>;
   readonly errors: ReadonlyMap<string, string>;
+  /** The errors of the workspaces a numeric count holds as used slots unread, by target key. */
+  readonly uncountable: ReadonlyMap<string, ReadonlyArray<string>>;
 }
 
 export const makePlacer = (deps: PlacerDeps) => {
@@ -82,16 +84,28 @@ export const makePlacer = (deps: PlacerDeps) => {
     const errors = new Map(
       read.flatMap((count) => (count.running === null && count.error !== undefined ? [[targetKey(count.target), count.error] as const] : [])),
     );
+    const uncountable = new Map(
+      read.flatMap((count) => (count.uncountable === undefined ? [] : [[targetKey(count.target), count.uncountable] as const])),
+    );
     // A launch in flight is in no snapshot yet: it counts on top of what the snapshot read.
     for (const key of inFlight.values()) bump(running, key);
-    return { running, errors } satisfies Counts;
+    return { running, errors, uncountable } satisfies Counts;
   });
 
-  /** `key`'s slots of `max` from `counts`, with the error of a count that could not be read. */
+  /**
+   * `key`'s slots of `max` from `counts`, with the error of a count that could not be read, or the
+   * errors of the workspaces a count holds as used slots unread.
+   */
   const slotsOf = (counts: Counts, key: string, max: number) => {
     const running = counts.running.get(key) ?? null;
     const error = counts.errors.get(key);
-    return { running, max, ...(running === null && error !== undefined ? { error } : {}) };
+    const uncountable = counts.uncountable.get(key);
+    return {
+      running,
+      max,
+      ...(running === null && error !== undefined && { error }),
+      ...(running !== null && uncountable !== undefined && { uncountable }),
+    };
   };
 
   /** The pass's counts: read on the first placement of the pass and kept for the rest of it. */
@@ -220,7 +234,11 @@ export const makePlacer = (deps: PlacerDeps) => {
       Effect.map((running): CloudCensus | null => {
         if (!running.running.has("cloud")) return null;
         const count = running.running.get("cloud") ?? null;
-        return { running: count, error: count === null ? (running.errors.get("cloud") ?? null) : null };
+        return {
+          running: count,
+          error: count === null ? (running.errors.get("cloud") ?? null) : null,
+          uncountable: count === null ? [] : (running.uncountable.get("cloud") ?? []),
+        };
       }),
     ),
     /**

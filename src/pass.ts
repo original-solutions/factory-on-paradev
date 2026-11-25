@@ -67,6 +67,7 @@ import {
 import type { ProxyAnswer } from "./paradev/proxy.ts";
 import { isNoTargetHasRoom, isPinnedNoTargetHasRoom, NO_TARGET_HAS_ROOM, type Model, type SessionsError } from "./sessions.ts";
 import type { StopRequestOutcome } from "./runner/stop.ts";
+import type { CloudCensus } from "./targets.ts";
 import { sanitize } from "./text.ts";
 import {
   LIST_LIMIT,
@@ -1308,21 +1309,17 @@ const cloudProxy = Effect.fn("Pass.cloudProxy")(function* (
   return `the proxy check failed: ${answer.reason}`;
 });
 
-/** Cloud's count of a pass: `running` null when it could not be counted, with `error` saying why. */
-export interface CloudCensus {
-  readonly running: number | null;
-  readonly error: string | null;
-}
-
 /** The attention item for a cloud count that has been null for over `cloud.census_offline_minutes`. */
 export const CLOUD_CENSUS_OFFLINE_ITEM_ID = "cloud-census-offline";
 
 /**
- * The cloud census check, once per pass after the claims (#117): while cloud's running agents
- * cannot be counted, placement refuses every cloud launch, so a count that has been null on every
- * pass for more than `cloud.census_offline_minutes` of wall time raises one `cloud-census-offline`
- * item naming the latest census error. A pass that gets a number clears it and stops the clock.
- * Run only while `cloud` is configured and a repo names a cloud environment, as the proxy check.
+ * The cloud census check, once per pass after the claims (#117). Cloud is uncountable while its
+ * count is null, when placement refuses every cloud launch, and while the count holds workspaces
+ * it could not read as used slots, each of which takes a slot until it is read. A census that has
+ * been uncountable on every pass for more than `cloud.census_offline_minutes` of wall time raises
+ * one `cloud-census-offline` item naming the latest census error; a pass whose census reads every
+ * workspace clears it and stops the clock. Run only while `cloud` is configured and a repo names a
+ * cloud environment, as the proxy check.
  */
 const cloudCensusOffline = Effect.fn("Pass.cloudCensusOffline")(function* (
   world: PassWorld,
@@ -1332,25 +1329,29 @@ const cloudCensusOffline = Effect.fn("Pass.cloudCensusOffline")(function* (
   const cloud = machine.cloud;
   const census =
     cloud === undefined || !machine.repos.some((entry) => entry.cloud !== undefined) ? null : yield* world.cloudCensus();
-  if (cloud === undefined || census === null || census.running !== null) {
+  if (cloud === undefined || census === null || (census.running !== null && census.uncountable.length === 0)) {
     world.censusOffline.since = null;
     yield* world.attention.clear((item) => item.id === CLOUD_CENSUS_OFFLINE_ITEM_ID);
     return;
   }
   const now = world.nowMs();
   const since = (world.censusOffline.since ??= now);
-  const error = census.error ?? "no error was given";
-  pass.line(`cloud census: its running agents could not be counted (${plain(error)}); cloud takes no launch`);
+  const error = census.error ?? (census.uncountable.join("; ") || "no error was given");
+  const effect =
+    census.running === null
+      ? "its running agents could not be counted, so cloud launches are refused"
+      : `${census.uncountable.length} of its workspaces could not be counted and each holds a cloud slot, so cloud launches are refused while that leaves no room`;
+  pass.line(`cloud census: ${effect} (${plain(error)})`);
   if (now - since <= cloud.censusOfflineMinutes * 60_000) return;
-  if ((yield* world.attention.list()).some((item) => item.id === CLOUD_CENSUS_OFFLINE_ITEM_ID)) return;
   pass.report.attention += 1;
+  // Raised once: an open item is not raised again, so it keeps the error of the pass that raised it.
   yield* world.attention.raise({
     id: CLOUD_CENSUS_OFFLINE_ITEM_ID,
     kind: "attention",
     repo: null,
     issue: null,
     run: null,
-    message: `cloud's running agents have not been counted for over ${cloud.censusOfflineMinutes} minutes, so cloud launches are refused until they are; the latest census error: ${error}`,
+    message: `cloud has not been fully counted for over ${cloud.censusOfflineMinutes} minutes: ${effect}; the latest census error: ${error}`,
   });
 });
 
