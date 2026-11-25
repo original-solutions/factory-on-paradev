@@ -2071,6 +2071,49 @@ describe("liveWorld", () => {
     }),
   );
 
+  it.effect("a host check's read of the runner's login goes through the shared tally: after a give-up it is tried once and counted", () =>
+    Effect.gen(function* () {
+      const shared = newShared();
+      shared.ghCredentials.gaveUp = true;
+      const scope = yield* Scope.make();
+      const ghCalls: Array<ReadonlyArray<string>> = [];
+      const process = FactoryProcess.of({
+        run: (input) =>
+          Effect.sync(() => {
+            ghCalls.push(input.args ?? []);
+            return reply(1, "", "gh: Bad credentials (HTTP 401)\n");
+          }),
+      });
+      const host = { id: "h1", name: "mini", ssh: "me@mini", maxRuns: 2, maxLoadPerCore: 1 };
+      const world = liveWorld(
+        { ...machine, hosts: [host] },
+        tempDir(),
+        process,
+        NodeServices.layer,
+        {} as never,
+        () => NOW,
+        "mac-mini",
+        noAttention,
+        {
+          gate: { run: () => Effect.die("no gate") },
+          wake: Effect.void,
+          scope,
+          ssh: () => Effect.succeed({ exitCode: 255, timedOut: false, stdout: "", stderr: "Connection refused\n" }),
+          superset: () => Effect.fail("no Paradev CLI"),
+        },
+        undefined,
+        undefined,
+        shared,
+      );
+      const check = yield* Effect.forkChild(world.checkHost(host), { startImmediately: true });
+      // No wait on the test clock: the refused login read is tried once, as the trackers' are.
+      yield* Effect.yieldNow;
+      assert.isDefined(check.pollUnsafe());
+      assert.deepStrictEqual(ghCalls, [["api", "user"]]);
+      assert.deepStrictEqual(shared.ghCredentials, { rejected: 1, accepted: 0, gaveUp: true, passes: 0 });
+    }),
+  );
+
   it.effect("a new world built from the same shared state goes on counting the cloud proxy's misses", () =>
     Effect.gen(function* () {
       const shared = newShared();

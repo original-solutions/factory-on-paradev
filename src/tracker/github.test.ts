@@ -47,6 +47,7 @@ import {
   isTransientRead,
   isPlainRefName,
   isSafeBranchName,
+  ghLogin,
   makeGitHub,
 } from "./github.ts";
 
@@ -7719,6 +7720,52 @@ describe("Bad credentials in a claim, and after a 401 outlasted its retries", ()
       assert.strictEqual(error._tag, "GitHubFailed");
       if (error._tag === "GitHubFailed") assert.strictEqual(error.stderr, REFUSED);
       assert.deepStrictEqual(t.calls(), [claimViewCall, claimPostCall(), claimListCall, claimEditCall]);
+    }),
+  );
+
+  it.effect("a claim whose edit GitHub never received, then whose re-view is refused once, still claims", () =>
+    Effect.gen(function* () {
+      const TLS = 'Post "https://api.github.com/graphql": net/http: TLS handshake timeout';
+      const t = setup(
+        reply('{"assignees":[]}'),
+        claimPosted(50),
+        claimList(claimRow(50, "mac-mini", CLAIMED_AT)),
+        fail(1, TLS),
+        fail(1, REFUSED),
+        reply('{"assignees":[]}'),
+        claimList(claimRow(50, "mac-mini", CLAIMED_AT)),
+        reply(""),
+      );
+      const fiber = yield* Effect.forkChild(t.ok(claim6(t)), { startImmediately: true });
+      yield* TestClock.adjust(2_000 + 5_000 + 2_000);
+      assert.deepStrictEqual(yield* Fiber.join(fiber), { kind: "claimed" });
+      assert.deepStrictEqual(t.calls(), [
+        claimViewCall,
+        claimPostCall(),
+        claimListCall,
+        claimEditCall,
+        claimViewCall,
+        claimViewCall,
+        claimListCall,
+        claimEditCall,
+      ]);
+    }),
+  );
+
+  it.effect("the runner's login read counts in a tally it is given, and after a give-up is tried once", () =>
+    Effect.gen(function* () {
+      const t = setup(fail(1, REFUSED), reply('{"login":"rawphp"}'));
+      const tally = { rejected: 0, accepted: 0, gaveUp: true };
+      const refused = yield* Effect.forkChild(t.err(ghLogin(GH_CONFIG_DIR, tally)), {
+        startImmediately: true,
+      });
+      // No wait on the test clock: it is tried once.
+      yield* Effect.yieldNow;
+      assert.isDefined(refused.pollUnsafe());
+      assert.strictEqual(t.inputs.length, 1);
+      assert.deepStrictEqual(tally, { rejected: 1, accepted: 0, gaveUp: true });
+      assert.strictEqual(yield* t.ok(ghLogin(GH_CONFIG_DIR, tally)), "rawphp");
+      assert.deepStrictEqual(tally, { rejected: 1, accepted: 1, gaveUp: false });
     }),
   );
 
