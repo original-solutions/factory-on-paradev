@@ -189,10 +189,14 @@ const linesOf = (dataDir: string, run: RunId) =>
 const bytesOf = (dataDir: string, run: RunId) => JSON.stringify(readRun(dataDir, run).entries);
 
 /** The lines a launch timeout appends after the run's own, for a run left in `triage`. */
-const readyTail = (marker: string, reason: string) => [
+const readyTail = (marker: string, reason: string, totalMs: number) => [
   { event: "step_changed", data: { step: marker }, cause: makeCause("pass", reason) },
   { event: "state_changed", data: { from: "triage", to: "ready" }, cause: makeCause("pass", reason) },
-  { event: "finished", data: FINISHED.data, cause: makeCause("pass", reason) },
+  {
+    event: "finished",
+    data: { ...FINISHED.data, total_ms: totalMs },
+    cause: makeCause("pass", reason),
+  },
 ];
 
 const READY_CALLS = ["issue 10", "setState 10 ready", "unassign 10 rawphp"];
@@ -229,7 +233,7 @@ describe("reapLaunch: the launch-sending timeout", () => {
         assert.deepStrictEqual(rig.world.issue.assignees, []);
         assert.deepStrictEqual(
           linesOf(rig.dataDir, runOf(1)).slice(SENDING.length),
-          readyTail("launch-timed-out", "launch-timeout"),
+          readyTail("launch-timed-out", "launch-timeout", 901 * SECOND),
         );
         const seen = readProgress(readRun(rig.dataDir, runOf(1)).entries);
         assert.isTrue(seen.finished);
@@ -499,7 +503,7 @@ describe("reapLaunch: a stop by hand of a run still starting", () => {
       assert.deepStrictEqual(rig.calls, READY_CALLS);
       assert.deepStrictEqual(
         linesOf(rig.dataDir, runOf(1)).slice(SENDING.length + 1),
-        readyTail("launch-stopped", "stop-requested"),
+        readyTail("launch-stopped", "stop-requested", MINUTE),
       );
     }),
   );
