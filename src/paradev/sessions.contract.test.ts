@@ -5443,6 +5443,28 @@ describe("the cloud count, one workspace at a time (#85)", () => {
     }),
   );
 
+  it.effect("the heal keeps every other tag the workspace is listed with: no update shrinks its set (#117)", () =>
+    Effect.gen(function* () {
+      // A hand tag, which is also a sidebar folder; one with no `factory`; and one whose name reads like a flag.
+      for (const tags of [["factory", "keep-for-debug"], ["keep-for-debug"], ["factory", { name: "--clear-tags" }, "keep-for-debug"]]) {
+        const keep = tags.map((tag) => (typeof tag === "string" ? tag : tag.name)).filter((name) => name !== "factory");
+        const heal = [...healArgv(C3_WS), ...keep.map((name) => `--tag=${name}`)];
+        const t = rig(
+          [localStep, bareCloud, listOf({ id: C3_WS, tags }), { argv: heal, answer: { id: C3_WS } }, snapshotAt(C3_WS)],
+          { config: { cloud: true } },
+        );
+        yield* seedCloud(t.data);
+        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "cloud" }, running: 1 },
+        ]);
+        assert.deepStrictEqual(updates(t.calls), [heal]);
+        // The set it leaves: both runner tags and every tag it was listed with, none read as a flag.
+        assert.deepStrictEqual(cloudUpdateTags(updates(t.calls)[0]!), ["factory", MINE, ...keep]);
+      }
+    }),
+  );
+
   it.effect("a workspace with another runner's tag and no record in this ledger is not updated, and does not fail this runner's count (#117)", () =>
     Effect.gen(function* () {
       const t = rig(

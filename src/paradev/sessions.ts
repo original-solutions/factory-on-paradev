@@ -844,11 +844,16 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * replaces the tag set, so a repeat changes nothing. Both tags go in this one call, every time:
    * CLI 2.0.11 keeps every `--tag` and sends them as one set (#117), so an update with one tag
    * would leave a set of one. The cloud count sends the same call to put them back
-   * ({@link snapshotWorkspaces}).
+   * ({@link snapshotWorkspaces}), with `keep`, the other tags the workspace is listed with, after
+   * them: no update shrinks the set (#117). Each kept tag goes as `--tag=<name>`, so a name read
+   * from Paradev that starts with `-` cannot read as a flag.
    */
-  const tagCloud = (workspaceId: string) =>
+  const tagCloud = (workspaceId: string, keep: ReadonlyArray<string> = []) =>
     Effect.gen(function* () {
-      const argv = ["workspaces", "update", workspaceId, ...cloudTarget.at, "--tag", "factory", "--tag", yield* mine];
+      const argv = [
+        "workspaces", "update", workspaceId, ...cloudTarget.at, "--tag", "factory", "--tag", yield* mine,
+        ...keep.map((name) => `--tag=${name}`),
+      ];
       yield* callWithRetry(cli, argv, 30_000);
     });
 
@@ -1243,10 +1248,10 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * time; none such reads no snapshot. A tagged workspace with no record in `counted` (an archived
    * run's, an orphan's, another runner's) is not read or changed: nothing in it would count, and its
    * failed snapshot would lose the count. A workspace of `counted` the listing shows live without
-   * this runner's tag gets both tags back with the update a launch sends ({@link tagCloud}), and is
-   * then read as a tagged one (#117): so a count writes to cloud. One that carries another runner's
-   * tag instead is not updated, since the update replaces the set and would take it from that
-   * runner; it is uncountable. One the listing leaves out is read on its own
+   * this runner's tag gets both tags back with the update a launch sends ({@link tagCloud}), each other
+   * tag it is listed with kept, and is then read as a tagged one (#117): so a count writes to cloud.
+   * One that carries another runner's tag instead is not updated, since that would make it this
+   * runner's too; it is uncountable. One the listing leaves out is read on its own
    * ({@link unlistedStatus}): gone, it counts nothing. A record that still cannot be read (the
    * update failed, its snapshot failed, or one left out is not gone or could not be read) is
    * uncountable: it counts as one used slot, and the others are still counted, since a count that
@@ -1271,13 +1276,16 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const listed = new Set(rows.map((row) => row.id));
       const toRead = new Set(counted.map((record) => record.workspaceId).filter((id) => tagged.has(id)));
       // Each of this ledger's live workspaces listed without the tag gets both back, two at a time,
-      // unless another runner's tag is on it: the update replaces the set, so it would take that one.
-      const untagged: Array<ThreadRecord> = [];
+      // with the tags it has kept (the update replaces the set), unless another runner's tag is on it.
+      const untagged: Array<{ readonly record: ThreadRecord; readonly keep: ReadonlyArray<string> }> = [];
       for (const record of counted) {
         if (!listed.has(record.workspaceId) || tagged.has(record.workspaceId) || deleted.has(record.workspaceId)) continue;
-        const other = otherRunnerTag(rows.find((row) => row.id === record.workspaceId)?.tags, tag);
-        if (other === undefined) untagged.push(record);
-        else {
+        const listedTags = rows.find((row) => row.id === record.workspaceId)?.tags;
+        const other = otherRunnerTag(listedTags, tag);
+        if (other === undefined) {
+          const keep = [...new Set(tagNames(listedTags))].filter((name) => name !== "factory" && name !== tag);
+          untagged.push({ record, keep });
+        } else {
           uncountable.push({
             record,
             error: `cloud workspace ${record.workspaceId} of ${record.threadId} is listed with another runner's tag ${other}, not ${tag}, so its tags are left as they are`,
@@ -1286,7 +1294,8 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       }
       const healed = yield* Effect.forEach(
         untagged,
-        (record) => Effect.result(tagCloud(record.workspaceId)).pipe(Effect.map((update) => ({ record, update }))),
+        ({ record, keep }) =>
+          Effect.result(tagCloud(record.workspaceId, keep)).pipe(Effect.map((update) => ({ record, update }))),
         { concurrency: 2 },
       );
       for (const { record, update } of healed) {
