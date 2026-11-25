@@ -89,6 +89,7 @@ import {
   type Model,
 } from "./sessions.ts";
 import type { CheckLine } from "./paradev/hostsCheck.ts";
+import type { TargetCensus } from "./targets.ts";
 import type { ProxyAnswer } from "./paradev/proxy.ts";
 import type { SshAnswer, SshSpawn } from "./paradev/ssh.ts";
 import { GitHubFailed, type Blocker, type Mergeable } from "./tracker/github.ts";
@@ -244,9 +245,7 @@ class Fake implements PassWorld {
   proxyChecks = 0;
   proxyMisses = { passes: 0 };
   /** What the pass's cloud count answers, one per pass; the last repeats. Null: cloud is not counted. */
-  censusAnswers: Array<{ running: number | null; error: string | null; uncountable: ReadonlyArray<string> } | null> = [
-    { running: 0, error: null, uncountable: [] },
-  ];
+  censusAnswers: Array<TargetCensus | null> = [{ running: 0 }];
   censusReads = 0;
   censusOffline: { since: number | null } = { since: null };
   cloudCensus = () =>
@@ -7383,11 +7382,11 @@ describe("the cloud proxy check", () => {
 describe("cloud census offline (#117)", () => {
   const MINUTE = 60_000;
   const ERROR = "cloud workspace e0fe439f of cloud:e0fe439f is not listed with the tag factory-ad9388b9";
-  const offline = { running: null, error: ERROR, uncountable: [] };
-  const counted = { running: 1, error: null, uncountable: [] };
+  const offline: TargetCensus = { running: null, error: ERROR };
+  const counted: TargetCensus = { running: 1 };
   const STUCK = "cloud workspace e0fe439f of cloud:e0fe439f is not listed, and workspaces get failed: boom";
   /** A number, but one workspace in it could not be counted: it holds a slot unread. */
-  const degraded = { running: 1, error: null, uncountable: [STUCK] };
+  const degraded: TargetCensus = { running: 1, uncountable: [STUCK] };
   const cloudy = (minutes = 10) => {
     const fake = new Fake();
     fake.cloud = { machineSize: "small", maxRuns: 1, proxy: "https://proxy.example.ts.net:8443", censusOfflineMinutes: minutes };
@@ -7399,7 +7398,7 @@ describe("cloud census offline (#117)", () => {
   const passesAt = (
     fake: Fake,
     atMinutes: ReadonlyArray<number>,
-    answers: ReadonlyArray<{ running: number | null; error: string | null; uncountable: ReadonlyArray<string> }>,
+    answers: ReadonlyArray<TargetCensus>,
   ) =>
     Effect.gen(function* () {
       const seen: Array<number> = [];
@@ -7461,20 +7460,15 @@ describe("cloud census offline (#117)", () => {
     }),
   );
 
-  it.effect("a workspace that stays uncountable while the count is a number raises the item too, naming its error, and clears once it is counted", () =>
+  it.effect("a numeric count is a count, even one that holds a workspace it could not read: it raises nothing and clears an open item", () =>
     Effect.gen(function* () {
+      // The item is for a null count only; a workspace held as a slot unread shows in the row's reason.
       const fake = cloudy();
-      const seen = yield* passesAt(fake, [0, 5, 10, 11, 30, 31], [degraded, degraded, degraded, degraded, degraded, counted]);
-      assert.deepEqual(seen, [0, 0, 0, 1, 1, 0]);
-      const fresh = cloudy();
-      yield* passesAt(fresh, [0, 11], [degraded]);
-      const [item] = items(fresh);
-      assert.include(item!.message, STUCK);
-      assert.include(item!.message, "10 minutes");
-      assert.include(item!.message, "cloud launches are refused");
-      // A null count and an uncountable workspace are one outage: the clock does not start over.
-      const mixed = cloudy();
-      assert.deepEqual(yield* passesAt(mixed, [0, 6, 11], [offline, degraded, degraded]), [0, 0, 1]);
+      assert.deepEqual(yield* passesAt(fake, [0, 11, 30], [degraded]), [0, 0, 0]);
+      assert.equal(fake.censusOffline.since, null);
+      const raised = cloudy();
+      assert.deepEqual(yield* passesAt(raised, [0, 11, 12], [offline, offline, degraded]), [0, 1, 0]);
+      assert.equal(raised.censusOffline.since, null);
     }),
   );
 
