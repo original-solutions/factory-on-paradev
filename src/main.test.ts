@@ -2058,13 +2058,13 @@ describe("liveWorld", () => {
       );
       yield* TestClock.adjust(60_000);
       assert.isTrue(Result.isFailure(yield* Fiber.join(fiber)));
-      assert.deepStrictEqual(shared.ghCredentials, { rejected: 1, accepted: 0, passes: 0 });
+      assert.deepStrictEqual(shared.ghCredentials, { rejected: 1, accepted: 0, gaveUp: true, passes: 0 });
       answer = "missing";
       yield* Effect.result(world.trackerUser({ repo: REPO, path: "/p" }));
-      assert.deepStrictEqual(shared.ghCredentials, { rejected: 1, accepted: 0, passes: 0 });
+      assert.deepStrictEqual(shared.ghCredentials, { rejected: 1, accepted: 0, gaveUp: true, passes: 0 });
       answer = "answer";
       assert.strictEqual(yield* world.trackerUser({ repo: REPO, path: "/p" }), "rawphp");
-      assert.deepStrictEqual(shared.ghCredentials, { rejected: 1, accepted: 1, passes: 0 });
+      assert.deepStrictEqual(shared.ghCredentials, { rejected: 1, accepted: 1, gaveUp: false, passes: 0 });
       // A world built after a config load goes on with the same count.
       shared.ghCredentials.passes = 2;
       assert.strictEqual(build().ghCredentials.passes, 2);

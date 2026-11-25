@@ -246,7 +246,7 @@ class Fake implements PassWorld {
   proxyChecks = 0;
   proxyMisses = { passes: 0 };
   /** What the pass's GitHub calls said of the gh login's credentials, and the failing passes in a row. */
-  ghCredentials = { rejected: 0, accepted: 0, passes: 0 };
+  ghCredentials = { rejected: 0, accepted: 0, gaveUp: false, passes: 0 };
   checkProxy = () =>
     Effect.sync(() => {
       this.proxyChecks += 1;
@@ -7382,6 +7382,7 @@ describe("persistent Bad credentials from GitHub", () => {
   const passWith = (fake: Fake, outcome: Outcome) => {
     fake.ghCredentials.rejected = outcome === "refused" || outcome === "both" ? 2 : 0;
     fake.ghCredentials.accepted = outcome === "answered" || outcome === "both" ? 3 : 0;
+    fake.ghCredentials.gaveUp = outcome === "refused" || outcome === "both";
     return pass(fake, [REPO], 5);
   };
 
@@ -7421,9 +7422,10 @@ describe("persistent Bad credentials from GitHub", () => {
       assert.include(item.message, GH_DIR);
       assert.include(item.message, "Bad credentials");
       assert.equal(fake.ghCredentials.passes, 4);
-      // The tally is the pass's own: read and started over.
+      // The tally is read and started over, and the next pass's first refused call is retried again.
       assert.equal(fake.ghCredentials.rejected, 0);
       assert.equal(fake.ghCredentials.accepted, 0);
+      assert.isFalse(fake.ghCredentials.gaveUp);
     }),
   );
 
@@ -7440,6 +7442,11 @@ describe("persistent Bad credentials from GitHub", () => {
           assert.include(line, "Bad credentials");
           assert.include(line, GH_DIR);
         }
+        seen.forEach((s, index) => {
+          const line = s.lines.find((l) => l.startsWith("gh:"))!;
+          assert.include(line, "2 GitHub call(s)");
+          assert.include(line, `(${index + 1} pass(es) in a row)`);
+        });
         assert.equal(fake.ghCredentials.passes, n);
       }
     }),
