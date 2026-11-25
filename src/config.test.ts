@@ -826,6 +826,7 @@ describe("machine config", () => {
         machineSize: "medium",
         maxRuns: 1,
         proxy: "https://trilogy-mac.tail459612.ts.net:10000",
+        censusOfflineMinutes: 10,
       });
       expect(c.local).toEqual({ maxRuns: 1 });
     });
@@ -851,7 +852,7 @@ describe("machine config", () => {
         }),
       );
       expect(c.hosts[0]!.maxLoadPerCore).toBe(1);
-      expect(c.cloud).toEqual({ machineSize: "small", maxRuns: 1, proxy: "https://p.example:10000" });
+      expect(c.cloud).toEqual({ machineSize: "small", maxRuns: 1, proxy: "https://p.example:10000", censusOfflineMinutes: 10 });
     });
 
     it("local.max_runs defaults to max_concurrent_runs, may be 0, and may not exceed it", () => {
@@ -870,6 +871,20 @@ describe("machine config", () => {
       const none = machineErr(edit(TARGETS, (tree) => remove(tree, "hosts")));
       assertOne(none, "repos[0].hosts[0].id", MFILE);
       expect(none[0]!.message).toBe(`${HOST} is not in hosts`);
+    });
+
+    it("takes cloud.census_offline_minutes as an integer of at least 1, 10 when absent (#117)", () => {
+      expect(machine(TARGETS).cloud!.censusOfflineMinutes).toBe(10);
+      for (const ok of ["1", "10", "45"]) {
+        expect(machine(edit(TARGETS, (tree) => set(tree, "cloud.census_offline_minutes", ok))).cloud!.censusOfflineMinutes).toBe(Number(ok));
+      }
+      for (const bad of ["0", "-1", "1.5", "x", '""']) {
+        assertOne(
+          machineErr(edit(TARGETS, (tree) => set(tree, "cloud.census_offline_minutes", bad))),
+          "cloud.census_offline_minutes",
+          MFILE,
+        );
+      }
     });
 
     it("takes any cloud.max_runs from 0 up", () => {
@@ -1189,6 +1204,13 @@ describe("the example machine config", () => {
       ]);
       expect(c.repos[0]!.cloud).toBe("edad9805-e48d-40f3-a06c-e19a4105f974");
       expect(c.cloud).toBeDefined();
+      // The example names census_offline_minutes right after max_runs, at its default (#117).
+      expect(c.cloud!.censusOfflineMinutes).toBe(10);
+      const keys = block.map((line) => line.match(/^#\s+([a-z_]+):/)?.[1]).filter((key) => key !== undefined);
+      expect(keys.slice(keys.lastIndexOf("max_runs", keys.indexOf("proxy")), keys.indexOf("proxy"))).toEqual([
+        "max_runs",
+        "census_offline_minutes",
+      ]);
       expect(c.local.maxRuns).toBe(1);
     }).pipe(Effect.provide(NodeServices.layer)),
   );

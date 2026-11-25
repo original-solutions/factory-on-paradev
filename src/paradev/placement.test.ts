@@ -261,6 +261,19 @@ describe("targetRow", () => {
     );
   });
 
+  it("names the exact census error in the reason of a target whose agents could not be counted (#117)", () => {
+    const error = "superset workspaces list --host cloud --json failed (UNKNOWN): boom";
+    const row = targetRow(cloud({ slots: { running: null, max: 1, error } }));
+    assert.deepStrictEqual(
+      { online: row.online, slots: row.slots, reason: row.reason },
+      { online: false, slots: { used: null, max: 1 }, reason: `its running agents could not be counted: ${error}` },
+    );
+    const placed = choosePlacement([cloud({ slots: { running: null, max: 1, error } })]);
+    assert.deepStrictEqual(placed.dropped, [
+      { id: "cloud", target: "cloud", reason: `its running agents could not be counted: ${error}` },
+    ]);
+  });
+
   it("gives cloud no load, and its proxy check as its readiness", () => {
     assert.deepStrictEqual(targetRow(cloud({ slots: { running: 1, max: 1 } })), {
       kind: "cloud",

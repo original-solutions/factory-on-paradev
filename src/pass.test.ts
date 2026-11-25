@@ -38,6 +38,7 @@ import { formatTs } from "./ledger/time.ts";
 import {
   checkHosts,
   checkCloudPlugin,
+  CLOUD_CENSUS_OFFLINE_ITEM_ID,
   checkLocalPlugin,
   HOST_READY_RECHECK_EVERY_MS,
   HOST_RECHECK_EVERY_MS,
@@ -242,6 +243,15 @@ class Fake implements PassWorld {
   proxyAnswers: Array<ProxyAnswer> = [{ kind: "guarded" }];
   proxyChecks = 0;
   proxyMisses = { passes: 0 };
+  /** What the pass's cloud count answers, one per pass; the last repeats. Null: cloud is not counted. */
+  censusAnswers: Array<{ running: number | null; error: string | null } | null> = [{ running: 0, error: null }];
+  censusReads = 0;
+  censusOffline: { since: number | null } = { since: null };
+  cloudCensus = () =>
+    Effect.sync(() => {
+      this.censusReads += 1;
+      return this.censusAnswers.length > 1 ? this.censusAnswers.shift()! : this.censusAnswers[0]!;
+    });
   checkProxy = () =>
     Effect.sync(() => {
       this.proxyChecks += 1;
@@ -7225,7 +7235,7 @@ describe("the cloud proxy check", () => {
 
   const cloudy = (answers: Array<ProxyAnswer>) => {
     const fake = new Fake();
-    fake.cloud = { machineSize: "small", maxRuns: 1, proxy: PROXY };
+    fake.cloud = { machineSize: "small", maxRuns: 1, proxy: PROXY, censusOfflineMinutes: 10 };
     fake.machineRepos = [{ repo: REPO, path: "/work/softfac", cloud: "env-1" }];
     fake.proxyAnswers = answers;
     return fake;
@@ -7364,6 +7374,120 @@ describe("the cloud proxy check", () => {
       noCloud.cloud = undefined;
       yield* pass(noCloud, [REPO], 5);
       assert.equal(noCloud.proxyChecks, 0);
+    }),
+  );
+});
+
+describe("cloud census offline (#117)", () => {
+  const MINUTE = 60_000;
+  const ERROR = "cloud workspace e0fe439f of cloud:e0fe439f is not listed with the tag factory-ad9388b9";
+  const offline = { running: null, error: ERROR };
+  const counted = { running: 1, error: null };
+  const cloudy = (minutes = 10) => {
+    const fake = new Fake();
+    fake.cloud = { machineSize: "small", maxRuns: 1, proxy: "https://proxy.example.ts.net:8443", censusOfflineMinutes: minutes };
+    fake.machineRepos = [{ repo: REPO, path: "/work/softfac", cloud: "env-1" }];
+    return fake;
+  };
+  const items = (fake: Fake) => fake.items.filter((item) => item.id === CLOUD_CENSUS_OFFLINE_ITEM_ID);
+  /** One pass at each of `atMinutes` after T0, the census answering `answers` in turn. */
+  const passesAt = (fake: Fake, atMinutes: ReadonlyArray<number>, answers: ReadonlyArray<{ running: number | null; error: string | null }>) =>
+    Effect.gen(function* () {
+      const seen: Array<number> = [];
+      for (const [index, minutes] of atMinutes.entries()) {
+        fake.now = T0 + minutes * MINUTE;
+        fake.censusAnswers = [answers[Math.min(index, answers.length - 1)]!];
+        const { report } = yield* pass(fake, [REPO], 5);
+        seen.push(items(fake).length);
+        assert.ok(report.attention >= 0);
+      }
+      return seen;
+    });
+
+  it.effect("an outage shorter than census_offline_minutes raises nothing, and a count clears the clock", () =>
+    Effect.gen(function* () {
+      const fake = cloudy();
+      // Null from 0 to 10 minutes (not more than 10), then a count, then null again for 9 minutes.
+      const seen = yield* passesAt(fake, [0, 5, 10, 11, 12, 21], [offline, offline, offline, counted, offline, offline]);
+      assert.deepEqual(seen, [0, 0, 0, 0, 0, 0]);
+      assert.equal(fake.censusOffline.since, T0 + 12 * MINUTE);
+    }),
+  );
+
+  it.effect("the default of 10 minutes: an outage of more than 10 minutes raises cloud-census-offline once, naming the error and that cloud launches are refused", () =>
+    Effect.gen(function* () {
+      const fake = cloudy();
+      const seen = yield* passesAt(fake, [0, 5, 10, 11, 12, 30], [offline]);
+      assert.deepEqual(seen, [0, 0, 0, 1, 1, 1]);
+      const [item] = items(fake);
+      assert.equal(item!.kind, "attention");
+      assert.equal(item!.repo, null);
+      assert.equal(item!.issue, null);
+      assert.equal(item!.run, null);
+      assert.include(item!.message, ERROR);
+      assert.include(item!.message, "cloud launches are refused");
+      assert.include(item!.message, "10 minutes");
+      // Raised once: the item is the first pass's past the limit, not one per pass.
+      assert.equal(item!.firstSeenMs, T0 + 11 * MINUTE);
+    }),
+  );
+
+  it.effect("the attention count goes up on the pass that raises it", () =>
+    Effect.gen(function* () {
+      const fake = cloudy(1);
+      fake.now = T0;
+      fake.censusAnswers = [offline];
+      assert.equal((yield* pass(fake, [REPO], 5)).report.attention, 0);
+      fake.now = T0 + 2 * MINUTE;
+      assert.equal((yield* pass(fake, [REPO], 5)).report.attention, 1);
+      assert.deepEqual(items(fake).length, 1);
+    }),
+  );
+
+  it.effect("census_offline_minutes is read from the cloud block: 1 raises after just over a minute", () =>
+    Effect.gen(function* () {
+      const fake = cloudy(1);
+      const seen = yield* passesAt(fake, [0, 1, 2], [offline]);
+      assert.deepEqual(seen, [0, 0, 1]);
+    }),
+  );
+
+  it.effect("a recovered count clears the item, and the next outage starts its clock over", () =>
+    Effect.gen(function* () {
+      const fake = cloudy();
+      const seen = yield* passesAt(fake, [0, 11, 12, 13, 20], [offline, offline, counted, offline, offline]);
+      assert.deepEqual(seen, [0, 1, 0, 0, 0]);
+      assert.equal(fake.censusOffline.since, T0 + 13 * MINUTE);
+    }),
+  );
+
+  it.effect("no cloud block, no repo that names cloud, or cloud not counted: nothing is read or raised, and an open item clears", () =>
+    Effect.gen(function* () {
+      const fake = cloudy();
+      yield* passesAt(fake, [0, 11], [offline]);
+      assert.equal(items(fake).length, 1);
+      fake.machineRepos = [{ repo: REPO, path: "/work/softfac" }];
+      const reads = fake.censusReads;
+      fake.now = T0 + 12 * MINUTE;
+      yield* pass(fake, [REPO], 5);
+      assert.equal(items(fake).length, 0);
+      assert.equal(fake.censusOffline.since, null);
+      assert.equal(fake.censusReads, reads);
+
+      const none = cloudy();
+      none.cloud = undefined;
+      yield* passesAt(none, [0, 11, 30], [offline]);
+      assert.equal(items(none).length, 0);
+      assert.equal(none.censusReads, 0);
+
+      const uncounted = cloudy();
+      uncounted.censusAnswers = [null];
+      fake.now = T0;
+      yield* pass(uncounted, [REPO], 5);
+      uncounted.now = T0 + 30 * MINUTE;
+      yield* pass(uncounted, [REPO], 5);
+      assert.equal(items(uncounted).length, 0);
+      assert.equal(uncounted.censusOffline.since, null);
     }),
   );
 });

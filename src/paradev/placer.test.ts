@@ -355,6 +355,29 @@ describe("placer", () => {
     }),
   );
 
+  it.effect("targets: a count that could not be read gives its row's reason the exact census error, and a launch's drop too (#117)", () =>
+    Effect.gen(function* () {
+      const error = "cloud workspace a2bc69cb of cloud:a2bc69cb is not listed with the tag factory-r1";
+      const t = setup({
+        counts: [
+          full({ kind: "local" }),
+          full({ kind: "host", machineId: "h1" }),
+          { target: { kind: "cloud" }, running: null, error },
+        ],
+      });
+      t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
+      const refused = yield* t.placer.place(request("cloudy")).pipe(Effect.flip);
+      assert.instanceOf(refused, NoTargetHasRoom);
+      const cloudRow = (yield* t.placer.targets).find((row) => row.kind === "cloud");
+      assert.strictEqual(cloudRow?.reason, `its running agents could not be counted: ${error}`);
+      assert.deepStrictEqual(cloudRow?.slots, { used: null, max: 1 });
+      assert.deepStrictEqual(
+        drops(t.events).find((drop) => drop.target === "cloud"),
+        { repo: "acme/cloudy", target: "cloud", reason: `its running agents could not be counted: ${error}` },
+      );
+    }),
+  );
+
   it.effect("targets: a row for this Mac, each configured host and cloud, from the pass's readings", () =>
     Effect.gen(function* () {
       const t = setup({
