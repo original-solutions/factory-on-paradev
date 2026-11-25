@@ -5862,6 +5862,8 @@ describe("the cloud count, one workspace at a time (#85)", () => {
       const machine: MachineConfig = {
         ghConfigDir: "/gh",
         pollSeconds: 60,
+        launchTimeoutSeconds: 900,
+        launchTimeoutRetries: 1,
         maxConcurrentRuns: 4,
         maxConcurrentGates: 2,
         feedbackSeconds: 600,

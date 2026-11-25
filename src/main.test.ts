@@ -59,7 +59,7 @@ import {
 import { landedPluginPath } from "./plugin.ts";
 import { readFixture } from "./paradev/fake-superset.ts";
 import { AgentProcess } from "./paradev/sessions.ts";
-import { writeThread } from "./paradev/state.ts";
+import { writeLaunch, writeThread } from "./paradev/state.ts";
 import * as Paths from "./paths.ts";
 import type { SelfUpdateOptions } from "./selfUpdate.ts";
 import { LOAD_COMMAND, PLUGIN_VERSION_READ, PROXY_ENV_READ, type SshSpawn } from "./paradev/ssh.ts";
@@ -131,6 +131,41 @@ vi.mock("./runner/start.ts", async (importOriginal) => {
     return E.succeed({ kind: "skipped", reason: "not run" });
   };
   return { ...actual, start: start as unknown as typeof actual.start };
+});
+
+// The launch reaper is not run when `stub.on`: the test is about the context `liveWorld` builds.
+vi.mock("./runner/launchTimeout.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./runner/launchTimeout.ts")>();
+  const { Effect: E } = await import("effect");
+  const reapLaunch = (
+    ctx: {
+      readonly project: { readonly base: string };
+      readonly launchTimeout: { readonly seconds: number; readonly retries: number };
+      readonly yieldToClaim: (issue: number) => import("effect").Effect.Effect<unknown, unknown>;
+      readonly launchThread: (commandId: string) => import("effect").Effect.Effect<unknown, unknown>;
+    },
+    ...rest: Array<unknown>
+  ) => {
+    if (!stub.on) {
+      return (actual.reapLaunch as unknown as (...args: Array<unknown>) => unknown)(ctx, ...rest);
+    }
+    bases.push(
+      `reapLaunch ${ctx.project.base} ${ctx.launchTimeout.seconds}s ${ctx.launchTimeout.retries}`,
+    );
+    // The claim winner is read through the real `yieldToClaim`: with no gh it cannot answer.
+    return E.exit(ctx.yieldToClaim(10)).pipe(
+      E.map((exit) => {
+        bases.push(`yieldToClaim ${exit._tag}`);
+      }),
+      // The adapter's launch record is read from the data dir the world was given.
+      E.andThen(ctx.launchThread("softfac:cmd:launch")),
+      E.map((thread) => {
+        bases.push(`launchThread ${String(thread)}`);
+        return { kind: "left" };
+      }),
+    );
+  };
+  return { ...actual, reapLaunch: reapLaunch as unknown as typeof actual.reapLaunch };
 });
 
 vi.mock("./runner/feedback.ts", async (importOriginal) => {
@@ -249,6 +284,8 @@ const PARADEV = {
 const baseMachine: MachineConfig = {
   ghConfigDir: "/gh/rawphp",
   pollSeconds: 60,
+  launchTimeoutSeconds: 900,
+  launchTimeoutRetries: 1,
   maxConcurrentRuns: 1,
   maxConcurrentGates: 1,
   feedbackSeconds: 600,
@@ -4591,6 +4628,49 @@ const baseLive = (scope: Scope.Scope) => ({
 });
 
 describe("liveWorld: a step of a run is built for the base the pass hands it", () => {
+  const reaperDirs = useTempDirs();
+
+  it.effect("the launch reaper gets that base, the machine's launch timeout and the adapter's launch records", () =>
+    Effect.gen(function* () {
+      bases.length = 0;
+      stub.on = true;
+      const dataDir = reaperDirs();
+      yield* writeLaunch(dataDir, "softfac:cmd:launch", "local:ws-1").pipe(
+        Effect.provide(NodeServices.layer),
+      );
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          const world = liveWorld(
+            baseMachine,
+            dataDir,
+            noGh,
+            NodeServices.layer,
+            stubSessions,
+            () => 0,
+            "mac-mini",
+            noAttention,
+            baseLive(yield* Scope.make()),
+          );
+          const run = newRunId("rawphp/softfac", "10", 1);
+          for (const base of ["feature/x", null]) {
+            yield* world.reapLaunch(baseRepo, run, base, { seconds: 120, retries: 0 });
+          }
+        }),
+        Effect.sync(() => {
+          stub.on = false;
+        }),
+      );
+      assert.deepStrictEqual(bases, [
+        "reapLaunch feature/x 120s 0",
+        "yieldToClaim Failure",
+        "launchThread local:ws-1",
+        "reapLaunch main 120s 0",
+        "yieldToClaim Failure",
+        "launchThread local:ws-1",
+      ]);
+    }),
+  );
+
   it.effect("each step's context has that base, or the repo's when the run recorded none", () =>
     Effect.gen(function* () {
       bases.length = 0;

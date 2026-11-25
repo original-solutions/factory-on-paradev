@@ -463,6 +463,8 @@ describe("machine config", () => {
     expect(machine(MACHINE)).toEqual({
       ghConfigDir: "/Users/me/.config/softfac/gh",
       pollSeconds: 60,
+      launchTimeoutSeconds: 900,
+      launchTimeoutRetries: 1,
       maxConcurrentRuns: 1,
       maxConcurrentGates: 2,
       feedbackSeconds: 600,
@@ -728,11 +730,15 @@ describe("machine config", () => {
   it("machine every key can be set", () => {
     const t = edit(MACHINE, (tree) => {
       set(tree, "poll_seconds", "10");
+      set(tree, "launch_timeout_seconds", "60");
+      set(tree, "launch_timeout_retries", "0");
       set(tree, "max_concurrent_runs", "3");
       set(tree, "max_concurrent_gates", "4");
     });
     const c = machine(t);
     expect(c.pollSeconds).toBe(10);
+    expect(c.launchTimeoutSeconds).toBe(60);
+    expect(c.launchTimeoutRetries).toBe(0);
     expect(c.maxConcurrentRuns).toBe(3);
     expect(c.maxConcurrentGates).toBe(4);
   });
@@ -754,6 +760,33 @@ describe("machine config", () => {
       expect(machineErr(edit(MACHINE, (t) => set(t, "poll_seconds", '"60"')))[0]!.message).toBe(
         "must be an integer",
       );
+    });
+    it("machine launch timeout defaults to 900 seconds and 1 retry", () => {
+      expect(machine(MACHINE).launchTimeoutSeconds).toBe(900);
+      expect(machine(MACHINE).launchTimeoutRetries).toBe(1);
+      const t = edit(MACHINE, (tree) => {
+        set(tree, "launch_timeout_seconds", "1800");
+        set(tree, "launch_timeout_retries", "3");
+      });
+      expect(machine(t).launchTimeoutSeconds).toBe(1800);
+      expect(machine(t).launchTimeoutRetries).toBe(3);
+    });
+    it("machine launch timeout seconds below 60 is rejected", () => {
+      machineBad("launch_timeout_seconds", "59");
+      expect(
+        machineErr(edit(MACHINE, (t) => set(t, "launch_timeout_seconds", "59")))[0]!.message,
+      ).toBe("must be an integer of at least 60");
+    });
+    it("machine launch timeout seconds that is not an integer is rejected", () => {
+      machineBad("launch_timeout_seconds", '"900"');
+      machineBad("launch_timeout_seconds", "90.5");
+    });
+    it("machine launch timeout retries below 0 is rejected", () => {
+      machineBad("launch_timeout_retries", "-1");
+      expect(
+        machineErr(edit(MACHINE, (t) => set(t, "launch_timeout_retries", "-1")))[0]!.message,
+      ).toBe("must be an integer of at least 0");
+      machineBad("launch_timeout_retries", '"1"');
     });
     it("machine max concurrent runs of 0 is rejected", () => {
       machineBad("max_concurrent_runs", "0");
@@ -1138,6 +1171,27 @@ describe("loaders", () => {
 });
 
 describe("the example machine config", () => {
+  effectIt.effect(
+    "the example documents the launch timeout keys at the top level, right after poll_seconds",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const file = yield* path.fromFileUrl(new URL("../config.example.yml", import.meta.url));
+        const keys = (yield* fs.readFileString(file))
+          .split("\n")
+          .filter((line) => /^[a-z_]+:/.test(line))
+          .map((line) => line.slice(0, line.indexOf(":")));
+        const at = keys.indexOf("poll_seconds");
+        expect(at).toBeGreaterThanOrEqual(0);
+        expect(keys.slice(at, at + 3)).toEqual([
+          "poll_seconds",
+          "launch_timeout_seconds",
+          "launch_timeout_retries",
+        ]);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   // config.example.yml is what a person copies to ~/.config/factory-runner/config.yml, and what
   // `install` (#25) will copy when there is none, so it must load as it stands.
   effectIt.effect("the example machine config loads as it stands", () =>
@@ -1150,6 +1204,8 @@ describe("the example machine config", () => {
           config: {
             ghConfigDir: "/Users/YOU/.config/factory-runner/gh",
             pollSeconds: 60,
+            launchTimeoutSeconds: 900,
+            launchTimeoutRetries: 1,
             maxConcurrentRuns: 1,
             maxConcurrentGates: 1,
             feedbackSeconds: 600,

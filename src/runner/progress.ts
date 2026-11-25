@@ -141,6 +141,18 @@ export interface Seen {
   /** The `launch-sending` step: a launch call was about to be sent, so a session may exist. */
   readonly launchSent: boolean;
   /**
+   * When the first `launch-sending` step (plain or `resumed-from`) was written, in epoch
+   * milliseconds; null before it. A launch that has recorded no thread id this long after it is
+   * failed by the launch timeout.
+   */
+  readonly launchSentMs: number | null;
+  /**
+   * How this run's launch was ended with no thread id: `timed-out` for a `launch-timed-out` step,
+   * `stopped` for a `launch-stopped` step (a stop by hand). Null for neither. Only `timed-out`
+   * counts against the issue's `launch_timeout_retries`: a stop by hand uses no retry.
+   */
+  readonly launchFailed: "timed-out" | "stopped" | null;
+  /**
    * The branch in a `launch-sending resumed-from <branch>` step: the decision to resume, made
    * before the first launch call. Null for a plain `launch-sending` or none. A launch sent again
    * reads it and never asks GitHub again.
@@ -324,6 +336,26 @@ export interface Seen {
   readonly resumedFromRun: string | null;
 }
 
+/** Whether the run is confirmed: it records what approved it, or its session. `RunInfo.confirmed` is this. */
+export const isConfirmed = (seen: Seen): boolean => seen.approvedAt !== null || seen.threadId !== null;
+
+/** The states of a run still starting: `triage`, or before any state. */
+export const isStartingState = (state: State | null): boolean => state === null || state === "triage";
+
+/**
+ * Whether the run is still starting: confirmed (`isConfirmed`), unfinished, and in a starting
+ * state (`isStartingState`). What the launch reaper looks at and what a stop by hand takes besides
+ * a building run; `inTriage` in `pass.ts` applies the same two rules to `RunInfo`.
+ */
+export const isStarting = (seen: Seen): boolean =>
+  !seen.finished && isConfirmed(seen) && isStartingState(seen.state);
+
+/**
+ * Whether a session may exist that the ledger does not name: a launch was sent and no thread id
+ * was recorded, so T3 may have started one under the run's launch command id.
+ */
+export const mayHaveSession = (seen: Seen): boolean => seen.launchSent && seen.threadId === null;
+
 /**
  * The pull request's branch when the run's session was launched to push there: to fix a failed
  * re-gate of this run, for feedback, or to continue an earlier attempt's open pull request. Null
@@ -363,6 +395,10 @@ export const LAUNCH_PULL_REQUEST = "launch-pull-request ";
 export const LAUNCH_BASE = "launch-base ";
 /** The step written before `launch-sending` when the launch runs on a fallback: `launch-model <model>`. */
 export const LAUNCH_MODEL = "launch-model ";
+/** The ledger step that says the launch timeout failed a launch that recorded no thread id. */
+export const LAUNCH_TIMED_OUT = "launch-timed-out";
+/** The ledger step that says a stop by hand ended a launch that recorded no thread id. */
+export const LAUNCH_STOPPED = "launch-stopped";
 /** The ledger step that says the issue text was checked again after the launch. */
 export const APPROVAL_RECHECKED = "approval-rechecked";
 /** The ledger step written before the reminder is sent: `result-line-reminding <k>`, `k` the ordinal of the run that ended. */
@@ -460,6 +496,8 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
   let state: State | null = null;
   let threadId: string | null = null;
   let launchSent = false;
+  let launchSentMs: number | null = null;
+  let launchFailed: Seen["launchFailed"] = null;
   let launchResumedFrom: string | null = null;
   let launchResumedPr: string | null = null;
   let launchPullRequest: { branch: string; url: string } | null = null;
@@ -628,6 +666,11 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
         }
         const droppedId = commentDroppedId(step);
         if (droppedId !== null) dropped.add(droppedId);
+        if (step === LAUNCH_SENDING || step.startsWith(LAUNCH_SENDING_RESUMED)) {
+          launchSentMs ??= entry.ms;
+        }
+        if (step === LAUNCH_TIMED_OUT) launchFailed = "timed-out";
+        else if (step === LAUNCH_STOPPED) launchFailed = "stopped";
         if (step === LAUNCH_SENDING) {
           launchSent = true;
           launchResumedFrom = null;
@@ -1004,6 +1047,8 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
     state,
     threadId,
     launchSent,
+    launchSentMs,
+    launchFailed,
     launchResumedFrom,
     launchResumedPr,
     launchBase,

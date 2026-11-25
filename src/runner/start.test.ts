@@ -133,6 +133,7 @@ const fakeTracker = (script: {
 }) => {
   const calls: Array<string> = [];
   const claimers: Array<Claimer> = [];
+  const approvalLogins: Array<string> = [];
   const issues = [...(script.issues ?? [detail("ready")])];
   const claims = [...(script.claims ?? [{ kind: "claimed" } as const])];
   const textChecks = [...(script.textChecks ?? [])];
@@ -147,7 +148,8 @@ const fakeTracker = (script: {
       calls.push(`issue ${n}`);
       return answer(issues, detail("ready"));
     },
-    approval: (n, instructors) => {
+    approval: (n, instructors, factory) => {
+      approvalLogins.push(factory ?? "");
       calls.push(`approval ${n} ${instructors.join(",")}`);
       return Effect.succeed(
         script.approval ?? { kind: "approved", labeledAt: LABELED, labeledBy: "tomkaczocha" },
@@ -234,7 +236,7 @@ const fakeTracker = (script: {
     markPrDraft: () => Effect.die("not the claim's"),
     commentOnPr: () => Effect.die("not the claim's"),
   };
-  return { tracker, calls, claimers };
+  return { tracker, calls, claimers, approvalLogins };
 };
 
 const isSessionsError = Schema.is(SessionsError);
@@ -708,6 +710,15 @@ describe("start: a fresh ready issue", () => {
         "setState 7 proposed",
       ]);
       assert.strictEqual(NodeFS.existsSync(runPath(dataDir, run7)), false);
+    }),
+  );
+
+  it.effect("hands the approval check the factory's login, so a label it applied after a launch timeout is judged as one", () =>
+    Effect.gen(function* () {
+      const dataDir = tempDir();
+      const { tracker, approvalLogins } = fakeTracker({});
+      assert.strictEqual((yield* startIn(dataDir, tracker)).kind, "started");
+      assert.deepStrictEqual(approvalLogins, [USER]);
     }),
   );
 

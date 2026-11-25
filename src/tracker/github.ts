@@ -2087,12 +2087,17 @@ export const makeGitHub = (options: GitHubOptions) => {
 
   /**
    * Whether the factory may build the issue, by `judgeApproval` over the issue's label events and
-   * edit history: an instructor applied the `factory:ready` label in force now, and every edit
-   * and rename since was an instructor's. One GraphQL call.
+   * edit history: an instructor applied the `factory:ready` label in force now (or `factory`, the
+   * factory's login, applied it carrying an instructor's earlier label), and every edit and rename
+   * since was an instructor's. One GraphQL call.
    */
-  const approval = (issue: number, instructors: ReadonlyArray<string>): GitHubEffect<Approval> =>
+  const approval = (
+    issue: number,
+    instructors: ReadonlyArray<string>,
+    factory?: string,
+  ): GitHubEffect<Approval> =>
     Effect.map(readHistory(issue), (found) =>
-      judgeApproval(found, stateLabel("ready"), instructors),
+      judgeApproval(found, stateLabel("ready"), instructors, factory),
     );
 
   /**

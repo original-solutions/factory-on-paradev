@@ -122,17 +122,25 @@ import {
   yieldToClaim,
   type StartContext,
 } from "./runner/start.ts";
+import { reapLaunch } from "./runner/launchTimeout.ts";
 import { takeStopRequest } from "./runner/stop.ts";
 import * as Paths from "./paths.ts";
 import { hostNamesOf, TARGETS_FILE, targetsText } from "./targets.ts";
 import { writeFileAtomically } from "./files.ts";
-import { isNoTargetHasRoom, NO_TARGET_HAS_ROOM, type FactorySessions, type Model } from "./sessions.ts";
+import {
+  isNoTargetHasRoom,
+  NO_TARGET_HAS_ROOM,
+  SessionsError,
+  type FactorySessions,
+  type Model,
+} from "./sessions.ts";
 import { type CliError, layer as cliLayer, SupersetCli } from "./paradev/cli.ts";
 import { afterPass as writeBeltAfterPass, newBeltMemo } from "./paradev/belt.ts";
 import { makePlacer } from "./paradev/placer.ts";
 import { addProjectCommand } from "./paradev/projects.ts";
 import { checkProxy, liveProxyGet, type ProxyAnswer, type ProxyGet } from "./paradev/proxy.ts";
 import { check as checkCli, describeFailure } from "./paradev/schema.ts";
+import { readLaunch } from "./paradev/state.ts";
 import {
   AgentProcess,
   agentProcessLayer,
@@ -803,6 +811,20 @@ export const liveWorld = (
       ),
     yieldToClaim: (repo: Repo, issue: number) => yieldToClaim(startContext(repo), issue),
     takeStopRequest: (run) => takeStopRequest(dataDir, run, clock),
+    reapLaunch: (repo, run, base, launchTimeout) =>
+      reapLaunch(
+        {
+          ...buildingContext(repo, runProject(repo.project, base)),
+          launchTimeout,
+          yieldToClaim: (issue) => yieldToClaim(startContext(repo), issue),
+          launchThread: (commandId) =>
+            readLaunch(dataDir, commandId).pipe(
+              Effect.provide(files),
+              Effect.mapError((cause) => new SessionsError({ operation: "launch", cause })),
+            ),
+        },
+        run,
+      ),
     timeLimit: (repo, run, base) =>
       timeLimit(buildingContext(repo, runProject(repo.project, base)), run),
     watch: (repo, run, base) => watch(buildingContext(repo, runProject(repo.project, base)), run),

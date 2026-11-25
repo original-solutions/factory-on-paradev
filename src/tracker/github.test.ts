@@ -2495,6 +2495,29 @@ it.effect("approval reads the real shapes and sends one call", () =>
   }),
 );
 
+it.effect("approval passes the factory's login on, so the reaper's ready carries the instructor's label", () =>
+  Effect.gen(function* () {
+    // `setState`'s swaps as live issues record them: one `gh issue edit`, its halves a second apart.
+    const reap = [
+      readyOn(LABELED, "tom"),
+      readyOff("2026-10-04T10:01:00Z", "softfac-bot"),
+      labelEvent("LabeledEvent", "2026-10-04T10:01:01Z", "softfac-bot", "factory:triage"),
+      labelEvent("UnlabeledEvent", "2026-10-04T10:20:00Z", "softfac-bot", "factory:triage"),
+      readyOn("2026-10-04T10:20:01Z", "softfac-bot"),
+    ];
+    const answer = eventsReply(reap, null, creationOnly("outsider"));
+    const t = setup(reply(answer));
+    const found = yield* t.ok(t.github.approval(6, ["tom"], "softfac-bot"));
+    assert.deepStrictEqual(t.calls(), [approvalCall()]);
+    assert.deepStrictEqual(found, approved(LABELED, "tom"));
+    // Without the login the same history is the bot's own label.
+    assert.deepStrictEqual(
+      yield* approvalOf(answer, ["tom"]),
+      refused(byNonInstructor("softfac-bot", "2026-10-04T10:20:01Z")),
+    );
+  }),
+);
+
 it.effect("an outside author's unedited report labelled by an instructor is approved", () =>
   Effect.gen(function* () {
     // The creation entry is by the author, before the label, and is ignored.

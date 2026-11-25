@@ -9,6 +9,7 @@ import { isLedgerError } from "./ledger/errors.ts";
 import { readRun, type Entry } from "./ledger/read.ts";
 import { parseRunId, runIdToString, type RunId } from "./ledger/runId.ts";
 import { formatTs } from "./ledger/time.ts";
+import { isStarting, type Seen } from "./runner/progress.ts";
 import { leaveStopRequest, notBuildingMessage } from "./runner/stop.ts";
 
 /** The id text parsed, or the message of why it is not a run id. Nothing is read from disk. */
@@ -81,11 +82,18 @@ export type StopRun =
   | { readonly kind: "not-found"; readonly id: string }
   | { readonly kind: "invalid"; readonly message: string };
 
+/** What the next pass does with a stopped run, as the stop's message says it. */
+const stopTail = (seen: Seen): string =>
+  isStarting(seen) && seen.threadId === null
+    ? "the run ends on the next pass: with no thread id by then, its issue goes back to factory:ready, or to factory:stuck when its launch retries are used"
+    : "the issue goes to factory:stuck on the next pass";
+
 /**
- * `softfac runs stop`: leaves a stop request for a building run, as `stop-run.sh` does, and never
- * writes the ledger. The next pass takes it, then archives the thread and removes the worktree;
- * while the gate has the run the request waits for the gate's result. The caller wakes the loop
- * when the result is `stopped` and not `already`.
+ * `softfac runs stop`: leaves a stop request for a building run, or one still starting (`triage`
+ * or `launch-sending`), as `stop-run.sh` does, and never writes the ledger. The next pass takes
+ * it, then archives the thread and removes the worktree; a starting run with no thread id is
+ * ended and its issue goes back to `factory:ready`. While the gate has the run the request waits
+ * for the gate's result. The caller wakes the loop when the result is `stopped` and not `already`.
  */
 export const stopRun = (dataDir: string, idText: string): StopRun => {
   const parsed = parseId(idText);
@@ -98,7 +106,7 @@ export const stopRun = (dataDir: string, idText: string): StopRun => {
         kind: "stopped",
         id,
         already: false,
-        message: `stop requested: ${id}; the issue goes to factory:stuck on the next pass`,
+        message: `stop requested: ${id}; ${stopTail(seen)}`,
       };
     }
     if (outcome === "already-requested") {
@@ -106,7 +114,7 @@ export const stopRun = (dataDir: string, idText: string): StopRun => {
         kind: "stopped",
         id,
         already: true,
-        message: `stop already requested: ${id}; the issue goes to factory:stuck on the next pass`,
+        message: `stop already requested: ${id}; ${stopTail(seen)}`,
       };
     }
     return { kind: "refused", id, message: notBuildingMessage(id, seen) };

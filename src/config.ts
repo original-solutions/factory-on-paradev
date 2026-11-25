@@ -60,6 +60,13 @@ const DEFAULT_MINUTES = 180;
 const DEFAULT_CHECKS_MINUTES = 30;
 const DEFAULT_INTERRUPTION_RESUMES = 2;
 export const DEFAULT_POLL_SECONDS = 60;
+/**
+ * How long a launch may go without recording a thread id, in seconds: longer than the cloud
+ * create limit (5 minutes) plus the cloud ready limit (5 minutes).
+ */
+export const DEFAULT_LAUNCH_TIMEOUT_SECONDS = 900;
+/** How many times an issue goes back to `factory:ready` after a launch timed out before it goes `stuck`. */
+export const DEFAULT_LAUNCH_TIMEOUT_RETRIES = 1;
 export const DEFAULT_MAX_CONCURRENT_GATES = 2;
 /**
  * How often, at most, the feedback of one `pr-open` run is read, in seconds. A read costs about 3
@@ -231,6 +238,18 @@ export interface WatchedListing {
 export interface MachineConfig {
   readonly ghConfigDir: string;
   readonly pollSeconds: number;
+  /**
+   * `launch_timeout_seconds`: a run whose `launch-sending` step is this old with no thread id
+   * recorded is failed at the start of a pass, its slot freed and its issue put back to
+   * `factory:ready` (or `factory:stuck` once `launchTimeoutRetries` are used).
+   */
+  readonly launchTimeoutSeconds: number;
+  /**
+   * `launch_timeout_retries`: how many times an issue goes back to `factory:ready` after a launch
+   * timeout. Once its earlier timeouts reach this, the next timeout, or a stop by hand of a launch
+   * with no thread id, sends it `factory:stuck`. A stop by hand uses no retry.
+   */
+  readonly launchTimeoutRetries: number;
   /**
    * Runs that may hold a slot at once, over every repo: from claim until the session reports its
    * pull request or the run ends. The gate and the wait for checks take no slot. A session
@@ -612,6 +631,8 @@ const limitsFrom = (
 const MACHINE_KEYS = [
   "gh_config_dir",
   "poll_seconds",
+  "launch_timeout_seconds",
+  "launch_timeout_retries",
   "max_concurrent_runs",
   "max_concurrent_gates",
   "feedback_seconds",
@@ -1020,6 +1041,20 @@ const beltVisibility = (c: Checker, belt: Mapping | undefined): BeltVisibility |
 const machineFrom = (c: Checker, root: Mapping): MachineConfig | undefined => {
   const ghConfigDir = c.nonEmptyString(c.child(root, "", "gh_config_dir"), "gh_config_dir");
   const pollSeconds = c.optionalUint(root, "", "poll_seconds", DEFAULT_POLL_SECONDS, 10);
+  const launchTimeoutSeconds = c.optionalUint(
+    root,
+    "",
+    "launch_timeout_seconds",
+    DEFAULT_LAUNCH_TIMEOUT_SECONDS,
+    60,
+  );
+  const launchTimeoutRetries = c.optionalUint(
+    root,
+    "",
+    "launch_timeout_retries",
+    DEFAULT_LAUNCH_TIMEOUT_RETRIES,
+    0,
+  );
   const maxConcurrentRuns = c.uint(
     c.child(root, "", "max_concurrent_runs"),
     "max_concurrent_runs",
@@ -1058,6 +1093,8 @@ const machineFrom = (c: Checker, root: Mapping): MachineConfig | undefined => {
   if (
     ghConfigDir === undefined ||
     pollSeconds === undefined ||
+    launchTimeoutSeconds === undefined ||
+    launchTimeoutRetries === undefined ||
     maxConcurrentRuns === undefined ||
     maxConcurrentGates === undefined ||
     feedbackSeconds === undefined ||
@@ -1078,6 +1115,8 @@ const machineFrom = (c: Checker, root: Mapping): MachineConfig | undefined => {
   return {
     ghConfigDir,
     pollSeconds,
+    launchTimeoutSeconds,
+    launchTimeoutRetries,
     maxConcurrentRuns,
     maxConcurrentGates,
     feedbackSeconds,

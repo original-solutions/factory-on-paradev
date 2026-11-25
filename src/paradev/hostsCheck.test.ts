@@ -36,6 +36,8 @@ const RUNNER = "rawphp";
 const machineOf = (hosts: ReadonlyArray<HostConfig>, repoHosts = [{ id: "h1", path: PATH }]): MachineConfig => ({
   ghConfigDir: "/gh",
   pollSeconds: 60,
+  launchTimeoutSeconds: 900,
+  launchTimeoutRetries: 1,
   maxConcurrentRuns: 2,
   maxConcurrentGates: 2,
   feedbackSeconds: 600,
