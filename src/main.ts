@@ -145,6 +145,7 @@ import {
   ClaimMemo,
   ghLogin,
   makeGitHub,
+  type GhCredentialTally,
   type GitHubError,
   type IssueSummary,
   isTransientRead,
@@ -469,6 +470,8 @@ export interface LiveShared {
   readonly proxyMisses: { passes: number };
   /** Since when cloud's count has been null: see `PassWorld.censusOffline`. */
   readonly censusOffline: { since: number | null };
+  /** What GitHub said of the gh login's credentials: see `PassWorld.ghCredentials`. */
+  readonly ghCredentials: GhCredentialTally & { passes: number };
 }
 
 /** A fresh `LiveShared`, made once per process. */
@@ -486,6 +489,7 @@ export const newShared = (): LiveShared => ({
   hostLoads: new Map(),
   proxyMisses: { passes: 0 },
   censusOffline: { since: null },
+  ghCredentials: { rejected: 0, accepted: 0, gaveUp: false, passes: 0 },
 });
 
 /** What the pass's branch prune answers: P1 prunes no branch. */
@@ -524,6 +528,7 @@ export const liveWorld = (
     hostLoads,
     proxyMisses,
     censusOffline,
+    ghCredentials,
   }: LiveShared = newShared(),
 ): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown" | "beginPlacement" | "cloudCensus"> => {
   const load = live.readLoad ?? readLoad;
@@ -536,7 +541,7 @@ export const liveWorld = (
   const withProcess = <A, E>(effect: Effect.Effect<A, E, FactoryProcess>) =>
     Effect.provideService(effect, FactoryProcess, process);
   const githubFor = (watched: WatchedRepo) =>
-    makeGitHub({ repo: watched.repo, ghConfigDir: machine.ghConfigDir });
+    makeGitHub({ repo: watched.repo, ghConfigDir: machine.ghConfigDir, credentials: ghCredentials });
   const trackerFor = (watched: WatchedRepo) => bindProcess(githubFor(watched), process);
   const tracker = (effect: Effect.Effect<unknown, GitHubError, FactoryProcess>) =>
     withProcess(effect).pipe(Effect.mapError(asPassError("tracker")));
@@ -850,6 +855,7 @@ export const liveWorld = (
     hostLoads,
     proxyMisses,
     censusOffline,
+    ghCredentials,
     checkProxy: () =>
       machine.cloud === undefined
         ? Effect.succeed<ProxyAnswer>({ kind: "down", reason: "no cloud block in the machine config" })
@@ -876,7 +882,9 @@ export const liveWorld = (
             const known = [...lastGood.values()].find((good) => good.trackerUser !== undefined)?.trackerUser;
             return known !== undefined
               ? Effect.succeed(known)
-              : withProcess(ghLogin(machine.ghConfigDir)).pipe(Effect.mapError((error) => error.message));
+              : withProcess(ghLogin(machine.ghConfigDir, ghCredentials)).pipe(
+                  Effect.mapError((error) => error.message),
+                );
           }),
         },
         machine,

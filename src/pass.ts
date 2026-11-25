@@ -72,6 +72,7 @@ import { sanitize } from "./text.ts";
 import {
   LIST_LIMIT,
   type Blocker,
+  type GhCredentialTally,
   type Listing,
   type Mergeable,
   type UnassignedClaim,
@@ -410,6 +411,13 @@ export interface PassWorld {
    * across a config load. At `CLOUD_PROXY_DOWN_PASSES` the pass raises `cloud-proxy-down`.
    */
   readonly proxyMisses: { passes: number };
+  /**
+   * What the trackers' GitHub calls said of the `gh` login's credentials since the last pass read
+   * it (a forked gate's calls included), and how many passes in a row a call was still refused
+   * with a 401 after its retries; kept from pass to pass, and across a config load. At
+   * `GH_CREDENTIALS_PASSES` the pass raises `gh-credentials`.
+   */
+  readonly ghCredentials: GhCredentialTally & { passes: number };
   /**
    * Asks the cloud proxy once, with no key: `checkProxy` against `cloud.proxy`. Called once per
    * pass, and only while `cloud` is configured and a repo names a cloud environment. Never fails.
@@ -950,6 +958,8 @@ export const runPass = Effect.fn("Pass.runPass")(function* (
   // After the claims, so the census is the one the pass's launches placed by.
   yield* cloudCensusOffline(world, machine, pass);
   yield* closedStuck(world, repos, pass);
+  // After the pass's own GitHub calls; a gate forked meanwhile may add its calls to the next pass's.
+  yield* ghCredentials(world, machine, pass);
   const report = pass.report;
   pass.line(
     `pass done: ${report.runs} runs, ${report.claimed} claimed, ${report.errors} errors, ${report.attention} need attention`,
@@ -1348,6 +1358,53 @@ const cloudCensusOffline = Effect.fn("Pass.cloudCensusOffline")(function* (
     issue: null,
     run: null,
     message: `cloud's running agents have not been counted for over ${cloud.censusOfflineMinutes} minutes, so cloud launches are refused until they are; the latest census error: ${error}`,
+  });
+});
+
+/** Passes in a row a GitHub call may still be refused with a 401 before one attention item is raised. */
+export const GH_CREDENTIALS_PASSES = CLOUD_PROXY_DOWN_PASSES;
+
+/** The attention item for a `gh` login refused for `GH_CREDENTIALS_PASSES` passes in a row. */
+export const GH_CREDENTIALS_ITEM_ID = "gh-credentials";
+
+/**
+ * Reads the tally of the `gh` login's credentials and starts it over, `gaveUp` too, so the next
+ * pass's first refused call is retried again. A pass in which a call was still refused with a 401
+ * after its retries says so in a line, and the `GH_CREDENTIALS_PASSES`th in a row raises
+ * `gh-credentials`; a pass whose calls GitHub only answered starts the count over and clears the
+ * item; a pass with no call leaves both. Neither the line nor the item carries gh's stderr: only
+ * the login directory, never a token.
+ */
+const ghCredentials = Effect.fn("Pass.ghCredentials")(function* (
+  world: PassWorld,
+  machine: MachineConfig,
+  pass: Pass,
+) {
+  const tally = world.ghCredentials;
+  const { rejected, accepted } = tally;
+  tally.rejected = 0;
+  tally.accepted = 0;
+  tally.gaveUp = false;
+  const dir = plain(machine.ghConfigDir);
+  if (rejected === 0) {
+    if (accepted === 0) return;
+    tally.passes = 0;
+    return yield* world.attention.clear((item) => item.id === GH_CREDENTIALS_ITEM_ID);
+  }
+  tally.passes += 1;
+  pass.line(
+    `gh: ${rejected} GitHub call(s) still answered Bad credentials (HTTP 401) after their retries, as the gh_config_dir login ${dir} (${tally.passes} pass(es) in a row)`,
+  );
+  if (tally.passes < GH_CREDENTIALS_PASSES) return;
+  pass.report.attention += 1;
+  // No count in the text: an open item is not raised again, so it would go stale.
+  yield* world.attention.raise({
+    id: GH_CREDENTIALS_ITEM_ID,
+    kind: "attention",
+    repo: null,
+    issue: null,
+    run: null,
+    message: `the runner's gh_config_dir login ${dir} is getting persistent Bad credentials (HTTP 401) from GitHub: its calls still failed after their retries for ${GH_CREDENTIALS_PASSES} passes in a row; check it with GH_CONFIG_DIR=${dir} gh auth status`,
   });
 });
 
