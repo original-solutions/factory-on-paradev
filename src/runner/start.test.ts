@@ -714,8 +714,9 @@ describe("start: a fresh ready issue", () => {
   describe("a re-claim after the launch reaper put the issue back to ready", () => {
     const run2: RunId = { ...run7, attempt: 2 };
     /** Attempt 1, approved on `LABELED`, whose launch the reaper failed (`marker`) at `T0`. */
-    const reaped = (dataDir: string, marker = "launch-timed-out") => {
-      const ledger = Ledger.create(dataDir, run7, { clock: () => T0 });
+    const reaped = (dataDir: string, marker = "launch-timed-out", finishedAt = T0) => {
+      let now = T0;
+      const ledger = Ledger.create(dataDir, run7, { clock: () => now });
       handles.push(ledger);
       const why = makeCause("start", "seed");
       ledger.append(
@@ -726,7 +727,7 @@ describe("start: a fresh ready issue", () => {
       ledger.append({ event: "state_changed", data: { from: "ready", to: "triage" } }, why);
       ledger.append({ event: "step_changed", data: { step: "launch-sending" } }, why);
       ledger.append({ event: "step_changed", data: { step: marker } }, why);
-      ledger.append({ event: "state_changed", data: { from: "triage", to: "ready" } }, why);
+      now = finishedAt;
       ledger.finish("stuck", null, null, why);
     };
     /** The ready label in force, applied by the factory's own login a second after the reap. */
@@ -826,32 +827,65 @@ describe("start: a fresh ready issue", () => {
       }),
     );
 
-    it.effect("leaves the factory's own label it cannot carry for the machine that reaped, rather than refuse it", () =>
+    it.effect("carries it over up to a minute past a reap that finished passes after its step", () =>
+      Effect.gen(function* () {
+        // The label calls failed for ten minutes, then landed and the run finished.
+        for (const [at, kind] of [
+          [T0 + 10 * 60_000, "started"],
+          [T0 + 11 * 60_000, "started"],
+          [T0 + 12 * 60_000, "refused"],
+        ] as const) {
+          const dataDir = tempDir();
+          reaped(dataDir, "launch-timed-out", T0 + 10 * 60_000);
+          const refusal = { kind: "labeled-by-non-instructor", by: USER, labeledAt: utcSecond(at) } as const;
+          const { tracker } = fakeTracker({ approval: { kind: "refused", refusal } });
+          assert.strictEqual((yield* startIn(dataDir, tracker)).kind, kind, utcSecond(at));
+        }
+      }),
+    );
+
+    it.effect("leaves the factory's own label for another machine only when none here knows the issue and no machine owns the repo", () =>
       Effect.gen(function* () {
         const refusal = { kind: "labeled-by-non-instructor", by: USER, labeledAt: BY_FACTORY } as const;
-        // No ledger of the issue here: another machine on the same login reaped it.
+        // No ledger of the issue here, and no owner: another machine on the same login reaped it.
         const fresh = tempDir();
         const none = fakeTracker({ approval: { kind: "refused", refusal } });
-        const skipped = yield* startIn(fresh, none.tracker);
-        assert.strictEqual(skipped.kind, "skipped");
+        assert.deepStrictEqual(yield* startIn(fresh, none.tracker), {
+          kind: "skipped",
+          reason:
+            "issue #7 has factory:ready from the factory's own login and no ledger of the issue on this machine, so it is left for the machine whose launch timeout applied it",
+          leftForReaper: true,
+        });
         assert.deepStrictEqual(none.calls, ["issue 7", "approval 7 tomkaczocha"]);
-        // An earlier run here that was not reaped, or a label well before the reap: the same.
+        // A repo factory.owner gives to this machine: no other machine reaped it, so it is refused.
+        const owned = tempDir();
+        const mine = fakeTracker({ approval: { kind: "refused", refusal } });
+        const outcome = yield* startIn(owned, mine.tracker, undefined, {
+          project: { ...project(), owner: "mac-mini" },
+        });
+        assert.strictEqual(outcome.kind, "refused");
+        // This machine knows the issue: an earlier run that was not reaped, a label well before
+        // the reap, or one well after it is judged as before and refused.
         const plain = tempDir();
         olderRun(plain, 1, "triage", true, true);
         const first = fakeTracker({ approval: { kind: "refused", refusal } });
-        assert.strictEqual((yield* startIn(plain, first.tracker)).kind, "skipped");
+        assert.strictEqual((yield* startIn(plain, first.tracker)).kind, "refused");
         const early = tempDir();
         reaped(early);
         const before = { ...refusal, labeledAt: utcSecond(T0 - 5 * 60_000) };
         const second = fakeTracker({ approval: { kind: "refused", refusal: before } });
-        assert.strictEqual((yield* startIn(early, second.tracker)).kind, "skipped");
-        assert.ok(!second.calls.some((c) => c.startsWith("comment")), second.calls.join("\n"));
+        assert.strictEqual((yield* startIn(early, second.tracker)).kind, "refused");
+        const late = tempDir();
+        reaped(late);
+        const after = { ...refusal, labeledAt: utcSecond(T0 + 30 * 60_000) };
+        const third = fakeTracker({ approval: { kind: "refused", refusal: after } });
+        assert.strictEqual((yield* startIn(late, third.tracker)).kind, "refused");
         // Someone else's label is judged as before, whatever the earlier run was.
         const other = tempDir();
         reaped(other);
         const eve = { ...refusal, by: "eve" };
-        const third = fakeTracker({ approval: { kind: "refused", refusal: eve } });
-        assert.strictEqual((yield* startIn(other, third.tracker)).kind, "refused");
+        const fourth = fakeTracker({ approval: { kind: "refused", refusal: eve } });
+        assert.strictEqual((yield* startIn(other, fourth.tracker)).kind, "refused");
       }),
     );
   });

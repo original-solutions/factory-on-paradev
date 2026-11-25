@@ -225,9 +225,9 @@ const linesOf = (dataDir: string, run: RunId) =>
 const bytesOf = (dataDir: string, run: RunId) => JSON.stringify(readRun(dataDir, run).entries);
 
 /** The lines a launch timeout appends after the run's own, for a run left in `triage`. */
+/** The lines a reap that puts the issue back to ready appends: its step, then the finished line alone. */
 const readyTail = (marker: string, reason: string, totalMs: number) => [
   { event: "step_changed", data: { step: marker }, cause: makeCause("pass", reason) },
-  { event: "state_changed", data: { from: "triage", to: "ready" }, cause: makeCause("pass", reason) },
   {
     event: "finished",
     data: { ...FINISHED.data, total_ms: totalMs },
@@ -868,6 +868,52 @@ describe("reapLaunch: a reap cut short", () => {
         "status 10 **Factory status:** stuck",
       ]);
       assert.deepStrictEqual(listUnfinishedRuns(rig.dataDir), []);
+    }),
+  );
+
+  it.effect("finishes a stuck at the limit whose label landed before the unassign failed", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), [...SENDING, step("launch-timed-out"), FINISHED]);
+      seed(rig.dataDir, runOf(2), SENDING);
+      rig.clock.now = T0 + 16 * MINUTE;
+      rig.world.unassignFailsOnce = true;
+      const error = yield* Effect.flip(reapLaunch(rig.ctx(), runOf(2)));
+      assert.strictEqual(error._tag, "GitHubFailed");
+      assert.strictEqual(rig.world.issue.state, "stuck");
+      assert.deepStrictEqual(rig.world.issue.assignees, ["rawphp"]);
+      rig.calls.length = 0;
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(2)), {
+        kind: "stuck",
+        ended: "timed-out",
+        failures: 2,
+        limit: true,
+        mayHaveSession: true,
+      });
+      assert.ok(!rig.calls.includes("comment 10"), rig.calls.join("\n"));
+      assert.deepStrictEqual(rig.world.issue.assignees, []);
+      assert.deepStrictEqual(listUnfinishedRuns(rig.dataDir), []);
+    }),
+  );
+
+  it.effect("releases a ready issue a person assigned themselves to after the label landed", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), [...SENDING, step("launch-timed-out")]);
+      rig.world.issue = { ...issueDetail("ready"), assignees: ["eve"] };
+      assert.strictEqual((yield* reapLaunch(rig.ctx(), runOf(1))).kind, "released");
+      assert.deepStrictEqual(rig.calls, ["issue 10"]);
+    }),
+  );
+
+  it.effect("finishes the ready move with its finished line alone, so no cut leaves the run in ready", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), SENDING);
+      rig.clock.now = T0 + 16 * MINUTE;
+      yield* reapLaunch(rig.ctx(), runOf(1));
+      const events = readRun(rig.dataDir, runOf(1)).entries.map((entry) => entry.event);
+      assert.deepStrictEqual(events.slice(SENDING.length), ["step_changed", "finished"]);
     }),
   );
 

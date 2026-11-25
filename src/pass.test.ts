@@ -2288,6 +2288,10 @@ describe("launches that recorded no thread id", () => {
       const message = fake.items[0]!.message;
       assert.ok(message.includes(`${REPO}#12`) && message.includes(RUN12), message);
       assert.ok(message.includes("never recorded a thread id"), message);
+      assert.ok(
+        message.includes(`look for launch command id softfac:${RUN12}:launch in Paradev`),
+        message,
+      );
       assert.equal(report.attention, 1);
       assert.deepEqual(
         fake.events.filter((e) => e.event === "attention"),
@@ -2363,7 +2367,10 @@ describe("launches that recorded no thread id", () => {
       const { lines, report } = yield* pass(fake, [REPO], 3);
       const attention = lines.find((line) => line.startsWith("ATTENTION:"));
       assert.ok(attention !== undefined, lines.join("\n"));
-      assert.ok(attention.includes(`look for launch command id softfac:${RUN12}:launch`), attention);
+      assert.strictEqual(
+        attention,
+        `ATTENTION: ${REPO}#12 its launch recorded no thread id before the run was ended, and a session may exist for ${RUN12}: look for launch command id softfac:${RUN12}:launch in Paradev and archive what it started by hand`,
+      );
       assert.deepEqual(
         fake.events.filter((e) => e.event === "attention"),
         [{ event: "attention", data: { run: RUN12, reason: "session-may-exist" } }],
@@ -2409,6 +2416,20 @@ describe("launches that recorded no thread id", () => {
       const { lines } = yield* pass(fake, [REPO], 3);
       assert.deepEqual(starts(fake), []);
       assert.ok(runLine(lines, `${REPO}#12 triage:`).includes("claimed by machine mac-studio"));
+    }),
+  );
+
+  it.effect("a ready issue left for the machine that reaped it says so", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.ready[REPO] = [12];
+      fake.pushStart(`${REPO}#12`, { kind: "skipped", reason: "left", leftForReaper: true });
+      const { lines } = yield* pass(fake, [REPO], 3);
+      const line = runLine(lines, `${REPO}#12 ready:`);
+      assert.ok(
+        line.includes("factory:ready is the factory's own, from another machine's launch timeout: left for that machine"),
+        line,
+      );
     }),
   );
 
@@ -5081,7 +5102,7 @@ describe("following a building run", () => {
         lines.filter((l) => l.startsWith("ATTENTION: ")),
         [
           `ATTENTION: ${REPO}#12 Abandoned: the issue was closed, so the factory stopped the session and closed the run`,
-          `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in T3 Code and archive that thread by hand`,
+          `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in Paradev and archive what it started by hand`,
         ],
       );
       assert.equal(report.attention, 2);
@@ -5137,7 +5158,7 @@ describe("following a building run", () => {
             lines.filter((l) => l.startsWith("ATTENTION: ")),
             [
               `ATTENTION: ${REPO}#12 Abandoned: the issue was closed, so the factory stopped the session and closed the run`,
-              `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in T3 Code and archive that thread by hand`,
+              `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in Paradev and archive what it started by hand`,
             ],
             listing,
           );
@@ -6072,7 +6093,7 @@ describe("sessions that ended badly", () => {
         assert.deepEqual(
           lines.filter((l) => l.startsWith("ATTENTION: ")),
           [
-            `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in T3 Code and archive that thread by hand`,
+            `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in Paradev and archive what it started by hand`,
           ],
         );
         assert.equal(report.attention, 1);
@@ -6127,7 +6148,7 @@ describe("sessions that ended badly", () => {
       assert.deepEqual(
         lines.filter((l) => l.startsWith("ATTENTION: ")),
         [
-          `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in T3 Code and archive that thread by hand`,
+          `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in Paradev and archive what it started by hand`,
         ],
       );
       assert.equal(report.attention, 1);
