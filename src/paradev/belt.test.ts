@@ -218,6 +218,31 @@ describe("beltPayload", () => {
     );
     const text = JSON.stringify(belt.runner.targets);
     for (const leak of ["/Users/", "superset", "e0fe439f"]) assert.notInclude(text, leak);
+    // A full target whose used slots include workspaces that could not be counted: the same.
+    const full = beltPayload({
+      nowMs: NOW,
+      runner: {
+        ...RUNNER,
+        targets: [
+          {
+            kind: "cloud",
+            name: "cloud",
+            online: true,
+            load: null,
+            slots: { used: 1, max: 1 },
+            ready: true,
+            reason: "slots full: 1 of 1 running (1 of them could not be counted: cloud workspace e0fe439f is not listed, and workspaces get failed: /Users/tomk)",
+          },
+        ],
+      },
+      runs: [],
+      attention: [],
+      hostNames: HOST_NAMES,
+    });
+    assert.deepStrictEqual(
+      full.runner.targets.map((target) => target.reason),
+      ["slots full: 1 of 1 running (1 of them could not be counted; factory-runner status says why)"],
+    );
   });
 
   it("cuts a long title without splitting a character", () => {

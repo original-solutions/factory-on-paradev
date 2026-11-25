@@ -389,12 +389,23 @@ describe("placer", () => {
         ],
       });
       t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
-      assert.deepStrictEqual(yield* t.placer.cloudCensus, { running: null, error });
+      assert.deepStrictEqual(yield* t.placer.cloudCensus, { running: null, error, uncountable: [] });
       yield* t.placer.targets;
       assert.strictEqual(t.reads.running, 1);
       const counted = setup({ counts: [{ target: { kind: "local" }, running: 0 }, { target: { kind: "cloud" }, running: 2 }] });
       counted.placer.beginPass({ localHeld: null, proxy: null, machine: counted.machine() });
-      assert.deepStrictEqual(yield* counted.placer.cloudCensus, { running: 2, error: null });
+      assert.deepStrictEqual(yield* counted.placer.cloudCensus, { running: 2, error: null, uncountable: [] });
+      // A count with workspaces it could not read carries their errors, and the row's reason names them.
+      const stuck = "cloud workspace e0fe439f of cloud:e0fe439f is not listed, and workspaces get failed: boom";
+      const degraded = setup({
+        counts: [full({ kind: "local" }), full({ kind: "host", machineId: "h1" }), { target: { kind: "cloud" }, running: 1, uncountable: [stuck] }],
+      });
+      degraded.placer.beginPass({ localHeld: null, proxy: null, machine: degraded.machine() });
+      assert.deepStrictEqual(yield* degraded.placer.cloudCensus, { running: 1, error: null, uncountable: [stuck] });
+      assert.strictEqual(
+        (yield* degraded.placer.targets).find((row) => row.kind === "cloud")?.reason,
+        `slots full: 1 of 1 running (1 of them could not be counted: ${stuck})`,
+      );
       const none = setup({ counts: [{ target: { kind: "local" }, running: 0 }] });
       none.placer.beginPass({ localHeld: null, proxy: null, machine: none.machine() });
       assert.isNull(yield* none.placer.cloudCensus);

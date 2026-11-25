@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 
 import type { Load } from "../load.ts";
 import { NO_TARGET_HAS_ROOM } from "../sessions.ts";
-import { type Candidate, choosePlacement, targetRow } from "./placement.ts";
+import { type Candidate, choosePlacement, targetRow, withoutCensusErrors } from "./placement.ts";
 
 const load = (perCore: number, cores = 10): Load => ({ oneMinute: perCore * cores, cores });
 
@@ -272,6 +272,21 @@ describe("targetRow", () => {
     assert.deepStrictEqual(placed.dropped, [
       { id: "cloud", target: "cloud", reason: `its running agents could not be counted: ${error}` },
     ]);
+  });
+
+  it("names the workspaces that count as used slots only because they could not be counted in a full target's reason (#117)", () => {
+    const error = "cloud workspace e0fe439f of cloud:e0fe439f is not listed with the tag factory-r1, and putting both tags back failed (boom)";
+    const row = targetRow(cloud({ slots: { running: 1, max: 1, uncountable: [error] } }));
+    assert.deepStrictEqual(
+      { online: row.online, slots: row.slots, reason: row.reason },
+      { online: true, slots: { used: 1, max: 1 }, reason: `slots full: 1 of 1 running (1 of them could not be counted: ${error})` },
+    );
+    assert.strictEqual(
+      withoutCensusErrors(row.reason!),
+      "slots full: 1 of 1 running (1 of them could not be counted; factory-runner status says why)",
+    );
+    // A target with room is still used: the workspace holds its one slot, no more.
+    assert.isNull(targetRow(cloud({ slots: { running: 1, max: 2, uncountable: [error] } })).reason);
   });
 
   it("gives cloud no load, and its proxy check as its readiness", () => {

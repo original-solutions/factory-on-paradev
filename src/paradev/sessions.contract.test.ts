@@ -5155,16 +5155,21 @@ describe("runningByTarget and runningThreads, per target (#55)", () => {
       const offline: Step = { argv: ["snapshot", "--host", HOST], fixture: "snapshot-host-offline" };
       const t = rig([localStep, offline, ...cloudStep, localStep, offline, ...cloudStep], { config: withAll });
       yield* seedAll(t.data);
-      const counted = yield* t.run((s) => s.runningByTarget);
-      assert.deepStrictEqual(counted.map(({ target, running }) => ({ target, running })), [
-        { target: { kind: "local" }, running: 1 },
-        { target: { kind: "host", machineId: HOST }, running: null },
-        { target: { kind: "cloud" }, running: 1 },
-      ]);
-      // The null count carries why: the snapshot's own error.
-      assert.include(counted[1]!.error, `snapshot --host ${HOST}`);
-      assert.isUndefined(counted[0]!.error);
-      assert.isUndefined(counted[2]!.error);
+      // A host's null count is as before #117: no error carried, none logged.
+      const logs = yield* warned(
+        t.run((s) => s.runningByTarget).pipe(
+          Effect.tap((counted) =>
+            Effect.sync(() =>
+              assert.deepStrictEqual(counted, [
+                { target: { kind: "local" }, running: 1 },
+                { target: { kind: "host", machineId: HOST }, running: null },
+                { target: { kind: "cloud" }, running: 1 },
+              ]),
+            ),
+          ),
+        ),
+      );
+      assert.deepStrictEqual(logs, []);
       assert.strictEqual(yield* t.run((s) => s.runningThreads), 2);
     }),
   );
@@ -5200,7 +5205,10 @@ describe("runningByTarget and runningThreads, per target (#55)", () => {
         { target: { kind: "host", machineId: HOST }, running: null },
         { target: { kind: "cloud" }, running: null },
       ]);
-      for (const count of counted) assert.include(count.error, "thread records could not be read");
+      // Only cloud's census carries its error (#117); this Mac and the host stay as before.
+      assert.isUndefined(counted[0]!.error);
+      assert.isUndefined(counted[1]!.error);
+      assert.include(counted[2]!.error, "thread records could not be read");
       const error = yield* t.run((s) => s.runningThreads).pipe(Effect.flip);
       assert.strictEqual(error.operation, "running-threads");
       assert.deepStrictEqual(t.calls, []);
@@ -5363,6 +5371,9 @@ describe("the cloud count, one workspace at a time (#85)", () => {
     }),
   );
 
+  /** The counts with each `uncountable` list cut to its length: how many workspaces counted as one slot unread. */
+  const tally = (read: ReadonlyArray<TargetCount>) =>
+    read.map(({ uncountable, ...rest }) => (uncountable === undefined ? rest : { ...rest, uncountable: uncountable.length }));
   /** The update that puts both tags back on `ws`: the one a cloud launch sends. */
   const healArgv = (ws: string) => ["workspaces", "update", ws, "--host", "cloud", "--tag", "factory", "--tag", MINE];
   const updates = (calls: ReadonlyArray<ReadonlyArray<string>>) => calls.filter(argvIs("workspaces", "update"));
@@ -5444,12 +5455,15 @@ describe("the cloud count, one workspace at a time (#85)", () => {
       const logs = yield* warned(
         alone.run((s) => s.runningByTarget).pipe(
           Effect.tap((counted) =>
-            Effect.sync(() =>
-              assert.deepStrictEqual(counted, [
+            Effect.sync(() => {
+              assert.deepStrictEqual(tally(counted), [
                 { target: { kind: "local" }, running: 1 },
-                { target: { kind: "cloud" }, running: 1 },
-              ]),
-            ),
+                { target: { kind: "cloud" }, running: 1, uncountable: 1 },
+              ]);
+              // The count carries the exact census error of the workspace it could not read.
+              assert.include(counted[1]!.uncountable![0], `cloud workspace ${C3_WS} of cloud:${C3_WS} is not listed with the tag ${MINE}`);
+              assert.include(counted[1]!.uncountable![0], "boom");
+            }),
           ),
         ),
       );
@@ -5473,9 +5487,9 @@ describe("the cloud count, one workspace at a time (#85)", () => {
         );
         yield* seedCloud(t.data);
         yield* seedOther(t.data);
-        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        assert.deepStrictEqual(tally(yield* t.run((s) => s.runningByTarget)), [
           { target: { kind: "local" }, running: 1 },
-          { target: { kind: "cloud" }, running: 2 },
+          { target: { kind: "cloud" }, running: 2, uncountable: 1 },
         ]);
         assert.deepStrictEqual(t.unused(), [bareCloud]);
       }
@@ -5494,9 +5508,9 @@ describe("the cloud count, one workspace at a time (#85)", () => {
         t.run((s) => s.runningByTarget).pipe(
           Effect.tap((counted) =>
             Effect.sync(() =>
-              assert.deepStrictEqual(counted, [
+              assert.deepStrictEqual(tally(counted), [
                 { target: { kind: "local" }, running: 1 },
-                { target: { kind: "cloud" }, running: 2 },
+                { target: { kind: "cloud" }, running: 2, uncountable: 1 },
               ]),
             ),
           ),
@@ -5586,9 +5600,9 @@ describe("the cloud count, one workspace at a time (#85)", () => {
             { config: { cloud: true } },
           );
           yield* seedBoth(t.data);
-          assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+          assert.deepStrictEqual(tally(yield* t.run((s) => s.runningByTarget)), [
             { target: { kind: "local" }, running: 1 },
-            { target: { kind: "cloud" }, running: 1 },
+            { target: { kind: "cloud" }, running: 1, uncountable: 1 },
           ]);
           assert.isNumber((yield* savedC3(t.data))?.archivedAt);
           const other = yield* readThread(t.data, OTHER_WS).pipe(Effect.provide(NodeServices.layer));
@@ -5614,9 +5628,9 @@ describe("the cloud count, one workspace at a time (#85)", () => {
         for (const answer of answers) {
           const t = rig([localStep, bareCloud, listOther(), answer, workingOther], { config: { cloud: true } });
           yield* seedBoth(t.data);
-          assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+          assert.deepStrictEqual(tally(yield* t.run((s) => s.runningByTarget)), [
             { target: { kind: "local" }, running: 1 },
-            { target: { kind: "cloud" }, running: 2 },
+            { target: { kind: "cloud" }, running: 2, uncountable: 1 },
           ]);
           assert.strictEqual((yield* savedC3(t.data))?.archivedAt, null);
         }
@@ -5638,9 +5652,9 @@ describe("the cloud count, one workspace at a time (#85)", () => {
           { config: { cloud: true } },
         );
         yield* seedBoth(t.data);
-        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+        assert.deepStrictEqual(tally(yield* t.run((s) => s.runningByTarget)), [
           { target: { kind: "local" }, running: 1 },
-          { target: { kind: "cloud" }, running: 2 },
+          { target: { kind: "cloud" }, running: 2, uncountable: 2 },
         ]);
         assert.strictEqual((yield* savedC3(t.data))?.archivedAt, null);
         const other = yield* readThread(t.data, OTHER_WS).pipe(Effect.provide(NodeServices.layer));
@@ -5659,9 +5673,9 @@ describe("the cloud count, one workspace at a time (#85)", () => {
             { config: { cloud: true } },
           );
           yield* seedBoth(t.data);
-          assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+          assert.deepStrictEqual(tally(yield* t.run((s) => s.runningByTarget)), [
             { target: { kind: "local" }, running: 1 },
-            { target: { kind: "cloud" }, running: 2 },
+            { target: { kind: "cloud" }, running: 2, uncountable: 1 },
           ]);
           assert.strictEqual((yield* savedC3(t.data))?.archivedAt, null);
         }
@@ -5688,9 +5702,9 @@ describe("the cloud count, one workspace at a time (#85)", () => {
         t.run((s) => s.runningByTarget).pipe(
           Effect.tap((counted) =>
             Effect.sync(() =>
-              assert.deepStrictEqual(counted, [
+              assert.deepStrictEqual(tally(counted), [
                 { target: { kind: "local" }, running: 1 },
-                { target: { kind: "cloud" }, running: 2 },
+                { target: { kind: "cloud" }, running: 2, uncountable: 1 },
               ]),
             ),
           ),
