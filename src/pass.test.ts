@@ -39,6 +39,9 @@ import {
   checkHosts,
   checkCloudPlugin,
   checkLocalPlugin,
+  CLOUD_PROXY_DOWN_PASSES,
+  GH_CREDENTIALS_ITEM_ID,
+  GH_CREDENTIALS_PASSES,
   HOST_READY_RECHECK_EVERY_MS,
   HOST_RECHECK_EVERY_MS,
   HOST_UNREACHABLE_PASSES,
@@ -242,6 +245,8 @@ class Fake implements PassWorld {
   proxyAnswers: Array<ProxyAnswer> = [{ kind: "guarded" }];
   proxyChecks = 0;
   proxyMisses = { passes: 0 };
+  /** What the pass's GitHub calls said of the gh login's credentials, and the failing passes in a row. */
+  ghCredentials = { rejected: 0, accepted: 0, passes: 0 };
   checkProxy = () =>
     Effect.sync(() => {
       this.proxyChecks += 1;
@@ -7364,6 +7369,133 @@ describe("the cloud proxy check", () => {
       noCloud.cloud = undefined;
       yield* pass(noCloud, [REPO], 5);
       assert.equal(noCloud.proxyChecks, 0);
+    }),
+  );
+});
+
+describe("persistent Bad credentials from GitHub", () => {
+  const GH_DIR = "/gh/rawphp";
+  const ids = (fake: Fake) => fake.items.map((item) => item.id).sort();
+  type Outcome = "refused" | "answered" | "both" | "quiet";
+
+  /** One pass whose GitHub calls went as `outcome`: what the tracker's tally holds when it ends. */
+  const passWith = (fake: Fake, outcome: Outcome) => {
+    fake.ghCredentials.rejected = outcome === "refused" || outcome === "both" ? 2 : 0;
+    fake.ghCredentials.accepted = outcome === "answered" || outcome === "both" ? 3 : 0;
+    return pass(fake, [REPO], 5);
+  };
+
+  const passesWith = (fake: Fake, outcomes: ReadonlyArray<Outcome>) =>
+    Effect.gen(function* () {
+      const seen: Array<{ ids: ReadonlyArray<string>; attention: number; lines: Array<string> }> = [];
+      for (const outcome of outcomes) {
+        const { report, lines } = yield* passWith(fake, outcome);
+        seen.push({ ids: ids(fake), attention: report.attention, lines });
+      }
+      return seen;
+    });
+
+  it("is counted as the cloud proxy's misses are", () => {
+    assert.equal(GH_CREDENTIALS_PASSES, CLOUD_PROXY_DOWN_PASSES);
+    assert.equal(GH_CREDENTIALS_PASSES, 3);
+    assert.equal(GH_CREDENTIALS_ITEM_ID, "gh-credentials");
+  });
+
+  it.effect("three passes in a row still refused after the retries raise one gh-credentials item", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      const seen = yield* passesWith(fake, ["refused", "refused", "refused", "refused"]);
+      assert.deepEqual(
+        seen.map((s) => s.ids),
+        [[], [], ["gh-credentials"], ["gh-credentials"]],
+      );
+      assert.deepEqual(seen.map((s) => s.attention), [0, 0, 1, 1]);
+      const items = fake.items.filter((item) => item.id === GH_CREDENTIALS_ITEM_ID);
+      assert.equal(items.length, 1);
+      const item = items[0]!;
+      assert.equal(item.kind, "attention");
+      assert.equal(item.repo, null);
+      assert.equal(item.issue, null);
+      assert.equal(item.run, null);
+      assert.include(item.message, "gh_config_dir");
+      assert.include(item.message, GH_DIR);
+      assert.include(item.message, "Bad credentials");
+      assert.equal(fake.ghCredentials.passes, 4);
+      // The tally is the pass's own: read and started over.
+      assert.equal(fake.ghCredentials.rejected, 0);
+      assert.equal(fake.ghCredentials.accepted, 0);
+    }),
+  );
+
+  it.effect("one or two refused passes raise nothing, but each says so in its log", () =>
+    Effect.gen(function* () {
+      for (const n of [1, 2]) {
+        const fake = new Fake();
+        const seen = yield* passesWith(fake, Array.from({ length: n }, () => "refused" as const));
+        for (const s of seen) {
+          assert.deepEqual(s.ids, []);
+          assert.equal(s.attention, 0);
+          const line = s.lines.find((l) => l.startsWith("gh:"));
+          assert.ok(line !== undefined, s.lines.join("\n"));
+          assert.include(line, "Bad credentials");
+          assert.include(line, GH_DIR);
+        }
+        assert.equal(fake.ghCredentials.passes, n);
+      }
+    }),
+  );
+
+  it.effect("a pass whose GitHub calls answer clears the item and starts the count over", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      const seen = yield* passesWith(fake, ["refused", "refused", "refused", "answered"]);
+      assert.deepEqual(seen.at(2)!.ids, ["gh-credentials"]);
+      assert.deepEqual(seen.at(3)!.ids, []);
+      assert.equal(fake.ghCredentials.passes, 0);
+      assert.ok(!seen.at(3)!.lines.some((l) => l.startsWith("gh:")), seen.at(3)!.lines.join("\n"));
+      // The count started over: two more refused passes raise nothing.
+      const again = yield* passesWith(fake, ["refused", "refused"]);
+      assert.deepEqual(again.map((s) => s.ids), [[], []]);
+    }),
+  );
+
+  it.effect("[refused, refused, answered, refused, refused]: no item is ever raised", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      const seen = yield* passesWith(fake, ["refused", "refused", "answered", "refused", "refused"]);
+      for (const s of seen) assert.deepEqual(s.ids, []);
+    }),
+  );
+
+  it.effect("a pass with a call still refused counts as refused, whatever else answered", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      const seen = yield* passesWith(fake, ["both", "both", "both"]);
+      assert.deepEqual(seen.at(2)!.ids, ["gh-credentials"]);
+    }),
+  );
+
+  it.effect("a pass that made no GitHub call neither counts nor clears", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      const seen = yield* passesWith(fake, ["refused", "refused", "quiet", "refused", "quiet"]);
+      assert.deepEqual(
+        seen.map((s) => s.ids),
+        [[], [], [], ["gh-credentials"], ["gh-credentials"]],
+      );
+    }),
+  );
+
+  it.effect("no token or secret is in the item or the log line", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      const seen = yield* passesWith(fake, ["refused", "refused", "refused"]);
+      const item = fake.items.find((i) => i.id === GH_CREDENTIALS_ITEM_ID)!;
+      const lines = seen.flatMap((s) => s.lines.filter((l) => l.startsWith("gh:")));
+      assert.equal(lines.length, 3);
+      for (const text of [item.message, ...lines]) {
+        assert.notMatch(text, /gh[opsur]_|github_pat_|token|secret|password|oauth/i, text);
+      }
     }),
   );
 });
