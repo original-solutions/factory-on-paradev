@@ -1749,7 +1749,11 @@ const reapLaunches = Effect.fn("Pass.reapLaunches")(function* (
     seconds: machine.launchTimeoutSeconds,
     retries: machine.launchTimeoutRetries,
   };
-  for (const info of known.infos.filter(inTriage)) {
+  // A run a cut reap left in `ready` or `stuck` is the reaper's to finish too.
+  const reapable = (info: RunInfo) =>
+    inTriage(info) ||
+    (!info.unreadable && info.confirmed && (info.state === "ready" || info.state === "stuck"));
+  for (const info of known.infos.filter(reapable)) {
     const loaded = repos.find(
       (l) => l.kind === "ready" && sameRepo(l.repo.watched.repo, info.id.repo),
     );
@@ -1759,7 +1763,8 @@ const reapLaunches = Effect.fn("Pass.reapLaunches")(function* (
     const issue = Number(info.id.issue);
     const run = runIdToString(info.id);
     const notes = pass.notes(name, issue, info.state);
-    yield* takeStopRequest(world, pass, info, notes);
+    // A starting run's stop request is the reaper's; any other run's is taken where it is worked.
+    if (inTriage(info)) yield* takeStopRequest(world, pass, info, notes);
     const reaped = yield* Effect.result(world.reapLaunch(repo, info.id, info.base, timeout));
     if (reaped._tag === "Failure") {
       pass.unreaped.add(run);
@@ -2531,10 +2536,6 @@ const waitsOnItself = (pass: Pass, notes: Notes, run: string): Effect.Effect<voi
 
 const READY_AGAIN = "its issue is ready again, so it is left to the claim step";
 
-/** What the pass says of a ready issue `start` left for the machine whose launch timeout labelled it. */
-const LEFT_FOR_REAPER =
-  "not claimed: factory:ready is the factory's own, from another machine's launch timeout: left for that machine";
-
 /**
  * A confirmed run still in `triage` (or before any state): what `finishOlderRuns` would end, and
  * what the launch reaper looks at. `isStarting` in `runner/progress.ts` is the same rule over a
@@ -2813,9 +2814,7 @@ const noteStart = Effect.fn("Pass.noteStart")(function* (
           ? claimedByLine(outcome.success.claimedBy)
           : outcome.success.gaveWay === true
             ? CLAIM_GAVE_WAY
-            : outcome.success.leftForReaper === true
-              ? LEFT_FOR_REAPER
-              : words.notTaken,
+            : words.notTaken,
       );
       return null;
     case "refused":

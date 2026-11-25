@@ -152,8 +152,6 @@ export interface Seen {
    * counts against the issue's `launch_timeout_retries`: a stop by hand uses no retry.
    */
   readonly launchFailed: "timed-out" | "stopped" | null;
-  /** When that `launch-timed-out` or `launch-stopped` step was written; null for none. */
-  readonly launchFailedMs: number | null;
   /**
    * The branch in a `launch-sending resumed-from <branch>` step: the decision to resume, made
    * before the first launch call. Null for a plain `launch-sending` or none. A launch sent again
@@ -187,8 +185,6 @@ export interface Seen {
   /** A `stop_requested` line: an operator asked for this run to be stopped by hand. */
   readonly stopRequested: boolean;
   readonly finished: boolean;
-  /** When the `finished` line was written; null before it. */
-  readonly finishedMs: number | null;
   /** Every pull request a `pr_opened` line names, once each, in the order first named. */
   readonly opened: ReadonlyArray<number>;
   /** The newest `pr_opened`: the number and the URL as the session wrote it. */
@@ -499,7 +495,6 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
   let launchSent = false;
   let launchSentMs: number | null = null;
   let launchFailed: Seen["launchFailed"] = null;
-  let launchFailedMs: number | null = null;
   let launchResumedFrom: string | null = null;
   let launchResumedPr: string | null = null;
   let launchPullRequest: { branch: string; url: string } | null = null;
@@ -511,7 +506,6 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
   let stuck: string | null = null;
   let stopRequested = false;
   let finished = false;
-  let finishedMs: number | null = null;
   const opened: Array<number> = [];
   let lastPr: Seen["lastPr"] = null;
   const left: Array<{ pr: number; url: string }> = [];
@@ -672,10 +666,8 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
         if (step === LAUNCH_SENDING || step.startsWith(LAUNCH_SENDING_RESUMED)) {
           launchSentMs ??= entry.ms;
         }
-        if (step === LAUNCH_TIMED_OUT || step === LAUNCH_STOPPED) {
-          launchFailed = step === LAUNCH_TIMED_OUT ? "timed-out" : "stopped";
-          launchFailedMs = entry.ms;
-        }
+        if (step === LAUNCH_TIMED_OUT) launchFailed = "timed-out";
+        else if (step === LAUNCH_STOPPED) launchFailed = "stopped";
         if (step === LAUNCH_SENDING) {
           launchSent = true;
           launchResumedFrom = null;
@@ -1039,7 +1031,6 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
       }
       case "finished":
         finished = true;
-        finishedMs = entry.ms;
         workingSince = null;
         break;
     }
@@ -1055,7 +1046,6 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
     launchSent,
     launchSentMs,
     launchFailed,
-    launchFailedMs,
     launchResumedFrom,
     launchResumedPr,
     launchBase,
@@ -1066,7 +1056,6 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
     stuck,
     stopRequested,
     finished,
-    finishedMs,
     opened,
     lastPr,
     left,

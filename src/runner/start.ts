@@ -13,12 +13,7 @@ import * as Schema from "effect/Schema";
 
 import type { ProjectConfig } from "../config.ts";
 import { fallbackOf } from "../cooldown.ts";
-import {
-  refusalReason,
-  unapprovedComment,
-  type Approval,
-  type Refusal,
-} from "../domain/approval.ts";
+import { refusalReason, unapprovedComment, type Refusal } from "../domain/approval.ts";
 import { issueBase } from "../domain/base.ts";
 import { InvalidTransition, stateLabel, transition } from "../domain/lifecycle.ts";
 import { gateLockFile } from "../gate.ts";
@@ -237,8 +232,6 @@ export type StartOutcome =
       readonly claimedBy?: string;
       /** The claim took over 5 minutes and gave way, so the issue stays `factory:ready`. */
       readonly gaveWay?: true;
-      /** The label in force is the factory's own from another machine's launch timeout: that machine claims it. */
-      readonly leftForReaper?: true;
     }
   /** The issue was `ready` but not approved, so it went back to `factory:proposed` with one fixed comment, and no run was made. */
   | { readonly kind: "refused"; readonly reason: string }
@@ -436,14 +429,9 @@ const startFresh = Effect.fn("RunnerStart.startFresh")(function* (
 ): Effect.fn.Return<StartOutcome, StartError> {
   // Before the claim: nothing is written for an issue that is not approved except the
   // explanation.
-  const approval = yield* reapedApproval(
-    ctx,
-    issue,
-    yield* ctx.tracker.approval(issue, ctx.project.instructors),
-  );
-  if (approval.kind === "not-carried") {
-    return { kind: "skipped", reason: notCarried(issue), leftForReaper: true } satisfies StartOutcome;
-  }
+  // The factory's login, so a `factory:ready` the launch reaper put back is judged by the
+  // instructor's label it carries.
+  const approval = yield* ctx.tracker.approval(issue, ctx.project.instructors, ctx.trackerUser);
   if (approval.kind === "refused") return yield* refuseStart(ctx, issue, approval.refusal);
   const { labeledAt, labeledBy } = approval;
   // Also before the claim: with T3 out of reach nothing is claimed, so no issue is left in
@@ -475,67 +463,6 @@ const startFresh = Effect.fn("RunnerStart.startFresh")(function* (
   } finally {
     out.close();
   }
-});
-
-/** How far apart the runner's clock and GitHub's may be when a label is matched to the reap that applied it. */
-const REAP_LABEL_SKEW_MS = 60_000;
-
-/** Why a ready issue whose label is the factory's own, and that this machine has no ledger of, is not claimed. */
-const notCarried = (issue: number) =>
-  `issue ${mention(issue)} has factory:ready from the factory's own login and no ledger of the issue on this machine, so it is left for the machine whose launch timeout applied it`;
-
-/**
- * The approval of an issue the launch reaper put back to `factory:ready` (`launchTimeout.ts`): the
- * label in force is then the factory's own, applied by its login between the issue's newest run's
- * `launch-timed-out` or `launch-stopped` step and its `finished` line (give or take
- * `REAP_LABEL_SKEW_MS`), and it says nothing about an instructor. That run's recorded approval is
- * carried over, as a relaunch carries it, once the text is checked unchanged since that approval,
- * so neither a refusal of the factory's label nor an instructor login's own label moves the
- * approval later. A label by that login outside that window is judged afresh. A refused label by
- * that login on a repo with no `factory.owner`, by a machine with no ledger of the issue, is
- * `not-carried`: another machine on the same login reaped it and claims it, where a refusal would
- * move it to `factory:proposed`. Any other judgement stands.
- */
-const reapedApproval = Effect.fn("RunnerStart.reapedApproval")(function* (
-  ctx: StartContext,
-  issue: number,
-  judged: Approval,
-): Effect.fn.Return<Approval | { readonly kind: "not-carried" }, GitHubError | LedgerError> {
-  const label =
-    judged.kind === "approved"
-      ? { by: judged.labeledBy, at: judged.labeledAt }
-      : judged.refusal.kind === "labeled-by-non-instructor"
-        ? { by: judged.refusal.by, at: judged.refusal.labeledAt }
-        : null;
-  if (label === null || label.by === null || asciiLower(label.by) !== asciiLower(ctx.trackerUser)) {
-    return judged;
-  }
-  const next = nextAttempt(ctx.dataDir, ctx.repo, String(issue));
-  if (next === 1) {
-    return judged.kind === "refused" && ctx.project.owner === null
-      ? ({ kind: "not-carried" } as const)
-      : judged;
-  }
-  const newest = newRunId(ctx.repo, String(issue), next - 1);
-  const reaped = readProgress((yield* ledger(() => readRun(ctx.dataDir, newest))).entries);
-  if (
-    reaped.finishedMs === null ||
-    reaped.launchFailedMs === null ||
-    reaped.approvedAt === null ||
-    label.at < utcSecond(reaped.launchFailedMs - REAP_LABEL_SKEW_MS) ||
-    label.at > utcSecond(reaped.finishedMs + REAP_LABEL_SKEW_MS)
-  ) {
-    return judged;
-  }
-  const since = reaped.approvedAt;
-  const check = yield* ctx.tracker.textCheck(issue, since, ctx.project.instructors);
-  if (check === "changed") {
-    return { kind: "refused", refusal: { kind: "edited-after-label", labeledAt: since } };
-  }
-  if (check === "unjudged") {
-    return { kind: "refused", refusal: { kind: "edit-history-incomplete", labeledAt: since } };
-  }
-  return { kind: "approved", labeledAt: since, labeledBy: reaped.approvedBy ?? "" };
 });
 
 /**

@@ -168,6 +168,9 @@ export const textChangesSince = (
 /**
  * Whether the factory may build the issue: an instructor (only ever a `User`) applied the `ready`
  * label in force now, and every body edit and title rename from that second on was an instructor's.
+ * A `ready` label in force that `factory`, the factory's own login, applied (the launch reaper's,
+ * when that login is no instructor) stands for the instructor's label it carries
+ * (`carriedLabel`), which the text is judged from; with none it is refused as anyone else's.
  * Only the newest timeline page is read: it holds the label in force and all after it, and a full
  * page without it is `label-history-incomplete`. Label names match exactly; times compare as text.
  */
@@ -175,18 +178,28 @@ export const judgeApproval = (
   issue: ApprovalIssue,
   ready: string,
   instructors: ReadonlyArray<string>,
+  factory?: string,
 ): Approval => {
-  let inForce: Extract<TimelineNode, { __typename: "LabeledEvent" }> | null = null;
-  for (const event of issue.timelineItems.nodes) {
-    if (event.__typename === "LabeledEvent" && event.label.name === ready) inForce = event;
-    else if (event.__typename === "UnlabeledEvent" && event.label.name === ready) inForce = null;
-  }
-  if (inForce === null) {
-    const { totalCount, nodes } = issue.timelineItems;
-    const cutOff = nodes.length >= HISTORY_PAGE && totalCount > HISTORY_PAGE;
+  const { totalCount, nodes } = issue.timelineItems;
+  const cutOff = nodes.length >= HISTORY_PAGE && totalCount > HISTORY_PAGE;
+  let at = -1;
+  nodes.forEach((event, index) => {
+    if (event.__typename === "LabeledEvent" && event.label.name === ready) at = index;
+    else if (event.__typename === "UnlabeledEvent" && event.label.name === ready) at = -1;
+  });
+  if (at < 0) {
     const refusal: Refusal = { kind: cutOff ? "label-history-incomplete" : "label-not-found" };
     return { kind: "refused", refusal };
   }
+  const own = nodes[at] as LabelEvent;
+  const carried =
+    factory !== undefined && isLogin(own.actor, factory) && !isHumanInstructor(own.actor, instructors)
+      ? carriedLabel(nodes, at, ready, instructors, factory)
+      : own;
+  if (carried === "incomplete" && cutOff) {
+    return { kind: "refused", refusal: { kind: "label-history-incomplete" } };
+  }
+  const inForce = carried === "incomplete" || carried === null ? own : carried;
   const labeledAt = inForce.createdAt;
   const actor = inForce.actor;
   if (actor === null || actor === undefined || !isHumanInstructor(actor, instructors)) {
@@ -204,6 +217,44 @@ export const judgeApproval = (
     case "unchanged":
       return { kind: "approved", labeledAt, labeledBy: actor.login };
   }
+};
+
+type LabelEvent = Extract<TimelineNode, { __typename: "LabeledEvent" }>;
+
+/** Whether the actor is the account `login`, in any case. */
+const isLogin = (actor: Actor | null | undefined, login: string): boolean =>
+  actor !== null && actor !== undefined && asciiLower(actor.login) === asciiLower(login);
+
+/**
+ * The instructor's label a `factory:ready` label the factory's own login applied (`nodes[at]`)
+ * carries: the launch reaper puts an issue it claimed back to `factory:ready`, which says nothing
+ * about an instructor by itself. Walking back, every change of a `factory:` label must be the
+ * factory's, until an instructor's (a person's) `factory:ready` label: that is the approval, and
+ * the text is judged from it. An earlier `factory:ready` of the factory's own is an earlier reap
+ * and the walk goes on. Null when someone else changed a factory label first, `incomplete` when
+ * the page ends before an instructor's label is found.
+ */
+const carriedLabel = (
+  nodes: ReadonlyArray<TimelineNode>,
+  at: number,
+  ready: string,
+  instructors: ReadonlyArray<string>,
+  factory: string,
+): LabelEvent | "incomplete" | null => {
+  const prefix = ready.slice(0, ready.indexOf(":") + 1);
+  for (let index = at - 1; index >= 0; index -= 1) {
+    const event = nodes[index]!;
+    if (event.__typename === "RenamedTitleEvent" || !event.label.name.startsWith(prefix)) continue;
+    if (
+      event.__typename === "LabeledEvent" &&
+      event.label.name === ready &&
+      isHumanInstructor(event.actor, instructors)
+    ) {
+      return event;
+    }
+    if (!isLogin(event.actor, factory)) return null;
+  }
+  return "incomplete";
 };
 
 /**

@@ -668,12 +668,6 @@ describe("readProgress: when the launch was sent, and how a launch with no threa
     assert.strictEqual(resumed.launchSentMs, 7 * MINUTE);
   });
 
-  it("keeps when the launch was ended with no thread", () => {
-    const seen = readProgress([step(1, "launch-sending"), step(7 * MINUTE, "launch-timed-out")]);
-    assert.strictEqual(seen.launchFailedMs, 7 * MINUTE);
-    assert.strictEqual(readProgress([step(1, "launch-sending")]).launchFailedMs, null);
-  });
-
   it("reads the step that says the launch timed out, or was stopped by hand, with no thread", () => {
     assert.strictEqual(
       readProgress([step(1, "launch-sending"), step(2, "launch-timed-out")]).launchFailed,

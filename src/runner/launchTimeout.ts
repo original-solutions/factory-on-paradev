@@ -146,14 +146,16 @@ const decide = Effect.fn("RunnerLaunchTimeout.decide")(function* (
  * `factory:stuck` at the limit) still counts as the run's, so a label that landed before the cut
  * is not taken for a person's move. Then the session, if any, is stopped and the issue moved: to
  * `factory:stuck` once the issue's earlier launch timeouts reach `launch_timeout_retries`, else to
- * `factory:ready` and unassigned. `state_changed` and the `finished` line come last. A failed call
- * leaves the run unfinished and the next pass tries again.
+ * `factory:ready` and unassigned. `state_changed` and the `finished` line come last, and a run cut
+ * between them is finished on the next call (`finishCut`). A failed call leaves the run unfinished
+ * and the next pass tries again.
  */
 export const reapLaunch = Effect.fn("RunnerLaunchTimeout.reapLaunch")(function* (
   ctx: LaunchTimeoutContext,
   run: RunId,
 ) {
   const seen = readProgress((yield* ledger(() => readRun(ctx.dataDir, run))).entries);
+  if (cutAfterMove(seen)) return yield* finishCut(ctx, run, seen);
   // A stuck decision the reaper did not record is `start`'s to finish.
   if (!isStarting(seen) || (seen.stuck !== null && seen.launchFailed === null)) return LEFT;
   const decided = yield* decide(ctx, seen);
@@ -210,16 +212,47 @@ export const reapLaunch = Effect.fn("RunnerLaunchTimeout.reapLaunch")(function* 
     // A thread recorded and gone: archiving it changes nothing, and its worktree is removed.
     yield* stopSession(ctx, out, at);
     // The label swap and release a failed start uses, to `factory:ready` this time. Both repeat
-    // safely, so a call cut short between them finishes on the next pass. The `finished` line is
-    // the one write after them, with no `state_changed` before it: a run cut between the two would
-    // be left in `ready`, where neither the reaper nor any other step looks.
+    // safely, so a call cut short between them finishes on the next pass. `state_changed` is
+    // written once both are done; a run cut after it is finished by `finishCut`.
     yield* ctx.tracker.setState(issue, "ready");
     yield* ctx.tracker.unassign(issue, ctx.trackerUser);
+    const from = at.state;
+    yield* ledger(() =>
+      out.append({ event: "state_changed", data: { from, to: "ready" } }, cause),
+    );
     yield* ledger(() => out.finish("stuck", null, null, cause));
     return { kind: "ready", ended: decided, failures, mayHaveSession: session } satisfies LaunchReap;
   } finally {
     out.close();
   }
+});
+
+/**
+ * Whether a reap was cut after its move: the reaper's step is recorded and the run is unfinished in
+ * the state it moved the issue to (`ready`, or `stuck` at the limit). Its `state_changed` is written
+ * only after its GitHub calls are done, so only the `finished` line is left.
+ */
+const cutAfterMove = (seen: Seen): boolean =>
+  seen.launchFailed !== null && !seen.finished && (seen.state === "ready" || seen.state === "stuck");
+
+/** Finishes a reap `cutAfterMove` found, with the outcome it would have had: nothing is called on GitHub. */
+const finishCut = Effect.fn("RunnerLaunchTimeout.finishCut")(function* (
+  ctx: LaunchTimeoutContext,
+  run: RunId,
+  seen: Seen,
+) {
+  const ended = seen.launchFailed!;
+  const failures = (yield* earlierTimeouts(ctx, run)) + (ended === "timed-out" ? 1 : 0);
+  const out = yield* ledger(() => Ledger.open(ctx.dataDir, run, { clock: ctx.clock }));
+  try {
+    yield* ledger(() => out.finish("stuck", null, null, makeCause("pass", recordOf(ended).reason)));
+  } finally {
+    out.close();
+  }
+  const session = mayHaveSession(seen);
+  return seen.state === "stuck"
+    ? ({ kind: "stuck", ended, failures, limit: true, mayHaveSession: session } satisfies LaunchReap)
+    : ({ kind: "ready", ended, failures, mayHaveSession: session } satisfies LaunchReap);
 });
 
 /** A person moved the issue: its recorded thread is stopped and the run finished, the issue left as it is. */
