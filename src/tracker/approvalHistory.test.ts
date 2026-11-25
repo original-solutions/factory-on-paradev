@@ -245,12 +245,63 @@ describe("judgeApproval: a factory:ready label the factory's own login applied",
     );
   });
 
-  it("takes the factory login's label as its own approval when that login is an instructor, as before", () => {
+  it("walks back from a reap by a factory login that is an instructor too, so an edit during the stall still refuses", () => {
     assert.deepStrictEqual(judgeApproval(issueOf(reaped()), READY, ["tom", FACTORY], FACTORY), {
+      kind: "approved",
+      labeledAt: T(0),
+      labeledBy: "Tom",
+    });
+    const edited = issueOf(reaped(), [[T(10), "eve"]]);
+    assert.deepStrictEqual(judgeApproval(edited, READY, ["tom", FACTORY], FACTORY), {
+      kind: "refused",
+      refusal: { kind: "edited-after-label", labeledAt: T(0) },
+    });
+  });
+
+  it("carries only the reap's shape: a factory ready that replaced the factory's triage in one edit", () => {
+    // A factory-login ready with no triage removed beside it is no reap: judged as its own label.
+    const bare = [labeled(T(0), "Tom"), unlabeledAs(T(1), FACTORY, READY), labeled(T(20), FACTORY)];
+    assert.deepStrictEqual(judgeApproval(issueOf(bare), READY, ["tom"], FACTORY), {
+      kind: "refused",
+      refusal: { kind: "labeled-by-non-instructor", by: FACTORY, labeledAt: T(20) },
+    });
+    // An instructor-login factory relabelling by hand is a fresh approval, as before.
+    assert.deepStrictEqual(judgeApproval(issueOf(bare), READY, ["tom", FACTORY], FACTORY), {
       kind: "approved",
       labeledAt: T(20),
       labeledBy: FACTORY,
     });
+  });
+
+  it.each(["factory:stuck", "factory:needs-info", "factory:pr-open", "factory:proposed"])(
+    "refuses a factory ready after a %s stint, which needs a person's factory:ready to leave",
+    (label) => {
+      const stint = [
+        unlabeledAs(T(9), FACTORY, "factory:triage"),
+        labeled(T(9), FACTORY, label),
+        unlabeledAs(T(10), FACTORY, label),
+        labeled(T(10), FACTORY, "factory:triage"),
+      ];
+      assert.strictEqual(
+        judgeApproval(issueOf(reaped(stint)), READY, ["tom"], FACTORY).kind,
+        "refused",
+      );
+    },
+  );
+
+  it("carries an approval whose instructor also removed factory:proposed, before or after the ready", () => {
+    // One edit lists the added label first; a separate removal can come a second before.
+    for (const approval of [
+      [labeled(T(0), "Tom"), unlabeledAs(T(0), "Tom", "factory:proposed")],
+      [unlabeledAs("2026-10-04T09:59:59Z", "Tom", "factory:proposed"), labeled(T(0), "Tom")],
+    ]) {
+      const events = [...approval, ...reaped().slice(1)];
+      assert.deepStrictEqual(judgeApproval(issueOf(events), READY, ["tom"], FACTORY), {
+        kind: "approved",
+        labeledAt: T(0),
+        labeledBy: "Tom",
+      });
+    }
   });
 
   it("judges as before with no factory login given", () => {

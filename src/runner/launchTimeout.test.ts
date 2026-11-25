@@ -819,7 +819,7 @@ describe("reapLaunch: a reap cut short", () => {
         failures: 1,
         mayHaveSession: true,
       });
-      // The decision stands: no claim winner is asked again.
+      // The issue is ready now, so no claim winner is asked.
       assert.deepStrictEqual(rig.calls, ["issue 10", "setState 10 ready", "unassign 10 rawphp"]);
       assert.deepStrictEqual(rig.world.issue.assignees, []);
       assert.deepStrictEqual(listUnfinishedRuns(rig.dataDir), []);
@@ -922,7 +922,7 @@ describe("reapLaunch: a reap cut short", () => {
     }),
   );
 
-  it("finishes a run a cut left in stuck at the limit, as the launch-timeout outcome", () =>
+  it.effect("finishes a run a cut left in stuck at the limit, as the launch-timeout outcome", () =>
     Effect.gen(function* () {
       const rig = rigFor();
       seed(rig.dataDir, runOf(1), [...SENDING, step("launch-timed-out"), FINISHED]);
@@ -944,13 +944,41 @@ describe("reapLaunch: a reap cut short", () => {
     }),
   );
 
-  it("leaves a run in ready or stuck that the reaper did not decide", () =>
+  it.effect("leaves a run in ready or stuck that the reaper did not decide", () =>
     Effect.gen(function* () {
       for (const to of ["ready", "stuck"] as const) {
         const rig = rigFor();
         seed(rig.dataDir, runOf(1), [...SENDING, moved("triage", to)]);
         assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), { kind: "left" });
+        assert.deepStrictEqual(rig.calls, []);
       }
+      // A building run's stop cut after its state_changed to stuck is advance's, not the reaper's.
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), [
+        ...SENDING,
+        LAUNCHED,
+        moved("triage", "building"),
+        STOP_LINE,
+        { event: "stuck", data: { reason: "stopped by hand" } },
+        moved("building", "stuck"),
+      ]);
+      const bytes = bytesOf(rig.dataDir, runOf(1));
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), { kind: "left" });
+      assert.strictEqual(bytesOf(rig.dataDir, runOf(1)), bytes);
+    }),
+  );
+
+  it.effect("yields a recorded decision's issue to another machine whose newer claim took it", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), [...SENDING, step("launch-timed-out")]);
+      rig.world.winner = "mac-studio";
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), {
+        kind: "yielded",
+        machine: "mac-studio",
+        mayHaveSession: true,
+      });
+      assert.deepStrictEqual(rig.calls, ["issue 10", "yield 10"]);
     }),
   );
 
