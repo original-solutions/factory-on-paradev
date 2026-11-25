@@ -1220,8 +1220,13 @@ export interface GhCredentialTally {
 type GitHubEffect<A> = Effect.Effect<A, GitHubError, FactoryProcess>;
 type GitHubGen<A> = Effect.fn.Return<A, GitHubError, FactoryProcess>;
 
-/** The login `gh` is authenticated as under `ghConfigDir`: {@link makeGitHub}'s `login`, which names no repo. */
-export const ghLogin = (ghConfigDir: string) => makeGitHub({ repo: "", ghConfigDir }).login();
+/**
+ * The login `gh` is authenticated as under `ghConfigDir`: {@link makeGitHub}'s `login`, which names
+ * no repo. `credentials` is the trackers' tally of that login, so this read counts, and is not
+ * retried on a 401 after one gave up, as theirs are.
+ */
+export const ghLogin = (ghConfigDir: string, credentials?: GhCredentialTally) =>
+  makeGitHub({ repo: "", ghConfigDir, ...(credentials === undefined ? {} : { credentials }) }).login();
 
 export const makeGitHub = (options: GitHubOptions) => {
   const { repo } = options;

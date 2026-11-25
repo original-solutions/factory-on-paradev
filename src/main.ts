@@ -877,7 +877,9 @@ export const liveWorld = (
             const known = [...lastGood.values()].find((good) => good.trackerUser !== undefined)?.trackerUser;
             return known !== undefined
               ? Effect.succeed(known)
-              : withProcess(ghLogin(machine.ghConfigDir)).pipe(Effect.mapError((error) => error.message));
+              : withProcess(ghLogin(machine.ghConfigDir, ghCredentials)).pipe(
+                  Effect.mapError((error) => error.message),
+                );
           }),
         },
         machine,
