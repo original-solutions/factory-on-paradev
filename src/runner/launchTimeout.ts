@@ -7,8 +7,9 @@
  * step, so a wait for room past the timeout is such a run too. A stop by hand of a starting run is
  * carried out here as well. The pass calls it for each such run before it works the runs, so a
  * launch left mid-way by a crash is reaped on the first pass after the restart. The issue is moved
- * only while it is still the run's (`factory:triage`, the factory alone assigned, no other
- * machine's claim): otherwise the run is finished in the ledger and the issue left as it is.
+ * while it is still in `factory:triage`, whoever is assigned, unless another machine's claim holds
+ * it; after a reap cut short, the state the reaper was moving it to still counts as the run's. An
+ * issue a person moved off `factory:triage` is left as it is, and the run finished in the ledger.
  */
 import * as Effect from "effect/Effect";
 
@@ -64,7 +65,7 @@ export type LaunchEnd = "timed-out" | "stopped";
  * that nothing archived.
  */
 export type LaunchReap =
-  /** Nothing: the run is not starting, its launch is within the timeout or live, its ledger already decided it is stuck, or its issue is closed. */
+  /** Nothing: the run is not starting, its launch is within the timeout or live, its ledger holds a stuck decision the reaper did not record, or its issue is closed. */
   | { readonly kind: "left" }
   /** The run is finished and the issue is `factory:ready` and unassigned. */
   | {
@@ -209,15 +210,11 @@ export const reapLaunch = Effect.fn("RunnerLaunchTimeout.reapLaunch")(function* 
     // A thread recorded and gone: archiving it changes nothing, and its worktree is removed.
     yield* stopSession(ctx, out, at);
     // The label swap and release a failed start uses, to `factory:ready` this time. Both repeat
-    // safely, so a call cut short between them finishes on the next pass.
+    // safely, so a call cut short between them finishes on the next pass. The `finished` line is
+    // the one write after them, with no `state_changed` before it: a run cut between the two would
+    // be left in `ready`, where neither the reaper nor any other step looks.
     yield* ctx.tracker.setState(issue, "ready");
     yield* ctx.tracker.unassign(issue, ctx.trackerUser);
-    const from = at.state;
-    if (from !== "ready") {
-      yield* ledger(() =>
-        out.append({ event: "state_changed", data: { from, to: "ready" } }, cause),
-      );
-    }
     yield* ledger(() => out.finish("stuck", null, null, cause));
     return { kind: "ready", ended: decided, failures, mayHaveSession: session } satisfies LaunchReap;
   } finally {

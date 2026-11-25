@@ -237,6 +237,8 @@ export type StartOutcome =
       readonly claimedBy?: string;
       /** The claim took over 5 minutes and gave way, so the issue stays `factory:ready`. */
       readonly gaveWay?: true;
+      /** The label in force is the factory's own from another machine's launch timeout: that machine claims it. */
+      readonly leftForReaper?: true;
     }
   /** The issue was `ready` but not approved, so it went back to `factory:proposed` with one fixed comment, and no run was made. */
   | { readonly kind: "refused"; readonly reason: string }
@@ -440,7 +442,7 @@ const startFresh = Effect.fn("RunnerStart.startFresh")(function* (
     yield* ctx.tracker.approval(issue, ctx.project.instructors),
   );
   if (approval.kind === "not-carried") {
-    return { kind: "skipped", reason: notCarried(issue) } satisfies StartOutcome;
+    return { kind: "skipped", reason: notCarried(issue), leftForReaper: true } satisfies StartOutcome;
   }
   if (approval.kind === "refused") return yield* refuseStart(ctx, issue, approval.refusal);
   const { labeledAt, labeledBy } = approval;
@@ -478,9 +480,9 @@ const startFresh = Effect.fn("RunnerStart.startFresh")(function* (
 /** How far apart the runner's clock and GitHub's may be when a label is matched to the reap that applied it. */
 const REAP_LABEL_SKEW_MS = 60_000;
 
-/** Why a ready issue whose label is the factory's own, with no reap here to carry, is not claimed. */
+/** Why a ready issue whose label is the factory's own, and that this machine has no ledger of, is not claimed. */
 const notCarried = (issue: number) =>
-  `issue ${mention(issue)} has factory:ready from the factory's own login and no launch timeout on this machine to carry an approval from, so it is left for the machine that reaped it`;
+  `issue ${mention(issue)} has factory:ready from the factory's own login and no ledger of the issue on this machine, so it is left for the machine whose launch timeout applied it`;
 
 /**
  * The approval of an issue the launch reaper put back to `factory:ready` (`launchTimeout.ts`): the
@@ -489,9 +491,10 @@ const notCarried = (issue: number) =>
  * `REAP_LABEL_SKEW_MS`), and it says nothing about an instructor. That run's recorded approval is
  * carried over, as a relaunch carries it, once the text is checked unchanged since that approval,
  * so neither a refusal of the factory's label nor an instructor login's own label moves the
- * approval later. A later label by that login is judged afresh. A refused label by that login with
- * no reap here to carry is `not-carried`: another machine on the same login reaped the issue, and
- * a refusal would move it to `factory:proposed`. Any other judgement stands.
+ * approval later. A label by that login outside that window is judged afresh. A refused label by
+ * that login on a repo with no `factory.owner`, by a machine with no ledger of the issue, is
+ * `not-carried`: another machine on the same login reaped it and claims it, where a refusal would
+ * move it to `factory:proposed`. Any other judgement stands.
  */
 const reapedApproval = Effect.fn("RunnerStart.reapedApproval")(function* (
   ctx: StartContext,
@@ -507,9 +510,12 @@ const reapedApproval = Effect.fn("RunnerStart.reapedApproval")(function* (
   if (label === null || label.by === null || asciiLower(label.by) !== asciiLower(ctx.trackerUser)) {
     return judged;
   }
-  const kept = judged.kind === "refused" ? ({ kind: "not-carried" } as const) : judged;
   const next = nextAttempt(ctx.dataDir, ctx.repo, String(issue));
-  if (next === 1) return kept;
+  if (next === 1) {
+    return judged.kind === "refused" && ctx.project.owner === null
+      ? ({ kind: "not-carried" } as const)
+      : judged;
+  }
   const newest = newRunId(ctx.repo, String(issue), next - 1);
   const reaped = readProgress((yield* ledger(() => readRun(ctx.dataDir, newest))).entries);
   if (
@@ -519,7 +525,7 @@ const reapedApproval = Effect.fn("RunnerStart.reapedApproval")(function* (
     label.at < utcSecond(reaped.launchFailedMs - REAP_LABEL_SKEW_MS) ||
     label.at > utcSecond(reaped.finishedMs + REAP_LABEL_SKEW_MS)
   ) {
-    return kept;
+    return judged;
   }
   const since = reaped.approvedAt;
   const check = yield* ctx.tracker.textCheck(issue, since, ctx.project.instructors);

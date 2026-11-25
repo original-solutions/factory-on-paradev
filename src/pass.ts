@@ -533,6 +533,10 @@ export const stuckItem = (repo: string, issue: number, run: string): NewItem => 
 const abandonedText = (label: string): string =>
   `${label} Abandoned: the issue was closed, so the factory stopped the session and closed the run`;
 
+/** Where a person finds what a launch that recorded no thread id may have started, and what to do. */
+const lookForLaunch = (run: string): string =>
+  `look for launch command id softfac:${run}:launch in Paradev and archive what it started by hand`;
+
 /** The id of the item a run raises when its launch failed with no thread id and the issue had used its retries. */
 export const LAUNCH_TIMEOUT_ITEM = "launch-timeout";
 
@@ -547,7 +551,7 @@ export const launchTimeoutItem = (repo: string, issue: number, run: string): New
   repo,
   issue,
   run,
-  message: `${plain(repo)}${mention(issue)} run ${run} is stuck: its launch never recorded a thread id, and the issue has used its launch_timeout_retries. Look for launch command id softfac:${run}:launch in Paradev, archive what it started, then set factory:ready again`,
+  message: `${plain(repo)}${mention(issue)} run ${run} is stuck: its launch never recorded a thread id, and the issue has used its launch_timeout_retries: ${lookForLaunch(run)}, then set factory:ready again`,
 });
 
 /**
@@ -1724,7 +1728,7 @@ const runs = Effect.fn("Pass.runs")(function* (world: PassWorld, pass: Pass) {
  * (`mayHaveSession`): `why` says how it ended, then where to look.
  */
 const sessionMayExistText = (label: string, run: string, why: string): string =>
-  `${label} ${why}, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in T3 Code and archive that thread by hand`;
+  `${label} ${why}, and a session may exist for ${run}: ${lookForLaunch(run)}`;
 
 /**
  * The launch reaper, at the start of every pass, so the first pass after a restart reaps a launch
@@ -2527,6 +2531,10 @@ const waitsOnItself = (pass: Pass, notes: Notes, run: string): Effect.Effect<voi
 
 const READY_AGAIN = "its issue is ready again, so it is left to the claim step";
 
+/** What the pass says of a ready issue `start` left for the machine whose launch timeout labelled it. */
+const LEFT_FOR_REAPER =
+  "not claimed: factory:ready is the factory's own, from another machine's launch timeout: left for that machine";
+
 /**
  * A confirmed run still in `triage` (or before any state): what `finishOlderRuns` would end, and
  * what the launch reaper looks at. `isStarting` in `runner/progress.ts` is the same rule over a
@@ -2805,7 +2813,9 @@ const noteStart = Effect.fn("Pass.noteStart")(function* (
           ? claimedByLine(outcome.success.claimedBy)
           : outcome.success.gaveWay === true
             ? CLAIM_GAVE_WAY
-            : words.notTaken,
+            : outcome.success.leftForReaper === true
+              ? LEFT_FOR_REAPER
+              : words.notTaken,
       );
       return null;
     case "refused":
