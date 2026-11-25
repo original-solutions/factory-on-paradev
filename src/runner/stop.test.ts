@@ -32,6 +32,17 @@ const BUILDING: ReadonlyArray<RunEvent> = [
   { event: "state_changed", data: { from: "triage", to: "building" } },
 ];
 
+const TRIAGE: ReadonlyArray<RunEvent> = [
+  { event: "claimed", data: { machine: "mac-mini", github_user: "rawphp" } },
+  { event: "state_changed", data: { from: "ready", to: "triage" } },
+];
+
+const SENDING: RunEvent = { event: "step_changed", data: { step: "launch-sending" } };
+const SENDING_RESUMED: RunEvent = {
+  event: "step_changed",
+  data: { step: "launch-sending resumed-from t3code/abc" },
+};
+
 const FINISHED: RunEvent = {
   event: "finished",
   data: {
@@ -146,6 +157,17 @@ describe("takeStopRequest", () => {
     }),
   );
 
+  it.effect("records the request of a run in triage, in launch-sending, and removes the file", () =>
+    Effect.gen(function* () {
+      const dataDir = tempDir();
+      seed(dataDir, [...TRIAGE, SENDING]);
+      const path = request(dataDir);
+      assert.strictEqual(yield* takeStopRequest(dataDir, run10, () => T0 + 5), "recorded");
+      assert.strictEqual(readRun(dataDir, run10).entries.at(-1)!.event, "stop_requested");
+      assert.strictEqual(NodeFS.existsSync(path), false);
+    }),
+  );
+
   it.effect("is an error when the run has no ledger, and the file is kept", () =>
     Effect.gen(function* () {
       const dataDir = tempDir();
@@ -181,7 +203,7 @@ describe("requestStop", () => {
     assert.strictEqual(bytesOf(dataDir), bytes);
   });
 
-  it.each(["triage", "needs-info", "pr-open"] as const)(
+  it.each(["needs-info", "pr-open"] as const)(
     "writes nothing to a run in %s",
     (state) => {
       const dataDir = tempDir();
@@ -199,6 +221,23 @@ describe("requestStop", () => {
     const dataDir = tempDir();
     seed(dataDir, [BUILDING[0]!]);
     assert.strictEqual(requestStop(dataDir, run10, () => T0 + 5).outcome, "not-building");
+  });
+
+  it.each<{ name: string; events: ReadonlyArray<RunEvent> }>([
+    { name: "in triage", events: TRIAGE },
+    { name: "in launch-sending", events: [...TRIAGE, SENDING] },
+    { name: "in launch-sending resumed-from a branch", events: [...TRIAGE, SENDING_RESUMED] },
+    { name: "in launch-sending with no state", events: [BUILDING[0]!, SENDING] },
+  ])("records a stop for a run $name, once", ({ events }) => {
+    const dataDir = tempDir();
+    seed(dataDir, events);
+    assert.strictEqual(requestStop(dataDir, run10, () => T0 + 5).outcome, "recorded");
+    const last = readRun(dataDir, run10).entries.at(-1)!;
+    assert.strictEqual(last.event, "stop_requested");
+    assert.deepStrictEqual(last.cause, { step: "operator", reason: "stop-requested" });
+    const bytes = bytesOf(dataDir);
+    assert.strictEqual(requestStop(dataDir, run10, () => T0 + 9).outcome, "already-requested");
+    assert.strictEqual(bytesOf(dataDir), bytes);
   });
 
   it("fails for a run with no ledger", () => {
@@ -254,6 +293,36 @@ describe("leaveStopRequest", () => {
     assert.strictEqual(outcome, "not-building");
     assert.match(notBuildingMessage("id", seen), /its state is pr-open/);
     assert.strictEqual(NodeFS.existsSync(stopRequestPath(dataDir, run10)), false);
+  });
+
+  it.each<{ name: string; events: ReadonlyArray<RunEvent> }>([
+    { name: "in triage", events: TRIAGE },
+    { name: "in launch-sending", events: [...TRIAGE, SENDING] },
+    { name: "in launch-sending resumed-from a branch", events: [...TRIAGE, SENDING_RESUMED] },
+  ])("leaves the request for a run $name, and writes no ledger line", ({ events }) => {
+    const dataDir = tempDir();
+    seed(dataDir, events);
+    const bytes = bytesOf(dataDir);
+    assert.strictEqual(leaveStopRequest(dataDir, run10).outcome, "recorded");
+    assert.strictEqual(NodeFS.readFileSync(stopRequestPath(dataDir, run10), "utf8"), "operator\n");
+    assert.strictEqual(bytesOf(dataDir), bytes);
+    assert.strictEqual(leaveStopRequest(dataDir, run10).outcome, "already-requested");
+  });
+
+  it("refuses a needs-info run, and a finished run that was in triage, and leaves no file", () => {
+    const waiting = tempDir();
+    seed(waiting, [
+      ...BUILDING,
+      { event: "state_changed", data: { from: "building", to: "needs-info" } },
+    ]);
+    const { outcome, seen } = leaveStopRequest(waiting, run10);
+    assert.strictEqual(outcome, "not-building");
+    assert.match(notBuildingMessage("id", seen), /its state is needs-info/);
+    assert.strictEqual(NodeFS.existsSync(stopRequestPath(waiting, run10)), false);
+    const ended = tempDir();
+    seed(ended, [...TRIAGE, SENDING, FINISHED]);
+    assert.strictEqual(leaveStopRequest(ended, run10).outcome, "finished");
+    assert.strictEqual(NodeFS.existsSync(stopRequestPath(ended, run10)), false);
   });
 
   it("refuses a finished run and a run with no state yet, and leaves no file", () => {

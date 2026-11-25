@@ -651,6 +651,34 @@ describe("readProgress: the launch-sending step of a resume", () => {
   });
 });
 
+describe("readProgress: when the launch was sent, and how a launch with no thread ended", () => {
+  it("has no time and no end before any launch-sending step", () => {
+    const seen = readProgress([moved(1, "ready", "triage")]);
+    assert.strictEqual(seen.launchSentMs, null);
+    assert.strictEqual(seen.launchFailed, null);
+  });
+
+  it("keeps the time of the launch-sending step, plain or resumed, and of the first only", () => {
+    assert.strictEqual(readProgress([step(5 * MINUTE, "launch-sending")]).launchSentMs, 5 * MINUTE);
+    const resumed = readProgress([
+      step(7 * MINUTE, "launch-sending resumed-from t3code/abc"),
+      step(9 * MINUTE, "launch-sending"),
+    ]);
+    assert.strictEqual(resumed.launchSentMs, 7 * MINUTE);
+  });
+
+  it("reads the step that says the launch timed out, or was stopped by hand, with no thread", () => {
+    assert.strictEqual(
+      readProgress([step(1, "launch-sending"), step(2, "launch-timed-out")]).launchFailed,
+      "timed-out",
+    );
+    assert.strictEqual(
+      readProgress([step(1, "launch-sending"), step(2, "launch-stopped")]).launchFailed,
+      "stopped",
+    );
+  });
+});
+
 describe("readProgress: a cancelled forward wait", () => {
   const sentBack = (ms: number, ordinal: number) =>
     line(ms, "gate_sent_back", { attempt: 1, run_ordinal: ordinal });
