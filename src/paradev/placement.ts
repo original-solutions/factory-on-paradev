@@ -6,17 +6,15 @@
 import type { MachineSize } from "../config.ts";
 import type { Load } from "../load.ts";
 import { NO_TARGET_HAS_ROOM } from "../sessions.ts";
-import type { TargetRow } from "../targets.ts";
+import type { TargetCensus, TargetRow } from "../targets.ts";
 import type { LaunchTarget } from "./sessions.ts";
 
-/** A target's slots: `running` is null when its snapshot could not be read. */
-export interface Slots {
-  readonly running: number | null;
+/**
+ * A target's slots: its census (`running` null when its snapshot could not be read, with the errors
+ * a reason names, #117) and its `max_runs`.
+ */
+export interface Slots extends TargetCensus {
   readonly max: number;
-  /** Why `running` is null: the read's exact error, which the reason names (#117). */
-  readonly error?: string;
-  /** The errors of the workspaces `running` holds as used slots unread, which a full target's reason names (#117). */
-  readonly uncountable?: ReadonlyArray<string>;
 }
 
 /**
@@ -95,7 +93,8 @@ const slotsReason = ({ running, max, error, uncountable = [] }: Slots): string |
  * errors can quote ids, tags and CLI output (#117). `status` keeps the whole reason.
  */
 export const withoutCensusErrors = (reason: string): string => {
-  if (reason.startsWith("its running agents could not be counted")) {
+  // Only a reason that names an error gets the pointer: one with none has nothing more in status.
+  if (reason.startsWith("its running agents could not be counted: ")) {
     return "its running agents could not be counted; factory-runner status says why";
   }
   return reason.replace(

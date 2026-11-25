@@ -9,10 +9,10 @@ import * as Semaphore from "effect/Semaphore";
 
 import type { CloudConfig, HostConfig, MachineConfig, WatchedRepo } from "../config.ts";
 import type { MachineEvent } from "../ledger/events.ts";
-import type { CloudCensus } from "../targets.ts";
+import type { TargetCensus } from "../targets.ts";
 import type { Load } from "../load.ts";
 import { NoTargetHasRoom, type LaunchRequest } from "../sessions.ts";
-import { type Candidate, choosePlacement, targetKey, targetRow, type TargetReading } from "./placement.ts";
+import { type Candidate, choosePlacement, type Slots, targetKey, targetRow, type TargetReading } from "./placement.ts";
 import type { LaunchTarget, TargetCount } from "./sessions.ts";
 
 /**
@@ -41,16 +41,8 @@ export interface PlacerDeps {
 /** Why cloud takes no run before a pass has checked the proxy under the config in use. */
 export const PROXY_NOT_CHECKED = "the proxy is not checked yet since the config load";
 
-/**
- * The running agents per target key as placement reads them, and why each null one is null: the
- * exact error of its read (#117).
- */
-interface Counts {
-  readonly running: Map<string, number | null>;
-  readonly errors: ReadonlyMap<string, string>;
-  /** The errors of the workspaces a numeric count holds as used slots unread, by target key. */
-  readonly uncountable: ReadonlyMap<string, ReadonlyArray<string>>;
-}
+/** The running agents per target key as placement reads them, each with its census's errors (#117). */
+type Counts = Map<string, TargetCensus>;
 
 export const makePlacer = (deps: PlacerDeps) => {
   let localHeld: string | null = null;
@@ -80,33 +72,14 @@ export const makePlacer = (deps: PlacerDeps) => {
   /** The snapshots, with the launches in flight on top: the counts as placement reads them. */
   const readCounts = Effect.gen(function* () {
     const read = yield* deps.running;
-    const running = new Map(read.map((count) => [targetKey(count.target), count.running]));
-    const errors = new Map(
-      read.flatMap((count) => (count.running === null && count.error !== undefined ? [[targetKey(count.target), count.error] as const] : [])),
-    );
-    const uncountable = new Map(
-      read.flatMap((count) => (count.uncountable === undefined ? [] : [[targetKey(count.target), count.uncountable] as const])),
-    );
+    const running: Counts = new Map(read.map(({ target, ...census }) => [targetKey(target), census]));
     // A launch in flight is in no snapshot yet: it counts on top of what the snapshot read.
     for (const key of inFlight.values()) bump(running, key);
-    return { running, errors, uncountable } satisfies Counts;
+    return running;
   });
 
-  /**
-   * `key`'s slots of `max` from `counts`, with the error of a count that could not be read, or the
-   * errors of the workspaces a count holds as used slots unread.
-   */
-  const slotsOf = (counts: Counts, key: string, max: number) => {
-    const running = counts.running.get(key) ?? null;
-    const error = counts.errors.get(key);
-    const uncountable = counts.uncountable.get(key);
-    return {
-      running,
-      max,
-      ...(running === null && error !== undefined && { error }),
-      ...(running !== null && uncountable !== undefined && { uncountable }),
-    };
-  };
+  /** `key`'s slots of `max`: its census as the adapter read it, errors and all; not counted when not read. */
+  const slotsOf = (counts: Counts, key: string, max: number): Slots => ({ running: null, ...counts.get(key), max });
 
   /** The pass's counts: read on the first placement of the pass and kept for the rest of it. */
   const countsOf = Effect.gen(function* () {
@@ -172,9 +145,9 @@ export const makePlacer = (deps: PlacerDeps) => {
   };
 
   /** One more running agent on `key`, when its count is known. */
-  const bump = (running: Map<string, number | null>, key: string): void => {
+  const bump = (running: Counts, key: string): void => {
     const before = running.get(key);
-    if (before !== null && before !== undefined) running.set(key, before + 1);
+    if (before !== undefined && before.running !== null) running.set(key, { ...before, running: before.running + 1 });
   };
 
   /** Chooses among `candidates`, records what was dropped, and takes the chosen target's slot for the rest of the pass. */
@@ -204,7 +177,7 @@ export const makePlacer = (deps: PlacerDeps) => {
         );
       }
       // The slot is taken for the rest of the pass: the next launch counts it.
-      bump(running.running, targetKey(placement.target));
+      bump(running, targetKey(placement.target));
       inFlight.set(request.commandId, targetKey(placement.target));
       return placement.target;
     });
@@ -230,17 +203,7 @@ export const makePlacer = (deps: PlacerDeps) => {
      * Cloud's count this pass, from the counts placement reads ({@link passCounts}), so the pass's
      * census check and the rows share one read: null when cloud is not counted (no cloud block).
      */
-    cloudCensus: passCounts.pipe(
-      Effect.map((running): CloudCensus | null => {
-        if (!running.running.has("cloud")) return null;
-        const count = running.running.get("cloud") ?? null;
-        return {
-          running: count,
-          error: count === null ? (running.errors.get("cloud") ?? null) : null,
-          uncountable: count === null ? [] : (running.uncountable.get("cloud") ?? []),
-        };
-      }),
-    ),
+    cloudCensus: passCounts.pipe(Effect.map((running): TargetCensus | null => running.get("cloud") ?? null)),
     /**
      * A row for this Mac, each configured host, and cloud when configured, from this pass's
      * readings: the pass's counts ({@link passCounts}), and a null count's reason names its error.
@@ -299,7 +262,7 @@ export const makePlacer = (deps: PlacerDeps) => {
         if (repo === null || (!hosted && !clouded)) {
           // The core's cap on runs covers this Mac's slots when local.max_runs reaches it.
           if (deps.machine.local.maxRuns >= deps.machine.maxConcurrentRuns && deps.localNotReady() === null) {
-            if (counts !== null) bump(counts.running, "local");
+            if (counts !== null) bump(counts, "local");
             inFlight.set(request.commandId, "local");
             return { kind: "local" } as const;
           }

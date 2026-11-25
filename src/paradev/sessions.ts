@@ -32,6 +32,7 @@ import {
 } from "../gitHardening.ts";
 import { type HostConfig, type MachineSize, paradevModel } from "../config.ts";
 import { FactoryPaths } from "../paths.ts";
+import type { TargetCensus } from "../targets.ts";
 import { FactoryProcess, type RunResult, type RunSpawnError } from "../process.ts";
 import {
   type FactoryProject,
@@ -306,16 +307,8 @@ const UNTYPED: ReadonlyArray<CliError["kind"]> = [
 ];
 
 /** The factory's agents starting or working on one target, as `runningByTarget` counts them. */
-export interface TargetCount {
+export interface TargetCount extends TargetCensus {
   readonly target: ThreadTarget;
-  readonly running: number | null;
-  /** Why cloud's `running` is null: the exact error of the read that failed (#117). Absent otherwise. */
-  readonly error?: string;
-  /**
-   * The exact census errors of the cloud workspaces `running` counts as one used slot each because
-   * they could not be read (#117). Absent when there are none.
-   */
-  readonly uncountable?: ReadonlyArray<string>;
 }
 
 export type ParadevSessions = FactorySessions["Service"] & {

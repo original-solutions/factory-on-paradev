@@ -33,14 +33,19 @@ export type TargetRow = typeof TargetRowSchema.Type;
 const decodeRows = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(TargetRowSchema)));
 
 /**
- * Cloud's count of a pass, as placement read it (#117): `running` null when it could not be
- * counted, with `error` saying why; `uncountable`, the census errors of the workspaces a numeric
- * `running` counts as one used slot each because they could not be read.
+ * A target's count of running agents as one pass read it: what the adapter answers per target,
+ * what placement keeps and judges slots by, and what the pass's census check reads for cloud.
  */
-export interface CloudCensus {
+export interface TargetCensus {
+  /** Null when the agents could not be counted. */
   readonly running: number | null;
-  readonly error: string | null;
-  readonly uncountable: ReadonlyArray<string>;
+  /** Why cloud's `running` is null: the exact error of the read that failed (#117). Absent otherwise. */
+  readonly error?: string;
+  /**
+   * The exact census errors of the cloud workspaces a numeric `running` counts as one used slot
+   * each because they could not be read (#117). Absent when there are none.
+   */
+  readonly uncountable?: ReadonlyArray<string>;
 }
 
 /** The file the runner writes the rows to, in the data dir. */
