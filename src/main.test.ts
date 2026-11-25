@@ -1632,6 +1632,27 @@ describe("on the Paradev CLI", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("the pass's cloud census reads the placer's counts: cloud's count from the adapter, and null with no cloud block (#117)", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const placers: Array<Parameters<NonNullable<RuntimeOptions["onPlacer"]>>[0]> = [];
+        const worlds: Array<PassWorld> = [];
+        const cloud = yield* started(named, noGhProcess, {
+          onPlacer: (placer) => placers.push(placer),
+          onWorld: (world) => worlds.push(world),
+        });
+        yield* idleAfter(cloud.loop, cloud.factoryDir, 1);
+        // No cloud record could count: the adapter answers 0 for cloud, and the pass reads that count.
+        assert.deepStrictEqual(yield* worlds[0]!.cloudCensus(), { running: 0 });
+        assert.deepStrictEqual(yield* worlds[0]!.cloudCensus(), yield* placers[0]!.cloudCensus);
+        const none: Array<PassWorld> = [];
+        const local = yield* started(configFor([["a/b", "/b"]]), noGhProcess, { onWorld: (world) => none.push(world) });
+        yield* idleAfter(local.loop, local.factoryDir, 1);
+        assert.isNull(yield* none[0]!.cloudCensus());
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("a sweep still listing holds the next passes' sweeps: one listing is in flight at a time", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -406,6 +406,17 @@ describe("placer", () => {
         (yield* degraded.placer.targets).find((row) => row.kind === "cloud")?.reason,
         `slots full: 1 of 1 running (1 of them could not be counted: ${stuck})`,
       );
+      // A launch placed on such a count keeps the errors: the slot it takes adds to the count only.
+      const roomy = setup({
+        machine: machine({ cloud: { machineSize: "small", maxRuns: 2, proxy: PROXY, censusOfflineMinutes: 10 } }),
+        counts: [full({ kind: "local" }), full({ kind: "host", machineId: "h1" }), { target: { kind: "cloud" }, running: 1, uncountable: [stuck] }],
+      });
+      roomy.placer.beginPass({ localHeld: null, proxy: null, machine: roomy.machine() });
+      assert.deepStrictEqual(yield* roomy.placer.place(request("cloudy")), { kind: "cloud", environmentId: "env-1", machineSize: "small" });
+      assert.strictEqual(
+        (yield* roomy.placer.targets).find((row) => row.kind === "cloud")?.reason,
+        `slots full: 2 of 2 running (1 of them could not be counted: ${stuck})`,
+      );
       const none = setup({ counts: [{ target: { kind: "local" }, running: 0 }] });
       none.placer.beginPass({ localHeld: null, proxy: null, machine: none.machine() });
       assert.isNull(yield* none.placer.cloudCensus);
