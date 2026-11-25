@@ -105,6 +105,9 @@ repos: []
 #   machine_size: small
 #   # Cloud runs at once. Defaults to 1.
 #   max_runs: 1
+#   # Minutes cloud's running agents may stay uncountable before attention is raised
+#   # (cloud-census-offline); cloud takes no launch meanwhile. At least 1. Defaults to 10.
+#   census_offline_minutes: 10
 #   # The https:// Funnel address the org's Claude connection points at.
 #   proxy: https://trilogy-mac.tail459612.ts.net:10000
 #

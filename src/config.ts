@@ -173,6 +173,11 @@ export interface CloudConfig {
   readonly maxRuns: number;
   /** The `https://` address the org's Claude connection points at, checked before each cloud launch. */
   readonly proxy: string;
+  /**
+   * Minutes of wall time cloud's running agents may stay uncountable before the pass raises
+   * `cloud-census-offline` (#117); at least 1, 10 when absent.
+   */
+  readonly censusOfflineMinutes: number;
 }
 
 /** The `local` block: this Mac as a target. */
@@ -891,7 +896,10 @@ const hostsFrom = (c: Checker, root: Mapping): ReadonlyArray<HostConfig> | undef
   return ok ? out : undefined;
 };
 
-const CLOUD_KEYS = ["machine_size", "max_runs", "proxy"] as const;
+const CLOUD_KEYS = ["machine_size", "max_runs", "census_offline_minutes", "proxy"] as const;
+
+/** `cloud.census_offline_minutes` when absent. */
+export const DEFAULT_CENSUS_OFFLINE_MINUTES = 10;
 const MACHINE_SIZES: ReadonlyArray<MachineSize> = ["small", "medium", "large"];
 
 /** `cloud`: null when absent, undefined when it has errors. */
@@ -903,14 +911,17 @@ const cloudFrom = (c: Checker, root: Mapping): CloudConfig | null | undefined =>
   const machineSize = MACHINE_SIZES.find((known) => known === size);
   if (machineSize === undefined) c.err("cloud.machine_size", "must be small, medium or large");
   const maxRuns = c.optionalUint(block, "cloud", "max_runs", 1, 0);
+  const censusOfflineMinutes = c.optionalUint(block, "cloud", "census_offline_minutes", DEFAULT_CENSUS_OFFLINE_MINUTES, 1);
   let proxy = c.nonEmptyString(c.child(block, "cloud", "proxy"), "cloud.proxy");
   if (proxy !== undefined && !isHttpsUrl(proxy)) {
     c.err("cloud.proxy", "must be an https:// URL");
     proxy = undefined;
   }
   c.unknownFields(block, CLOUD_KEYS, "cloud");
-  if (machineSize === undefined || maxRuns === undefined || proxy === undefined) return undefined;
-  return { machineSize, maxRuns, proxy };
+  if (machineSize === undefined || maxRuns === undefined || censusOfflineMinutes === undefined || proxy === undefined) {
+    return undefined;
+  }
+  return { machineSize, maxRuns, proxy, censusOfflineMinutes };
 };
 
 const isHttpsUrl = (text: string): boolean => {

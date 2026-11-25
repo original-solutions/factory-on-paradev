@@ -26,7 +26,7 @@ const machine = (over: Partial<MachineConfig> = {}): MachineConfig => ({
   modelFallbacks: {},
   repos: [],
   hosts: [HOST],
-  cloud: { machineSize: "small", maxRuns: 1, proxy: PROXY },
+  cloud: { machineSize: "small", maxRuns: 1, proxy: PROXY, censusOfflineMinutes: 10 },
   local: { maxRuns: 1 },
   paradev: { cli: "/opt/superset", agent: "claude", belt: { enabled: false, visibility: "just_me" } },
   ...over,
@@ -378,6 +378,29 @@ describe("placer", () => {
     }),
   );
 
+  it.effect("cloudCensus: cloud's count and its error from the pass's one read, shared with the rows; null with no cloud count (#117)", () =>
+    Effect.gen(function* () {
+      const error = "superset workspaces list --host cloud --json failed (UNKNOWN): boom";
+      const t = setup({
+        counts: [
+          { target: { kind: "local" }, running: 0 },
+          { target: { kind: "host", machineId: "h1" }, running: 0 },
+          { target: { kind: "cloud" }, running: null, error },
+        ],
+      });
+      t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
+      assert.deepStrictEqual(yield* t.placer.cloudCensus, { running: null, error });
+      yield* t.placer.targets;
+      assert.strictEqual(t.reads.running, 1);
+      const counted = setup({ counts: [{ target: { kind: "local" }, running: 0 }, { target: { kind: "cloud" }, running: 2 }] });
+      counted.placer.beginPass({ localHeld: null, proxy: null, machine: counted.machine() });
+      assert.deepStrictEqual(yield* counted.placer.cloudCensus, { running: 2, error: null });
+      const none = setup({ counts: [{ target: { kind: "local" }, running: 0 }] });
+      none.placer.beginPass({ localHeld: null, proxy: null, machine: none.machine() });
+      assert.isNull(yield* none.placer.cloudCensus);
+    }),
+  );
+
   it.effect("targets: a row for this Mac, each configured host and cloud, from the pass's readings", () =>
     Effect.gen(function* () {
       const t = setup({
@@ -565,7 +588,7 @@ describe("placer", () => {
 
   it.effect("cloud takes no launch until a pass has checked the proxy: before the first pass, and again after a config load", () =>
     Effect.gen(function* () {
-      const roomy = () => machine({ cloud: { machineSize: "small", maxRuns: 3, proxy: PROXY } });
+      const roomy = () => machine({ cloud: { machineSize: "small", maxRuns: 3, proxy: PROXY, censusOfflineMinutes: 10 } });
       const t = setup({
         machine: roomy(),
         counts: [full({ kind: "local" }), full({ kind: "host", machineId: "h1" }), { target: { kind: "cloud" }, running: 0 }],
@@ -587,7 +610,7 @@ describe("placer", () => {
 
   it.effect("a check made under one config does not vouch for another: a reload between a pass's check and its beginPass leaves cloud unchecked", () =>
     Effect.gen(function* () {
-      const roomy = () => machine({ cloud: { machineSize: "small", maxRuns: 3, proxy: PROXY } });
+      const roomy = () => machine({ cloud: { machineSize: "small", maxRuns: 3, proxy: PROXY, censusOfflineMinutes: 10 } });
       const t = setup({
         machine: roomy(),
         counts: [full({ kind: "local" }), full({ kind: "host", machineId: "h1" }), { target: { kind: "cloud" }, running: 0 }],

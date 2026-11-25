@@ -1864,7 +1864,7 @@ describe("liveWorld", () => {
       const asked: Array<string> = [];
       const statuses = [200, 503];
       const world = liveWorld(
-        { ...baseMachine, cloud: { machineSize: "small", maxRuns: 1, proxy: "https://proxy.example.ts.net/" } },
+        { ...baseMachine, cloud: { machineSize: "small", maxRuns: 1, proxy: "https://proxy.example.ts.net/", censusOfflineMinutes: 10 } },
         tempDir(),
         {} as never,
         NodeServices.layer,
@@ -1958,6 +1958,9 @@ describe("liveWorld", () => {
       const first = build();
       first.proxyMisses.passes = 2;
       assert.strictEqual(build().proxyMisses.passes, 2);
+      // The census clock too: a reload does not start a cloud outage over (#117).
+      first.censusOffline.since = NOW - 60_000;
+      assert.strictEqual(build().censusOffline.since, NOW - 60_000);
     }),
   );
 

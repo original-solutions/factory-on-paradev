@@ -467,6 +467,8 @@ export interface LiveShared {
   readonly hostLoads: Map<string, Load | null>;
   /** Passes in a row the cloud proxy has not answered 401: see `PassWorld.proxyMisses`. */
   readonly proxyMisses: { passes: number };
+  /** Since when cloud's count has been null: see `PassWorld.censusOffline`. */
+  readonly censusOffline: { since: number | null };
 }
 
 /** A fresh `LiveShared`, made once per process. */
@@ -483,6 +485,7 @@ export const newShared = (): LiveShared => ({
   hostMisses: new Map(),
   hostLoads: new Map(),
   proxyMisses: { passes: 0 },
+  censusOffline: { since: null },
 });
 
 /** What the pass's branch prune answers: P1 prunes no branch. */
@@ -491,7 +494,7 @@ const NOTHING_PRUNED = { pruned: [], left: [], failed: [], waiting: 0 } as const
 /**
  * The pass over this machine: GitHub through `gh`, the ledger under `dataDir`, the wall clock.
  * It does not know which repos are watched, where the worktrees are or whether Paradev answers:
- * `startFactory` adds `watchedRepos`, `freeSpace`, `paradevDown` and `beginPlacement`.
+ * `startFactory` adds `watchedRepos`, `freeSpace`, `paradevDown`, `beginPlacement` and `cloudCensus`.
  */
 export const liveWorld = (
   machine: MachineConfig,
@@ -520,8 +523,9 @@ export const liveWorld = (
     hostMisses,
     hostLoads,
     proxyMisses,
+    censusOffline,
   }: LiveShared = newShared(),
-): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown" | "beginPlacement"> => {
+): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown" | "beginPlacement" | "cloudCensus"> => {
   const load = live.readLoad ?? readLoad;
   const ssh = live.ssh ?? liveSshSpawn(process);
   const proxyGet = live.proxyGet ?? liveProxyGet;
@@ -845,6 +849,7 @@ export const liveWorld = (
     hostMisses,
     hostLoads,
     proxyMisses,
+    censusOffline,
     checkProxy: () =>
       machine.cloud === undefined
         ? Effect.succeed<ProxyAnswer>({ kind: "down", reason: "no cloud block in the machine config" })
@@ -1447,6 +1452,8 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       ...base,
       watchedRepos: listWatched,
       beginPlacement: placer.beginPass,
+      // The pass's census check reads the counts placement reads, so the rows and it share one read.
+      cloudCensus: () => placer.cloudCensus,
       paradevDown,
       // The sessions write under Paradev's worktrees folder, the gate under the factory dir.
       freeSpace: () =>

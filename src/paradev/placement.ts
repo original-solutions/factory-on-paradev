@@ -13,6 +13,8 @@ import type { LaunchTarget } from "./sessions.ts";
 export interface Slots {
   readonly running: number | null;
   readonly max: number;
+  /** Why `running` is null: the read's exact error, which the reason names (#117). */
+  readonly error?: string;
 }
 
 /**
@@ -79,9 +81,9 @@ export type Placement =
 
 const perCore = (load: Load): number => load.oneMinute / load.cores;
 
-const slotsReason = ({ running, max }: Slots): string | null =>
+const slotsReason = ({ running, max, error }: Slots): string | null =>
   running === null
-    ? "its running agents could not be counted"
+    ? `its running agents could not be counted${error === undefined ? "" : `: ${error}`}`
     : running >= max
       ? `slots full: ${running} of ${max} running`
       : null;

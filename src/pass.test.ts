@@ -7482,7 +7482,7 @@ describe("cloud census offline (#117)", () => {
 
       const uncounted = cloudy();
       uncounted.censusAnswers = [null];
-      fake.now = T0;
+      uncounted.now = T0;
       yield* pass(uncounted, [REPO], 5);
       uncounted.now = T0 + 30 * MINUTE;
       yield* pass(uncounted, [REPO], 5);

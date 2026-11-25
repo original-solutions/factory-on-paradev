@@ -5780,7 +5780,7 @@ describe("the cloud count, one workspace at a time (#85)", () => {
         modelFallbacks: {},
         repos: [repo],
         hosts: [],
-        cloud: { machineSize: "small", maxRuns: 1, proxy: "https://proxy.example.ts.net:8443" },
+        cloud: { machineSize: "small", maxRuns: 1, proxy: "https://proxy.example.ts.net:8443", censusOfflineMinutes: 10 },
         local: { maxRuns: 0 },
         paradev: { cli: "/opt/superset", agent: "claude", belt: { enabled: false, visibility: "just_me" } },
       };

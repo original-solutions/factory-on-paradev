@@ -9,6 +9,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import type { CloudConfig, HostConfig, MachineConfig, WatchedRepo } from "../config.ts";
 import type { MachineEvent } from "../ledger/events.ts";
+import type { CloudCensus } from "../pass.ts";
 import type { Load } from "../load.ts";
 import { NoTargetHasRoom, type LaunchRequest } from "../sessions.ts";
 import { type Candidate, choosePlacement, targetKey, targetRow, type TargetReading } from "./placement.ts";
@@ -40,12 +41,21 @@ export interface PlacerDeps {
 /** Why cloud takes no run before a pass has checked the proxy under the config in use. */
 export const PROXY_NOT_CHECKED = "the proxy is not checked yet since the config load";
 
+/**
+ * The running agents per target key as placement reads them, and why each null one is null: the
+ * exact error of its read (#117).
+ */
+interface Counts {
+  readonly running: Map<string, number | null>;
+  readonly errors: ReadonlyMap<string, string>;
+}
+
 export const makePlacer = (deps: PlacerDeps) => {
   let localHeld: string | null = null;
   /** This Mac's load this pass; read on the first candidate list of the pass and kept for the rest of it. */
   let localLoad: Load | null = null;
   /** Running agents per target this pass; null when its snapshot could not be read. Null here: not read yet. */
-  let counts: Map<string, number | null> | null = null;
+  let counts: Counts | null = null;
   /** Which pass this is, so a read that ends after the next pass began is not taken for that pass's own. */
   let pass = 0;
   /** Why cloud takes no run this pass, from the pass's proxy check; null when it passed or was not run. */
@@ -69,10 +79,20 @@ export const makePlacer = (deps: PlacerDeps) => {
   const readCounts = Effect.gen(function* () {
     const read = yield* deps.running;
     const running = new Map(read.map((count) => [targetKey(count.target), count.running]));
+    const errors = new Map(
+      read.flatMap((count) => (count.running === null && count.error !== undefined ? [[targetKey(count.target), count.error] as const] : [])),
+    );
     // A launch in flight is in no snapshot yet: it counts on top of what the snapshot read.
     for (const key of inFlight.values()) bump(running, key);
-    return running;
+    return { running, errors } satisfies Counts;
   });
+
+  /** `key`'s slots of `max` from `counts`, with the error of a count that could not be read. */
+  const slotsOf = (counts: Counts, key: string, max: number) => {
+    const running = counts.running.get(key) ?? null;
+    const error = counts.errors.get(key);
+    return { running, max, ...(running === null && error !== undefined ? { error } : {}) };
+  };
 
   /** The pass's counts: read on the first placement of the pass and kept for the rest of it. */
   const countsOf = Effect.gen(function* () {
@@ -87,9 +107,9 @@ export const makePlacer = (deps: PlacerDeps) => {
    * This Mac as a candidate; `held` is why P1's checks hold claims, which a repo with nowhere else
    * to go ignores. A failed plugin check drops it for every repo: a session there has no skill.
    */
-  const localOf = (running: ReadonlyMap<string, number | null>, held: string | null, load: Load): Candidate => ({
+  const localOf = (running: Counts, held: string | null, load: Load): Candidate => ({
     kind: "local",
-    slots: { running: running.get("local") ?? null, max: deps.machine.local.maxRuns },
+    slots: slotsOf(running, "local", deps.machine.local.maxRuns),
     load,
     held,
     notReady: deps.localNotReady(),
@@ -98,13 +118,13 @@ export const makePlacer = (deps: PlacerDeps) => {
   /** A host's readings this pass, whatever repo is placed. */
   const hostOf = (
     host: HostConfig,
-    running: ReadonlyMap<string, number | null>,
+    running: Counts,
     notReady: ReadonlyMap<string, string>,
   ): Extract<TargetReading, { readonly kind: "host" }> => ({
     kind: "host",
     id: host.id,
     name: host.name,
-    slots: { running: running.get(targetKey({ kind: "host", id: host.id })) ?? null, max: host.maxRuns },
+    slots: slotsOf(running, targetKey({ kind: "host", id: host.id }), host.maxRuns),
     maxLoadPerCore: host.maxLoadPerCore,
     load: deps.hostLoads.get(host.id) ?? null,
     notReady: notReady.get(host.id) ?? null,
@@ -113,16 +133,16 @@ export const makePlacer = (deps: PlacerDeps) => {
   /** Cloud's readings this pass, whatever repo is placed. */
   const cloudOf = (
     cloud: CloudConfig,
-    running: ReadonlyMap<string, number | null>,
+    running: Counts,
   ): Extract<TargetReading, { readonly kind: "cloud" }> => ({
     kind: "cloud",
     machineSize: cloud.machineSize,
-    slots: { running: running.get("cloud") ?? null, max: cloud.maxRuns },
+    slots: slotsOf(running, "cloud", cloud.maxRuns),
     proxy: checkedUnder === deps.machine ? proxyReason : PROXY_NOT_CHECKED,
     notReady: deps.cloudNotReady(),
   });
 
-  const candidatesOf = (repo: WatchedRepo, running: ReadonlyMap<string, number | null>): Array<Candidate> => {
+  const candidatesOf = (repo: WatchedRepo, running: Counts): Array<Candidate> => {
     const candidates: Array<Candidate> = [localOf(running, localHeld, passLoad())];
     const notReady = deps.hostsNotReady();
     for (const listed of repo.hosts ?? []) {
@@ -147,7 +167,7 @@ export const makePlacer = (deps: PlacerDeps) => {
   const settle = (
     repoName: string,
     candidates: ReadonlyArray<Candidate>,
-    running: Map<string, number | null>,
+    running: Counts,
     request: LaunchRequest,
     pinned = false,
   ): Effect.Effect<LaunchTarget, NoTargetHasRoom> =>
@@ -170,26 +190,46 @@ export const makePlacer = (deps: PlacerDeps) => {
         );
       }
       // The slot is taken for the rest of the pass: the next launch counts it.
-      bump(running, targetKey(placement.target));
+      bump(running.running, targetKey(placement.target));
       inFlight.set(request.commandId, targetKey(placement.target));
       return placement.target;
     });
 
+  /**
+   * The counts a launch read this pass, taken under the lock so a placement under way is counted
+   * first. When no launch read any, they are read here, off the lock, so a slow snapshot holds up
+   * no launch; the read is kept as the pass's own only while it is still this pass and no launch
+   * read meanwhile.
+   */
+  const passCounts = Effect.gen(function* () {
+    const began = pass;
+    let running = yield* Effect.sync(() => counts).pipe(exclusive.withPermits(1));
+    if (running === null) {
+      running = yield* readCounts;
+      if (pass === began && counts === null) counts = running;
+    }
+    return running;
+  });
+
   return {
     /**
+     * Cloud's count this pass, from the counts placement reads ({@link passCounts}), so the pass's
+     * census check and the rows share one read: null when cloud is not counted (no cloud block).
+     */
+    cloudCensus: passCounts.pipe(
+      Effect.map((running): CloudCensus | null => {
+        if (!running.running.has("cloud")) return null;
+        const count = running.running.get("cloud") ?? null;
+        return { running: count, error: count === null ? (running.errors.get("cloud") ?? null) : null };
+      }),
+    ),
+    /**
      * A row for this Mac, each configured host, and cloud when configured, from this pass's
-     * readings. The counts are the ones a launch read this pass, taken under the lock so a
-     * placement under way is counted first. When no launch read any, the rows read them here,
-     * off the lock, so a slow snapshot holds up no launch; the read is kept as the pass's own
-     * only while it is still this pass and no launch read meanwhile.
+     * readings: the pass's counts ({@link passCounts}), and a null count's reason names its error.
      */
     targets: Effect.gen(function* () {
       const began = pass;
-      let running = yield* Effect.sync(() => counts).pipe(exclusive.withPermits(1));
-      if (running === null) {
-        running = yield* readCounts;
-        if (pass === began && counts === null) counts = running;
-      }
+      const running = yield* passCounts;
       // The same for the load: this pass's one read, or one the rows keep to themselves.
       const load = pass === began ? passLoad() : deps.readLoad();
       const notReady = deps.hostsNotReady();
@@ -241,7 +281,7 @@ export const makePlacer = (deps: PlacerDeps) => {
         if (repo === null || (!hosted && !clouded)) {
           // The core's cap on runs covers this Mac's slots when local.max_runs reaches it.
           if (deps.machine.local.maxRuns >= deps.machine.maxConcurrentRuns && deps.localNotReady() === null) {
-            if (counts !== null) bump(counts, "local");
+            if (counts !== null) bump(counts.running, "local");
             inFlight.set(request.commandId, "local");
             return { kind: "local" } as const;
           }
