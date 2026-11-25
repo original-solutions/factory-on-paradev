@@ -28,7 +28,7 @@ const machine = (over: Partial<MachineConfig> = {}): MachineConfig => ({
   modelFallbacks: {},
   repos: [],
   hosts: [HOST],
-  cloud: { machineSize: "small", maxRuns: 1, proxy: PROXY },
+  cloud: { machineSize: "small", maxRuns: 1, proxy: PROXY, censusOfflineMinutes: 10 },
   local: { maxRuns: 1 },
   paradev: { cli: "/opt/superset", agent: "claude", belt: { enabled: false, visibility: "just_me" } },
   ...over,
@@ -202,7 +202,7 @@ describe("placer", () => {
       assert.deepStrictEqual(drops(t.events), [
         { repo: "acme/hosted", target: "local", reason: "not ready: the factory plugin is not on this Mac" },
       ]);
-      const [row] = yield* t.placer.targets;
+      const [row] = (yield* t.placer.targets).status;
       assert.deepStrictEqual(
         { ready: row!.ready, reason: row!.reason },
         { ready: false, reason: "not ready: the factory plugin is not on this Mac" },
@@ -225,7 +225,7 @@ describe("placer", () => {
         drops(t.events).map((drop) => drop.reason),
         `not ready: ${reason}`,
       );
-      const cloud = (yield* t.placer.targets).find((row) => row.kind === "cloud")!;
+      const cloud = (yield* t.placer.targets).status.find((row) => row.kind === "cloud")!;
       assert.deepStrictEqual({ ready: cloud.ready, reason: cloud.reason }, { ready: false, reason: `not ready: ${reason}` });
     }),
   );
@@ -357,6 +357,79 @@ describe("placer", () => {
     }),
   );
 
+  it.effect("targets: a count that could not be read gives its row's reason the exact census error, and a launch's drop too (#117)", () =>
+    Effect.gen(function* () {
+      const error = "cloud workspace a2bc69cb of cloud:a2bc69cb is not listed with the tag factory-r1";
+      const t = setup({
+        counts: [
+          full({ kind: "local" }),
+          full({ kind: "host", machineId: "h1" }),
+          { target: { kind: "cloud" }, running: null, error },
+        ],
+      });
+      t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
+      const refused = yield* t.placer.place(request("cloudy")).pipe(Effect.flip);
+      assert.instanceOf(refused, NoTargetHasRoom);
+      const cloudRow = (yield* t.placer.targets).status.find((row) => row.kind === "cloud");
+      assert.strictEqual(cloudRow?.reason, `its running agents could not be counted: ${error}`);
+      assert.deepStrictEqual(cloudRow?.slots, { used: null, max: 1 });
+      assert.deepStrictEqual(
+        drops(t.events).find((drop) => drop.target === "cloud"),
+        { repo: "acme/cloudy", target: "cloud", reason: `its running agents could not be counted: ${error}` },
+      );
+    }),
+  );
+
+  it.effect("cloudCensus: cloud's count and its error from the pass's one read, shared with the rows; null with no cloud count (#117)", () =>
+    Effect.gen(function* () {
+      const error = "superset workspaces list --host cloud --json failed (UNKNOWN): boom";
+      const t = setup({
+        counts: [
+          { target: { kind: "local" }, running: 0 },
+          { target: { kind: "host", machineId: "h1" }, running: 0 },
+          { target: { kind: "cloud" }, running: null, error },
+        ],
+      });
+      t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
+      assert.deepStrictEqual(yield* t.placer.cloudCensus, { running: null, error });
+      yield* t.placer.targets;
+      assert.strictEqual(t.reads.running, 1);
+      const counted = setup({ counts: [{ target: { kind: "local" }, running: 0 }, { target: { kind: "cloud" }, running: 2 }] });
+      counted.placer.beginPass({ localHeld: null, proxy: null, machine: counted.machine() });
+      assert.deepStrictEqual(yield* counted.placer.cloudCensus, { running: 2 });
+      // A count with workspaces it could not read carries their errors, and the row's reason names them.
+      const stuck = "cloud workspace e0fe439f of cloud:e0fe439f is not listed, and workspaces get failed: boom";
+      const degraded = setup({
+        counts: [full({ kind: "local" }), full({ kind: "host", machineId: "h1" }), { target: { kind: "cloud" }, running: 1, uncountable: [stuck] }],
+      });
+      degraded.placer.beginPass({ localHeld: null, proxy: null, machine: degraded.machine() });
+      assert.deepStrictEqual(yield* degraded.placer.cloudCensus, { running: 1, uncountable: [stuck] });
+      assert.strictEqual(
+        (yield* degraded.placer.targets).status.find((row) => row.kind === "cloud")?.reason,
+        `slots full: 1 of 1 running (1 of them could not be counted: ${stuck})`,
+      );
+      // The belt's rows come from the same readings, with no census error in a reason.
+      assert.strictEqual(
+        (yield* degraded.placer.targets).belt.find((row) => row.kind === "cloud")?.reason,
+        "slots full: 1 of 1 running (1 of them could not be counted; factory-runner status says why)",
+      );
+      // A launch placed on such a count keeps the errors: the slot it takes adds to the count only.
+      const roomy = setup({
+        machine: machine({ cloud: { machineSize: "small", maxRuns: 2, proxy: PROXY, censusOfflineMinutes: 10 } }),
+        counts: [full({ kind: "local" }), full({ kind: "host", machineId: "h1" }), { target: { kind: "cloud" }, running: 1, uncountable: [stuck] }],
+      });
+      roomy.placer.beginPass({ localHeld: null, proxy: null, machine: roomy.machine() });
+      assert.deepStrictEqual(yield* roomy.placer.place(request("cloudy")), { kind: "cloud", environmentId: "env-1", machineSize: "small" });
+      assert.strictEqual(
+        (yield* roomy.placer.targets).status.find((row) => row.kind === "cloud")?.reason,
+        `slots full: 2 of 2 running (1 of them could not be counted: ${stuck})`,
+      );
+      const none = setup({ counts: [{ target: { kind: "local" }, running: 0 }] });
+      none.placer.beginPass({ localHeld: null, proxy: null, machine: none.machine() });
+      assert.isNull(yield* none.placer.cloudCensus);
+    }),
+  );
+
   it.effect("targets: a row for this Mac, each configured host and cloud, from the pass's readings", () =>
     Effect.gen(function* () {
       const t = setup({
@@ -368,7 +441,7 @@ describe("placer", () => {
         notReady: new Map([["h1", "git identity: no user.email"]]),
       });
       t.placer.beginPass({ localHeld: "high load", proxy: null, machine: t.machine() });
-      assert.deepStrictEqual(yield* t.placer.targets, [
+      assert.deepStrictEqual((yield* t.placer.targets).status, [
         {
           kind: "local",
           name: "local",
@@ -404,9 +477,9 @@ describe("placer", () => {
     Effect.gen(function* () {
       const none = setup({ machine: machine({ cloud: undefined, hosts: [] }) });
       none.placer.beginPass({ localHeld: null, proxy: null, machine: none.machine() });
-      assert.deepStrictEqual((yield* none.placer.targets).map((row) => row.name), ["local"]);
+      assert.deepStrictEqual((yield* none.placer.targets).status.map((row) => row.name), ["local"]);
       const unchecked = setup();
-      const cloud = (yield* unchecked.placer.targets).find((row) => row.kind === "cloud")!;
+      const cloud = (yield* unchecked.placer.targets).status.find((row) => row.kind === "cloud")!;
       assert.deepStrictEqual({ ready: cloud.ready, reason: cloud.reason }, { ready: false, reason: PROXY_NOT_CHECKED });
     }),
   );
@@ -416,7 +489,7 @@ describe("placer", () => {
       const t = setup();
       t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
       assert.deepStrictEqual(yield* t.placer.place(request("hosted")), { kind: "local" });
-      const rows = yield* t.placer.targets;
+      const rows = (yield* t.placer.targets).status;
       assert.deepStrictEqual(t.reads, { running: 1, load: 1 });
       assert.deepStrictEqual(rows[0]!.slots, { used: 1, max: 1 });
     }),
@@ -447,7 +520,7 @@ describe("placer", () => {
       // The next pass begins before the snapshot answers: its launches read their own counts.
       t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
       yield* Deferred.succeed(gate, undefined);
-      assert.deepStrictEqual((yield* Fiber.join(rows)).map((row) => row.slots.used), [1, 0, 0]);
+      assert.deepStrictEqual((yield* Fiber.join(rows)).status.map((row) => row.slots.used), [1, 0, 0]);
       yield* t.placer.place(request("hosted"));
       assert.strictEqual(t.reads.running, 2);
     }),
@@ -457,7 +530,7 @@ describe("placer", () => {
     Effect.gen(function* () {
       const t = setup();
       t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
-      assert.deepStrictEqual((yield* t.placer.targets).map((row) => row.slots.used), [0, 0, 0]);
+      assert.deepStrictEqual((yield* t.placer.targets).status.map((row) => row.slots.used), [0, 0, 0]);
       assert.deepStrictEqual(yield* t.placer.place(request("hosted")), { kind: "local" });
       assert.deepStrictEqual(t.reads, { running: 1, load: 1 });
     }),
@@ -544,7 +617,7 @@ describe("placer", () => {
 
   it.effect("cloud takes no launch until a pass has checked the proxy: before the first pass, and again after a config load", () =>
     Effect.gen(function* () {
-      const roomy = () => machine({ cloud: { machineSize: "small", maxRuns: 3, proxy: PROXY } });
+      const roomy = () => machine({ cloud: { machineSize: "small", maxRuns: 3, proxy: PROXY, censusOfflineMinutes: 10 } });
       const t = setup({
         machine: roomy(),
         counts: [full({ kind: "local" }), full({ kind: "host", machineId: "h1" }), { target: { kind: "cloud" }, running: 0 }],
@@ -566,7 +639,7 @@ describe("placer", () => {
 
   it.effect("a check made under one config does not vouch for another: a reload between a pass's check and its beginPass leaves cloud unchecked", () =>
     Effect.gen(function* () {
-      const roomy = () => machine({ cloud: { machineSize: "small", maxRuns: 3, proxy: PROXY } });
+      const roomy = () => machine({ cloud: { machineSize: "small", maxRuns: 3, proxy: PROXY, censusOfflineMinutes: 10 } });
       const t = setup({
         machine: roomy(),
         counts: [full({ kind: "local" }), full({ kind: "host", machineId: "h1" }), { target: { kind: "cloud" }, running: 0 }],

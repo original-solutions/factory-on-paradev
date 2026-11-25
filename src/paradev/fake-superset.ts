@@ -78,6 +78,30 @@ const isTaggedCloudCreate = (argv: ReadonlyArray<string>): boolean =>
   argv.some((arg, i) => arg === "--host" && argv[i + 1] === "cloud");
 
 /**
+ * The tag set a `workspaces update` argv leaves on its workspace, as CLI 2.0.11 reads it: `--tag`
+ * is variadic, so each `--tag <name>` or `--tag=<name>` adds one name, and the names together
+ * replace the set; `--clear-tags` empties it. Null when the argv sends no tags, so the set stays.
+ * Read from the 2.0.11 binary's `workspaces update` command and argv parser (#117); no cloud call
+ * records it.
+ */
+export const cloudUpdateTags = (argv: ReadonlyArray<string>): ReadonlyArray<string> | null => {
+  if (argv[0] !== "workspaces" || argv[1] !== "update") return null;
+  const tags: Array<string> = [];
+  let cleared = false;
+  for (let i = 2; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === "--clear-tags") cleared = true;
+    else if (arg.startsWith("--tag=")) tags.push(arg.slice("--tag=".length));
+    else if (arg === "--tag" && i + 1 < argv.length) {
+      tags.push(argv[i + 1]!);
+      i += 1;
+    }
+  }
+  if (cleared) return [];
+  return tags.length === 0 ? null : tags;
+};
+
+/**
  * Each call takes the first step not yet used whose argv matches; a step answers once.
  * `calls` holds every argv seen, `--json` stripped; `unused` the steps no call took.
  */

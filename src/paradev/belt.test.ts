@@ -4,6 +4,7 @@ import type { AttentionItem } from "../attention.ts";
 import { beltBytes, type BeltV2 } from "../belt.ts";
 import type { RunSummary } from "../ledger/listRuns.ts";
 import { BELT_MAX_BYTES, beltPayload, type BeltRun } from "./belt.ts";
+import { targetRow } from "./placement.ts";
 
 const NOW = Date.UTC(2026, 10, 12, 9, 0, 0);
 
@@ -188,6 +189,34 @@ describe("beltPayload", () => {
       belt.runner.targets.map((target) => target.reason),
       ["slots full: 1 of 1 running", null, "its proxy or plugin check has not passed; factory-runner status says why"],
     );
+  });
+
+  it("carries a ready target's reason as placement built its belt row: no census error, which can quote ids, tags and CLI output (#117)", () => {
+    const error = "cloud workspace e0fe439f is not listed, and workspaces get failed: /Users/tomk";
+    const belt = beltPayload({
+      nowMs: NOW,
+      runner: {
+        ...RUNNER,
+        targets: [
+          targetRow({ kind: "cloud", machineSize: "small", slots: { running: null, max: 1, error }, proxy: null, notReady: null }, "belt"),
+          targetRow({ kind: "cloud", machineSize: "small", slots: { running: 1, max: 1, uncountable: [error] }, proxy: null, notReady: null }, "belt"),
+          targetRow({ kind: "host", id: "h1", name: "mini", slots: { running: null, max: 1 }, maxLoadPerCore: 1, load: null, notReady: null }, "belt"),
+        ],
+      },
+      runs: [],
+      attention: [],
+      hostNames: HOST_NAMES,
+    });
+    assert.deepStrictEqual(
+      belt.runner.targets.map((target) => target.reason),
+      [
+        "its running agents could not be counted; factory-runner status says why",
+        "slots full: 1 of 1 running (1 of them could not be counted; factory-runner status says why)",
+        "its running agents could not be counted",
+      ],
+    );
+    const text = JSON.stringify(belt.runner.targets);
+    for (const leak of ["/Users/", "e0fe439f"]) assert.notInclude(text, leak);
   });
 
   it("cuts a long title without splitting a character", () => {

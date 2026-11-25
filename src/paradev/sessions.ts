@@ -32,6 +32,7 @@ import {
 } from "../gitHardening.ts";
 import { type HostConfig, type MachineSize, paradevModel } from "../config.ts";
 import { FactoryPaths } from "../paths.ts";
+import type { TargetCensus } from "../targets.ts";
 import { FactoryProcess, type RunResult, type RunSpawnError } from "../process.ts";
 import {
   type FactoryProject,
@@ -53,6 +54,7 @@ import { type CliError, SupersetCli } from "./cli.ts";
 import { listProjects, listProjectsAt, type ParadevProject, projectAt } from "./projects.ts";
 import { shellQuote, type SshError, type SshRunner, sshRunner } from "./ssh.ts";
 import {
+  isRunnerId,
   listCloudCreates,
   listThreads,
   markCloudCreate,
@@ -136,6 +138,7 @@ const Snapshot = Schema.Struct({
   ),
 });
 type SnapshotAnswer = typeof Snapshot.Type;
+type SnapshotWorkspace = SnapshotAnswer["workspaces"][number];
 /** `sessionId` is the new terminal's id (X1). */
 const AgentStarted = Schema.Struct({ kind: Schema.Literal("terminal"), sessionId: Schema.String });
 const Explained = Schema.Struct({
@@ -305,9 +308,8 @@ const UNTYPED: ReadonlyArray<CliError["kind"]> = [
 ];
 
 /** The factory's agents starting or working on one target, as `runningByTarget` counts them. */
-export interface TargetCount {
+export interface TargetCount extends TargetCensus {
   readonly target: ThreadTarget;
-  readonly running: number | null;
 }
 
 export type ParadevSessions = FactorySessions["Service"] & {
@@ -319,7 +321,11 @@ export type ParadevSessions = FactorySessions["Service"] & {
    * The agents running on each target (this Mac, each configured host in order, then cloud when
    * configured): one snapshot of this Mac or a host, and for cloud one per workspace of this
    * runner's. What placement checks against each target's `max_runs`. `running` is null for a
-   * target whose snapshot or listing could not be read. Never fails.
+   * target whose snapshot or listing could not be read; for cloud, with that read's error in
+   * `error`, which is logged too. One cloud workspace that cannot be counted counts as one used
+   * slot, and its error is in `uncountable` (#117). Never fails. Not a pure read: for cloud it
+   * writes the tags back on this runner's workspaces listed without its tag, each call
+   * (`workspaces update`, the same call a launch sends), as `runningThreads` does (#117).
    */
   readonly runningByTarget: Effect.Effect<ReadonlyArray<TargetCount>>;
   /** Archives the orphaned cloud workspaces; the runner calls it once per pass while a repo names a cloud environment. */
@@ -336,9 +342,18 @@ const failWith =
 /** The tag that marks a cloud workspace as made by the runner of this id. */
 const runnerTag = (id: string): string => `factory-${id}`;
 
+/** The names of a listed workspace's tags. */
+const tagNames = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined): ReadonlyArray<string> =>
+  (tags ?? []).map((tag) => (typeof tag === "string" ? tag : tag.name));
 /** Whether a listed workspace carries `name` as a tag. */
 const hasTag = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined, name: string): boolean =>
-  (tags ?? []).some((tag) => (typeof tag === "string" ? tag : tag.name) === name);
+  tagNames(tags).includes(name);
+/**
+ * A runner tag among `tags` that is not `mine`: another runner's `factory-<its id>`, else undefined.
+ * Only `factory-` and a runner id's shape is one; a hand tag such as `factory-debug` is not.
+ */
+const otherRunnerTag = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined, mine: string): string | undefined =>
+  tagNames(tags).find((name) => name !== mine && name.startsWith("factory-") && isRunnerId(name.slice("factory-".length)));
 
 /**
  * The argv of a `snapshot` of `target` at `snapshotAt`, its location flag, reading `workspaceId`
@@ -831,11 +846,19 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
   /**
    * The tags of a cloud launch's workspace, `factory` and `factory-<runner id>`, by which the count
    * and the orphan sweep find it: CLI 2.0.8 refuses `--tag` on a cloud create (#87). The update
-   * replaces the tag set, so a repeat changes nothing.
+   * replaces the tag set, so a repeat changes nothing. Both tags go in this one call, every time:
+   * CLI 2.0.11 keeps every `--tag` and sends them as one set (#117), so an update with one tag
+   * would leave a set of one. The cloud count sends the same call to put them back
+   * ({@link snapshotWorkspaces}), with `keep`, the other tags the workspace is listed with, after
+   * them: no update shrinks the set (#117). Each kept tag goes as `--tag=<name>`, so a name read
+   * from Paradev that starts with `-` cannot read as a flag.
    */
-  const tagCloud = (workspaceId: string) =>
+  const tagCloud = (workspaceId: string, keep: ReadonlyArray<string> = []) =>
     Effect.gen(function* () {
-      const argv = ["workspaces", "update", workspaceId, ...cloudTarget.at, "--tag", "factory", "--tag", yield* mine];
+      const argv = [
+        "workspaces", "update", workspaceId, ...cloudTarget.at, "--tag", "factory", "--tag", yield* mine,
+        ...keep.map((name) => `--tag=${name}`),
+      ];
       yield* callWithRetry(cli, argv, 30_000);
     });
 
@@ -843,7 +866,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * Steps 3 to 5 of a cloud launch: the tags, ready, then the agent. A retry (`look`) sends the tags
    * again and takes an agent of the preset an earlier attempt started. A failed update archives the
    * workspace even on a retry, whose earlier agent may run there: a recorded workspace with an agent
-   * and no tag fails the cloud count (#87). A cloud worktree gets no
+   * and no tag leaves the cloud count to heal it (#87, #117). A cloud worktree gets no
    * base check: Paradev cuts its branch from the repository's branch on GitHub. A launch that fails here is not tried
    * again and leaves the core no thread to archive, so the workspace is archived before the
    * launch fails: an idle box bills ({@link giveUpCloud}).
@@ -1223,22 +1246,30 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     });
 
   /**
-   * The workspaces `target`'s snapshots show. This Mac and a host: one snapshot, no `--workspace`.
+   * The workspaces `target`'s snapshots show, and the records of `counted` that could not be read,
+   * each with why. This Mac and a host: one snapshot, no `--workspace`, and a failed one fails this.
    * Cloud is not one host, so each workspace of `counted` that the listing shows with this runner's
    * tag (`factory-<runner id>`) and not archived is read on its own with `--workspace`, two at a
    * time; none such reads no snapshot. A tagged workspace with no record in `counted` (an archived
-   * run's, an orphan's) is not read: nothing in it would count, and its failed snapshot would lose
-   * the count. A workspace of `counted` the listing shows neither tagged nor archived fails the
-   * read: its agent would count nothing, and a count that misses a running agent lets cloud take
-   * more runs than it has room for. One the listing leaves out is read on its own
-   * ({@link unlistedStatus}): gone, it counts nothing; not gone, or not read, it fails the read too,
-   * once every one left out has had its read, so a gone one beside it is still marked. With no record
-   * in `counted`, cloud is not read at all.
+   * run's, an orphan's, another runner's) is not read or changed: nothing in it would count, and its
+   * failed snapshot would lose the count. A workspace of `counted` the listing shows live without
+   * this runner's tag gets both tags back with the update a launch sends ({@link tagCloud}), each other
+   * tag it is listed with kept, and is then read as a tagged one (#117): so a count writes to cloud.
+   * One that carries another runner's tag instead is not updated, since that would make it this
+   * runner's too; it is uncountable. One the listing leaves out is read on its own
+   * ({@link unlistedStatus}): gone, it counts nothing. A record that still cannot be read (the
+   * update failed, its snapshot failed, or one left out is not gone or could not be read) is
+   * uncountable: it counts as one used slot, and the others are still counted, since a count that
+   * missed a running agent would let cloud take more runs than it has room for. Each one is logged
+   * with its error. Only a listing that fails fails cloud's read. With no record in `counted`,
+   * cloud is not read at all.
    */
   const snapshotWorkspaces = (target: ThreadTarget, counted: ReadonlyArray<ThreadRecord>) =>
     Effect.gen(function* () {
-      if (target.kind !== "cloud") return (yield* snapshot(target)).workspaces;
-      if (counted.length === 0) return [];
+      const uncountable: Array<{ readonly record: ThreadRecord; readonly error: string }> = [];
+      const read = (workspaces: ReadonlyArray<SnapshotWorkspace>) => ({ workspaces, uncountable });
+      if (target.kind !== "cloud") return read((yield* snapshot(target)).workspaces);
+      if (counted.length === 0) return read([]);
       const tag = yield* mine;
       const rows = yield* listCloud;
       const tagged = new Set(
@@ -1248,36 +1279,84 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       );
       const deleted = new Set(rows.filter((row) => isCloudGone(row.status)).map((row) => row.id));
       const listed = new Set(rows.map((row) => row.id));
-      const notTagged = (record: ThreadRecord) =>
-        fail(`cloud workspace ${record.workspaceId} of ${record.threadId} is not listed with the tag ${tag}`);
-      const untagged = counted.find(
-        (record) => listed.has(record.workspaceId) && !tagged.has(record.workspaceId) && !deleted.has(record.workspaceId),
-      );
-      if (untagged !== undefined) return yield* notTagged(untagged);
-      // CLI 2.0.11 lists no archived workspace (#113): one the listing leaves out is read on its own.
-      // Every one is read, whatever the others answer: a read that failed the batch would stop the
-      // read beside it before a gone workspace's record is marked.
-      const unlisted = yield* Effect.forEach(
-        counted.filter((record) => !listed.has(record.workspaceId)),
-        (record) => Effect.result(unlistedStatus(record)).pipe(Effect.map((read) => ({ record, read }))),
-        { concurrency: 2 },
-      );
-      for (const { record, read } of unlisted) {
-        if (Result.isFailure(read)) return yield* Effect.fail(read.failure);
-        if (read.success !== null) {
-          return yield* fail(
-            `cloud workspace ${record.workspaceId} of ${record.threadId} is not listed, and workspaces get reads it ${read.success}`,
-          );
+      const toRead = new Set(counted.map((record) => record.workspaceId).filter((id) => tagged.has(id)));
+      // Each of this ledger's live workspaces listed without the tag gets both back, two at a time,
+      // with the tags it has kept (the update replaces the set), unless another runner's tag is on it.
+      const untagged: Array<{ readonly record: ThreadRecord; readonly keep: ReadonlyArray<string> }> = [];
+      for (const record of counted) {
+        if (!listed.has(record.workspaceId) || tagged.has(record.workspaceId) || deleted.has(record.workspaceId)) continue;
+        const listedTags = rows.find((row) => row.id === record.workspaceId)?.tags;
+        const other = otherRunnerTag(listedTags, tag);
+        if (other === undefined) {
+          const keep = [...new Set(tagNames(listedTags))].filter((name) => name !== "factory" && name !== tag);
+          untagged.push({ record, keep });
+        } else {
+          uncountable.push({
+            record,
+            error: `cloud workspace ${record.workspaceId} of ${record.threadId} is listed with another runner's tag ${other}, not ${tag}, so its tags are left as they are`,
+          });
         }
       }
-      const ids = counted.map((record) => record.workspaceId).filter((id) => tagged.has(id));
-      const answers = yield* Effect.forEach(ids, (id) => snapshot(target, id), { concurrency: 2 });
-      return answers.flatMap((answer) => answer.workspaces);
+      const healed = yield* Effect.forEach(
+        untagged,
+        ({ record, keep }) =>
+          Effect.result(tagCloud(record.workspaceId, keep)).pipe(Effect.map((update) => ({ record, update }))),
+        { concurrency: 2 },
+      );
+      for (const { record, update } of healed) {
+        const missing = `cloud workspace ${record.workspaceId} of ${record.threadId} is not listed with the tag ${tag}`;
+        if (Result.isFailure(update)) {
+          uncountable.push({ record, error: `${missing}, and putting both tags back failed (${update.failure.message})` });
+        } else {
+          yield* Effect.logWarning(`${missing}; both tags (factory, ${tag}) were put back on it, and it is counted`);
+          toRead.add(record.workspaceId);
+        }
+      }
+      // CLI 2.0.11 lists no archived workspace (#113): one the listing leaves out is read on its own.
+      // Every one is read, whatever the others answer, so a gone workspace's record is still marked.
+      const unlisted = yield* Effect.forEach(
+        counted.filter((record) => !listed.has(record.workspaceId)),
+        (record) => Effect.result(unlistedStatus(record)).pipe(Effect.map((status) => ({ record, status }))),
+        { concurrency: 2 },
+      );
+      for (const { record, status } of unlisted) {
+        if (Result.isFailure(status)) {
+          uncountable.push({
+            record,
+            error: `cloud workspace ${record.workspaceId} of ${record.threadId} is not listed, and workspaces get failed: ${status.failure.message}`,
+          });
+        } else if (status.success !== null) {
+          uncountable.push({
+            record,
+            error: `cloud workspace ${record.workspaceId} of ${record.threadId} is not listed, and workspaces get reads it ${status.success}`,
+          });
+        }
+      }
+      const answers = yield* Effect.forEach(
+        counted.filter((record) => toRead.has(record.workspaceId)),
+        (record) => Effect.result(snapshot(target, record.workspaceId)).pipe(Effect.map((answer) => ({ record, answer }))),
+        { concurrency: 2 },
+      );
+      const workspaces: Array<SnapshotWorkspace> = [];
+      for (const { record, answer } of answers) {
+        if (Result.isSuccess(answer)) workspaces.push(...answer.success.workspaces);
+        else {
+          uncountable.push({
+            record,
+            error: `the snapshot of cloud workspace ${record.workspaceId} of ${record.threadId} failed: ${answer.failure.message}`,
+          });
+        }
+      }
+      for (const { error } of uncountable) {
+        yield* Effect.logWarning(`${error}; it cannot be counted, so it counts as 1 used slot`);
+      }
+      return read(workspaces);
     });
 
   /**
    * The factory's agents that are starting or working on `target`: the unarchived records of that
-   * target whose newest terminal the snapshots show in either state.
+   * target whose newest terminal the snapshots show in either state, and one for each record whose
+   * workspace could not be read ({@link snapshotWorkspaces}).
    */
   const runningAt = (target: ThreadTarget, records: ReadonlyArray<ThreadRecord>) => {
     const counted = records.filter(
@@ -1287,16 +1366,18 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         record.terminals.length > 0,
     );
     return snapshotWorkspaces(target, counted).pipe(
-      Effect.map((workspaces) => {
-        let running = 0;
+      Effect.map(({ workspaces, uncountable }) => {
+        const unread = new Set(uncountable.map(({ record }) => record.workspaceId));
+        let running = unread.size;
         for (const record of counted) {
+          if (unread.has(record.workspaceId)) continue;
           const terminal = record.terminals.at(-1);
           const state = workspaces
             .find((ws) => ws.id === record.workspaceId)
             ?.terminals.find((t) => t.id === terminal)?.agent?.state;
           if (state === "starting" || state === "working") running += 1;
         }
-        return running;
+        return { running, uncountable: uncountable.map(({ error }) => error) };
       }),
     );
   };
@@ -1308,7 +1389,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     ...(config.cloud === true ? [{ kind: "cloud" } as const] : []),
   ];
 
-  /** Every counted target read once, all at the same time; a read that failed is its error. */
+  /**
+   * Every counted target read once, all at the same time; a read that failed is its error. Cloud's
+   * read can write: it puts the tags back on this runner's workspaces listed without its tag
+   * ({@link snapshotWorkspaces}), so `runningByTarget` and `runningThreads` each send those updates.
+   */
   const readTargets = Effect.gen(function* () {
     const records = yield* local(listThreads(dataDir));
     return yield* Effect.forEach(
@@ -1318,19 +1403,38 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     );
   });
 
+  /**
+   * A target whose agents could not be counted: null. Cloud's carries the census's exact error,
+   * which is logged too (#117); this Mac's and a host's are as before.
+   */
+  const uncounted = (target: ThreadTarget, error: string): Effect.Effect<TargetCount> =>
+    target.kind !== "cloud"
+      ? Effect.succeed({ target, running: null })
+      : Effect.logWarning(`cloud's running agents could not be counted: ${error}`).pipe(
+          Effect.as({ target, running: null, error }),
+        );
+
   const runningByTarget = readTargets.pipe(
-    Effect.map((read) =>
-      read.map(({ target, result }) => ({ target, running: Result.isSuccess(result) ? result.success : null })),
+    Effect.flatMap((read) =>
+      Effect.forEach(read, ({ target, result }) => {
+        if (Result.isFailure(result)) return uncounted(target, result.failure.message);
+        const { running, uncountable } = result.success;
+        return Effect.succeed<TargetCount>({ target, running, ...(uncountable.length > 0 && { uncountable }) });
+      }),
     ),
     // The records could not be read: no count can be trusted, so none is given.
-    Effect.catch(() => Effect.succeed(countedTargets.map((target) => ({ target, running: null })))),
+    Effect.catch((error) =>
+      Effect.forEach(countedTargets, (target) =>
+        uncounted(target, `the thread records could not be read: ${error.message}`),
+      ),
+    ),
   );
 
   const runningThreads = readTargets.pipe(
     Effect.flatMap((read) => {
       let running = 0;
       for (const { target, result } of read) {
-        if (Result.isSuccess(result)) running += result.success;
+        if (Result.isSuccess(result)) running += result.success.running;
         // This Mac is the one count the pass cannot do without; a host or cloud that cannot be read waits.
         else if (targetFor(target).onThisMac) return Effect.fail(result.failure);
       }

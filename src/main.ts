@@ -476,6 +476,8 @@ export interface LiveShared {
   readonly hostLoads: Map<string, Load | null>;
   /** Passes in a row the cloud proxy has not answered 401: see `PassWorld.proxyMisses`. */
   readonly proxyMisses: { passes: number };
+  /** Since when cloud's count has been null: see `PassWorld.censusOffline`. */
+  readonly censusOffline: { since: number | null };
   /** What GitHub said of the gh login's credentials: see `PassWorld.ghCredentials`. */
   readonly ghCredentials: GhCredentialTally & { passes: number };
 }
@@ -494,6 +496,7 @@ export const newShared = (): LiveShared => ({
   hostMisses: new Map(),
   hostLoads: new Map(),
   proxyMisses: { passes: 0 },
+  censusOffline: { since: null },
   ghCredentials: { rejected: 0, accepted: 0, gaveUp: false, passes: 0 },
 });
 
@@ -503,7 +506,7 @@ const NOTHING_PRUNED = { pruned: [], left: [], failed: [], waiting: 0 } as const
 /**
  * The pass over this machine: GitHub through `gh`, the ledger under `dataDir`, the wall clock.
  * It does not know which repos are watched, where the worktrees are or whether Paradev answers:
- * `startFactory` adds `watchedRepos`, `freeSpace`, `paradevDown` and `beginPlacement`.
+ * `startFactory` adds `watchedRepos`, `freeSpace`, `paradevDown`, `beginPlacement` and `cloudCensus`.
  */
 export const liveWorld = (
   machine: MachineConfig,
@@ -532,9 +535,10 @@ export const liveWorld = (
     hostMisses,
     hostLoads,
     proxyMisses,
+    censusOffline,
     ghCredentials,
   }: LiveShared = newShared(),
-): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown" | "beginPlacement"> => {
+): Omit<PassWorld, "watchedRepos" | "freeSpace" | "paradevDown" | "beginPlacement" | "cloudCensus"> => {
   const load = live.readLoad ?? readLoad;
   const ssh = live.ssh ?? liveSshSpawn(process);
   const proxyGet = live.proxyGet ?? liveProxyGet;
@@ -872,6 +876,7 @@ export const liveWorld = (
     hostMisses,
     hostLoads,
     proxyMisses,
+    censusOffline,
     ghCredentials,
     checkProxy: () =>
       machine.cloud === undefined
@@ -1343,7 +1348,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     const afterPass = Effect.gen(function* () {
       const nowMs = Date.now();
       const targets = yield* placer.targets;
-      yield* writeFileAtomically(targetsFile, targetsText(targets)).pipe(
+      yield* writeFileAtomically(targetsFile, targetsText(targets.status)).pipe(
         Effect.catch((error) =>
           Effect.logWarning(`the target rows were not written: ${error.message}`).pipe(Effect.andThen(removeTargets)),
         ),
@@ -1357,7 +1362,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
           claimsPaused: loadHandPause(factoryDir) !== null,
           paradevOnline,
           attention: yield* attention.list(),
-          targets,
+          targets: targets.belt,
           hostNames,
         },
         beltRuns,
@@ -1477,6 +1482,8 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
       ...base,
       watchedRepos: listWatched,
       beginPlacement: placer.beginPass,
+      // The pass's census check reads the counts placement reads, so the rows and it share one read.
+      cloudCensus: () => placer.cloudCensus,
       paradevDown,
       // The sessions write under Paradev's worktrees folder, the gate under the factory dir.
       freeSpace: () =>

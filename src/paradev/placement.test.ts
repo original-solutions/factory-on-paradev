@@ -261,6 +261,44 @@ describe("targetRow", () => {
     );
   });
 
+  it("names the exact census error in the reason of a target whose agents could not be counted (#117)", () => {
+    const error = "superset workspaces list --host cloud --json failed (UNKNOWN): boom";
+    const row = targetRow(cloud({ slots: { running: null, max: 1, error } }));
+    assert.deepStrictEqual(
+      { online: row.online, slots: row.slots, reason: row.reason },
+      { online: false, slots: { used: null, max: 1 }, reason: `its running agents could not be counted: ${error}` },
+    );
+    const placed = choosePlacement([cloud({ slots: { running: null, max: 1, error } })]);
+    assert.deepStrictEqual(placed.dropped, [
+      { id: "cloud", target: "cloud", reason: `its running agents could not be counted: ${error}` },
+    ]);
+    // The belt's row, a page others read, says where the error is instead: it can quote ids and paths.
+    assert.strictEqual(
+      targetRow(cloud({ slots: { running: null, max: 1, error } }), "belt").reason,
+      "its running agents could not be counted; factory-runner status says why",
+    );
+    // With no error to point at, both say the same.
+    const bare = host("a", { slots: { running: null, max: 2 }, load: null });
+    assert.strictEqual(targetRow(bare, "belt").reason, targetRow(bare).reason);
+  });
+
+  it("names the workspaces that count as used slots only because they could not be counted in a full target's reason (#117)", () => {
+    const error = "cloud workspace e0fe439f of cloud:e0fe439f is not listed with the tag factory-r1, and putting both tags back failed (boom)";
+    const row = targetRow(cloud({ slots: { running: 1, max: 1, uncountable: [error] } }));
+    assert.deepStrictEqual(
+      { online: row.online, slots: row.slots, reason: row.reason },
+      { online: true, slots: { used: 1, max: 1 }, reason: `slots full: 1 of 1 running (1 of them could not be counted: ${error})` },
+    );
+    assert.strictEqual(
+      targetRow(cloud({ slots: { running: 1, max: 1, uncountable: [error] } }), "belt").reason,
+      "slots full: 1 of 1 running (1 of them could not be counted; factory-runner status says why)",
+    );
+    // A full target with no such workspace reads the same on the belt.
+    assert.strictEqual(targetRow(cloud({ slots: { running: 1, max: 1 } }), "belt").reason, "slots full: 1 of 1 running");
+    // A target with room is still used: the workspace holds its one slot, no more.
+    assert.isNull(targetRow(cloud({ slots: { running: 1, max: 2, uncountable: [error] } })).reason);
+  });
+
   it("gives cloud no load, and its proxy check as its readiness", () => {
     assert.deepStrictEqual(targetRow(cloud({ slots: { running: 1, max: 1 } })), {
       kind: "cloud",

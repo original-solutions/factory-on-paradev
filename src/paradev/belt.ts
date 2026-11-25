@@ -128,7 +128,8 @@ const NOT_READY: Readonly<Record<TargetRow["kind"], string>> = {
  * A target as the belt carries it. The reason of a target that is not ready can be a host check's
  * failing line or a proxy error, which quote paths, users and addresses as an attention message
  * can, so it says only which check failed; `status` has the line. A ready target's reason is
- * placement's own words and numbers.
+ * placement's own words and numbers, built with no census error in them (#117: `targetRow(reading,
+ * "belt")`), since those can quote ids, tags and CLI output.
  */
 const beltRow = (row: TargetRow): TargetRow => (row.ready ? row : { ...row, reason: NOT_READY[row.kind] });
 
@@ -361,7 +362,7 @@ export interface PassFacts {
   readonly claimsPaused: boolean;
   readonly paradevOnline: boolean;
   readonly attention: ReadonlyArray<AttentionItem>;
-  /** The pass's target rows, as `<data>/targets.json` has them. */
+  /** The pass's target rows as the belt shows them: built with no census error in a reason (#117). */
   readonly targets: ReadonlyArray<TargetRow>;
   readonly hostNames: ReadonlyMap<string, string>;
 }

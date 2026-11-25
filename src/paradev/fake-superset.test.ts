@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
 import { FactoryProcess } from "../process.ts";
-import { fakeSuperset, readFixture } from "./fake-superset.ts";
+import { cloudUpdateTags, fakeSuperset, readFixture } from "./fake-superset.ts";
 
 const ask = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -90,3 +90,15 @@ it.effect("refuses --tag on a cloud create as CLI 2.0.8 does, and takes it on wo
     assert.deepStrictEqual(fake.unused(), []);
   }),
 );
+
+it("reads the tag set a workspaces update leaves as CLI 2.0.11 does: every --tag kept, the set replaced (#117)", () => {
+  const id = "a2bc69cb-10d6-4c73-adf9-a9efae0372a2";
+  const update = ["workspaces", "update", id, "--host", "cloud"];
+  assert.deepStrictEqual(cloudUpdateTags([...update, "--tag", "factory", "--tag", "factory-r1"]), ["factory", "factory-r1"]);
+  assert.deepStrictEqual(cloudUpdateTags([...update, "--tag=factory", "--tag=factory-r1"]), ["factory", "factory-r1"]);
+  // One flag replaces the set with that one tag: the bug's shape, a set of only `factory`.
+  assert.deepStrictEqual(cloudUpdateTags([...update, "--tag", "factory"]), ["factory"]);
+  assert.deepStrictEqual(cloudUpdateTags([...update, "--clear-tags"]), []);
+  assert.isNull(cloudUpdateTags([...update, "--name", "x"]));
+  assert.isNull(cloudUpdateTags(["workspaces", "create", "--tag", "factory"]));
+});

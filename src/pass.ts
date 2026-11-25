@@ -69,6 +69,7 @@ import { isNoTargetHasRoom, isPinnedNoTargetHasRoom, NO_TARGET_HAS_ROOM, type Mo
 import type { LaunchEnd, LaunchReap } from "./runner/launchTimeout.ts";
 import { isStartingState } from "./runner/progress.ts";
 import type { StopRequestOutcome } from "./runner/stop.ts";
+import type { TargetCensus } from "./targets.ts";
 import { sanitize } from "./text.ts";
 import {
   LIST_LIMIT,
@@ -434,6 +435,18 @@ export interface PassWorld {
    * pass, and only while `cloud` is configured and a repo names a cloud environment. Never fails.
    */
   readonly checkProxy: () => Effect.Effect<ProxyAnswer>;
+  /**
+   * Cloud's running agents this pass, as placement counts them: `running` null with the census's
+   * exact error when they could not be counted; null when cloud is not counted. Read once per pass,
+   * after the claims, while `cloud` is configured and a repo names a cloud environment. Never fails.
+   */
+  readonly cloudCensus: () => Effect.Effect<TargetCensus | null>;
+  /**
+   * Since when, in `nowMs` terms, cloud's count has been null on every pass; null while it counts.
+   * Kept from pass to pass, and across a config load. Past `cloud.census_offline_minutes` the pass
+   * raises `cloud-census-offline` (#117).
+   */
+  readonly censusOffline: { since: number | null };
   /**
    * Starts placement's pass, right after the host loads and the proxy are read: it forgets the
    * last pass's counts. `localHeld` is why this Mac takes no claim this pass, else null; `proxy`
@@ -996,6 +1009,8 @@ export const runPass = Effect.fn("Pass.runPass")(function* (
       );
     }
   }
+  // After the claims, so the census is the one the pass's launches placed by.
+  yield* cloudCensusOffline(world, machine, pass);
   yield* closedStuck(world, repos, pass);
   // After the pass's own GitHub calls; a gate forked meanwhile may add its calls to the next pass's.
   yield* ghCredentials(world, machine, pass);
@@ -1356,6 +1371,48 @@ const cloudProxy = Effect.fn("Pass.cloudProxy")(function* (
     });
   }
   return `the proxy check failed: ${answer.reason}`;
+});
+
+/** The attention item for a cloud count that has been null for over `cloud.census_offline_minutes`. */
+export const CLOUD_CENSUS_OFFLINE_ITEM_ID = "cloud-census-offline";
+
+/**
+ * The cloud census check, once per pass after the claims (#117): while cloud's running agents
+ * cannot be counted, placement refuses every cloud launch, so a count that has been null on every
+ * pass for more than `cloud.census_offline_minutes` of wall time raises one `cloud-census-offline`
+ * item naming the latest census error. A pass that gets a numeric count clears it and stops the
+ * clock, even one that holds workspaces it could not read as used slots: those are named in the
+ * log, and in cloud's row when they leave it no room. Run
+ * only while `cloud` is configured and a repo names a cloud environment, as the proxy check.
+ */
+const cloudCensusOffline = Effect.fn("Pass.cloudCensusOffline")(function* (
+  world: PassWorld,
+  machine: MachineConfig,
+  pass: Pass,
+) {
+  const cloud = machine.cloud;
+  const census =
+    cloud === undefined || !machine.repos.some((entry) => entry.cloud !== undefined) ? null : yield* world.cloudCensus();
+  if (cloud === undefined || census === null || census.running !== null) {
+    world.censusOffline.since = null;
+    yield* world.attention.clear((item) => item.id === CLOUD_CENSUS_OFFLINE_ITEM_ID);
+    return;
+  }
+  const now = world.nowMs();
+  const since = (world.censusOffline.since ??= now);
+  const error = census.error ?? "no error was given";
+  pass.line(`cloud census: its running agents could not be counted (${plain(error)}); cloud takes no launch`);
+  if (now - since <= cloud.censusOfflineMinutes * 60_000) return;
+  pass.report.attention += 1;
+  // Raised once: an open item is not raised again, so it keeps the error of the pass that raised it.
+  yield* world.attention.raise({
+    id: CLOUD_CENSUS_OFFLINE_ITEM_ID,
+    kind: "attention",
+    repo: null,
+    issue: null,
+    run: null,
+    message: `cloud's running agents have not been counted for over ${cloud.censusOfflineMinutes} minutes, so cloud launches are refused until they are; the latest census error: ${error}`,
+  });
 });
 
 /** Passes in a row a GitHub call may still be refused with a 401 before one attention item is raised. */
