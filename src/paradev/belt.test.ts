@@ -190,6 +190,36 @@ describe("beltPayload", () => {
     );
   });
 
+  it("says only that a ready target's agents could not be counted: the census error can quote ids, tags and CLI output (#117)", () => {
+    const belt = beltPayload({
+      nowMs: NOW,
+      runner: {
+        ...RUNNER,
+        targets: [
+          {
+            kind: "cloud",
+            name: "cloud",
+            online: false,
+            load: null,
+            slots: { used: null, max: 1 },
+            ready: true,
+            reason:
+              "its running agents could not be counted: superset workspaces list --host cloud --json failed (UNKNOWN): No cloud workspace e0fe439f in /Users/tomk",
+          },
+        ],
+      },
+      runs: [],
+      attention: [],
+      hostNames: HOST_NAMES,
+    });
+    assert.deepStrictEqual(
+      belt.runner.targets.map((target) => target.reason),
+      ["its running agents could not be counted; factory-runner status says why"],
+    );
+    const text = JSON.stringify(belt.runner.targets);
+    for (const leak of ["/Users/", "superset", "e0fe439f"]) assert.notInclude(text, leak);
+  });
+
   it("cuts a long title without splitting a character", () => {
     const belt = payload([run(1, { title: "\u{1F600}".repeat(100) })]);
     const title = belt.runs[0]!.title!;
