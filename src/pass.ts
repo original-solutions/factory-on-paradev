@@ -1719,9 +1719,12 @@ const runs = Effect.fn("Pass.runs")(function* (world: PassWorld, pass: Pass) {
   return listed.success;
 });
 
-/** The attention line of a reaped launch that was sent with no thread id recorded: a session may run. */
-const sessionMayExistText = (label: string, run: string): string =>
-  `${label} run ${run} was ended with no thread id recorded, and its launch was sent, so a session may exist: look for launch command id softfac:${run}:launch in Paradev and archive what it started by hand`;
+/**
+ * The attention line of a run ended while a session may exist that its ledger does not name
+ * (`mayHaveSession`): `why` says how it ended, then where to look.
+ */
+const sessionMayExistText = (label: string, run: string, why: string): string =>
+  `${label} ${why}, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in T3 Code and archive that thread by hand`;
 
 /**
  * The launch reaper, at the start of every pass, so the first pass after a restart reaps a launch
@@ -1761,14 +1764,14 @@ const reapLaunches = Effect.fn("Pass.reapLaunches")(function* (
       const outcome = reaped.success;
       if (outcome.kind === "released") {
         notes.parts.push(
-          `the issue is no longer factory:triage assigned to ${repo.trackerUser} alone: run ${run} is finished and the issue is left as it is`,
+          `the issue was moved off factory:triage: run ${run} is finished and the issue is left as it is`,
         );
       } else if (outcome.kind === "yielded") {
         notes.parts.push(claimedByLine(outcome.machine));
       } else if (outcome.kind === "ready") {
         const why =
           outcome.ended === "timed-out"
-            ? `the launch recorded no thread id within ${timeout.seconds} seconds`
+            ? `the launch recorded no thread id within ${timeout.seconds} seconds (launch timeout ${outcome.failures}, launch_timeout_retries ${timeout.retries})`
             : "stopped by hand before its launch recorded a thread id";
         notes.parts.push(`${why}: run ${run} is finished and the issue is factory:ready again`);
       } else if (outcome.kind === "stuck" && outcome.limit) {
@@ -1779,8 +1782,15 @@ const reapLaunches = Effect.fn("Pass.reapLaunches")(function* (
       } else if (outcome.kind === "stuck") {
         pass.stuck(notes, run);
       }
-      if ((outcome.kind === "ready" || outcome.kind === "stuck") && outcome.mayHaveSession) {
-        yield* pass.attention(notes, sessionMayExistText(notes.label, run), run, "session-may-exist");
+      // The launch-timeout item names the launch command id already.
+      const limit = outcome.kind === "stuck" && outcome.limit;
+      if (outcome.kind !== "left" && outcome.mayHaveSession && !limit) {
+        yield* pass.attention(
+          notes,
+          sessionMayExistText(notes.label, run, "its launch recorded no thread id before the run was ended"),
+          run,
+          "session-may-exist",
+        );
       }
       if (outcome.kind !== "left") yield* known.refresh(world, pass, name, issue);
     }
@@ -2496,7 +2506,7 @@ const abandoned = Effect.fn("Pass.abandoned")(function* (
     const name = runIdToString(id);
     yield* pass.attention(
       notes,
-      `${notes.label} the issue was closed, and a session may exist for ${name}: look for launch command id softfac:${name}:launch in T3 Code and archive that thread by hand`,
+      sessionMayExistText(notes.label, name, "the issue was closed"),
       name,
       "session-may-exist",
     );

@@ -148,8 +148,8 @@ export interface Seen {
   readonly launchSentMs: number | null;
   /**
    * How this run's launch was ended with no thread id: `timed-out` for a `launch-timed-out` step,
-   * `stopped` for a `launch-stopped` step (a stop by hand). Null for neither. Each counts against
-   * the issue's `launch_timeout_retries`.
+   * `stopped` for a `launch-stopped` step (a stop by hand). Null for neither. Only `timed-out`
+   * counts against the issue's `launch_timeout_retries`: a stop by hand uses no retry.
    */
   readonly launchFailed: "timed-out" | "stopped" | null;
   /** When that `launch-timed-out` or `launch-stopped` step was written; null for none. */
@@ -187,6 +187,8 @@ export interface Seen {
   /** A `stop_requested` line: an operator asked for this run to be stopped by hand. */
   readonly stopRequested: boolean;
   readonly finished: boolean;
+  /** When the `finished` line was written; null before it. */
+  readonly finishedMs: number | null;
   /** Every pull request a `pr_opened` line names, once each, in the order first named. */
   readonly opened: ReadonlyArray<number>;
   /** The newest `pr_opened`: the number and the URL as the session wrote it. */
@@ -350,6 +352,12 @@ export const isStarting = (seen: Seen): boolean =>
   (seen.state === null || seen.state === "triage");
 
 /**
+ * Whether a session may exist that the ledger does not name: a launch was sent and no thread id
+ * was recorded, so T3 may have started one under the run's launch command id.
+ */
+export const mayHaveSession = (seen: Seen): boolean => seen.launchSent && seen.threadId === null;
+
+/**
  * The pull request's branch when the run's session was launched to push there: to fix a failed
  * re-gate of this run, for feedback, or to continue an earlier attempt's open pull request. Null
  * for a first launch, and for a session resumed from an earlier attempt's branch: older versions
@@ -503,6 +511,7 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
   let stuck: string | null = null;
   let stopRequested = false;
   let finished = false;
+  let finishedMs: number | null = null;
   const opened: Array<number> = [];
   let lastPr: Seen["lastPr"] = null;
   const left: Array<{ pr: number; url: string }> = [];
@@ -1030,6 +1039,7 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
       }
       case "finished":
         finished = true;
+        finishedMs = entry.ms;
         workingSince = null;
         break;
     }
@@ -1056,6 +1066,7 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
     stuck,
     stopRequested,
     finished,
+    finishedMs,
     opened,
     lastPr,
     left,

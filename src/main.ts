@@ -800,11 +800,7 @@ export const liveWorld = (
         {
           ...buildingContext(repo, runProject(repo.project, base)),
           launchTimeout,
-          // A repo `factory.owner` gives to one machine has no claim comments to yield to.
-          yieldToClaim: (issue) =>
-            repo.project.owner === null
-              ? yieldToClaim(startContext(repo), issue)
-              : Effect.succeed(null),
+          yieldToClaim: (issue) => yieldToClaim(startContext(repo), issue),
         },
         run,
       ),

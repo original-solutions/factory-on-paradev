@@ -16,32 +16,35 @@ import { ledgerCall as ledger } from "../ledger/errors.ts";
 import { makeCause } from "../ledger/events.ts";
 import { Ledger } from "../ledger/ledger.ts";
 import { readRun } from "../ledger/read.ts";
-import type { RunId } from "../ledger/runId.ts";
+import { asciiLower, type RunId } from "../ledger/runId.ts";
 import { STOPPED_BY_HAND } from "./messages.ts";
 import {
   isStarting,
   LAUNCH_STOPPED,
   LAUNCH_TIMED_OUT,
+  mayHaveSession,
   readProgress,
   type Seen,
 } from "./progress.ts";
-import { goStuck, progressFrom, stopSession, type RunContext } from "./run.ts";
-import { earlierRuns, isOurs, type StartError } from "./start.ts";
+import { goStuck, progressFrom, stopSession, type Progress, type RunContext } from "./run.ts";
+import { earlierRuns, type StartError } from "./start.ts";
 
 /** The public reason of an issue that went `stuck` because its launches keep recording no thread id. */
 export const LAUNCH_TIMEOUT_REASON =
   "the session launch never recorded a thread id, and the issue has used its launch retries";
 
 export interface LaunchTimeoutContext extends RunContext {
+  /** The run's base, and `factory.owner`: a repo it gives to one machine has no claim to yield to. */
+  readonly project: { readonly base: string; readonly owner: string | null };
   readonly dataDir: string;
   /** Unix epoch milliseconds. */
   readonly clock: () => number;
   /** `launch_timeout_seconds` and `launch_timeout_retries` from the machine config. */
   readonly launchTimeout: { readonly seconds: number; readonly retries: number };
   /**
-   * `yieldToClaim` for the issue on a repo with no `factory.owner`: the machine whose claim comment
-   * holds the issue when it is not this one (this machine's runs of it are then finished), else
-   * null. Null at once on a repo `factory.owner` gives to one machine.
+   * `yieldToClaim` for the issue: the machine whose claim comment holds the issue when it is not
+   * this one (this machine's runs of it are then finished), else null. Asked only on a repo with no
+   * `factory.owner`.
    */
   readonly yieldToClaim: (
     issue: number,
@@ -83,13 +86,12 @@ export type LaunchReap =
       readonly mayHaveSession: boolean;
     }
   /**
-   * The issue is no longer the run's (moved off `factory:triage`, or not assigned to the factory
-   * alone): the run is finished in the ledger, its recorded thread stopped, and the issue left as
-   * it is. Not a launch failure.
+   * A person moved the issue off `factory:triage`: the run is finished in the ledger, with its
+   * timeout or stop recorded, its recorded thread stopped, and the issue left as it is.
    */
-  | { readonly kind: "released" }
+  | { readonly kind: "released"; readonly mayHaveSession: boolean }
   /** Another machine's claim comment holds the issue: `yieldToClaim` finished this machine's runs of it. */
-  | { readonly kind: "yielded"; readonly machine: string };
+  | { readonly kind: "yielded"; readonly machine: string; readonly mayHaveSession: boolean };
 
 const LEFT: LaunchReap = { kind: "left" };
 
@@ -134,41 +136,50 @@ const decide = Effect.fn("RunnerLaunchTimeout.decide")(function* (
 
 /**
  * Reaps `run` if its launch timed out or a stop by hand asks for it. An issue that was closed is
- * left to `start`, which abandons the run, and a run whose ledger already decided it is stuck is
- * left to `start` to finish. An issue that is no longer the run's is not moved (`released`), and
- * one another machine's claim holds is left to it (`yielded`). Otherwise the decision is written
- * to the ledger first (`launch-timed-out` or `launch-stopped`), so a call cut short goes on from
- * it and a later run of the issue counts a timeout. Then the session, if any, is stopped and the
- * issue moved: to `factory:stuck` once the issue's earlier launch timeouts reach
- * `launch_timeout_retries`, else to `factory:ready`. `state_changed` and the `finished` line come
- * last. A failed call leaves the run unfinished and the next pass tries again.
+ * left to `start`, which abandons the run, and a stuck decision the ledger holds that is not the
+ * reaper's is left to `start` to finish. A fresh decision acts on an issue still in
+ * `factory:triage`, whoever is assigned, unless another machine's claim holds it (`yielded`); an
+ * issue a person moved off it is left as it is (`released`). The decision is written to the ledger
+ * first (`launch-timed-out` or `launch-stopped`), so a later run of the issue counts a timeout and
+ * a call cut short goes on from it: then the reaper's own target state (`factory:ready`, or
+ * `factory:stuck` at the limit) still counts as the run's, so a label that landed before the cut
+ * is not taken for a person's move. Then the session, if any, is stopped and the issue moved: to
+ * `factory:stuck` once the issue's earlier launch timeouts reach `launch_timeout_retries`, else to
+ * `factory:ready` and unassigned. `state_changed` and the `finished` line come last. A failed call
+ * leaves the run unfinished and the next pass tries again.
  */
 export const reapLaunch = Effect.fn("RunnerLaunchTimeout.reapLaunch")(function* (
   ctx: LaunchTimeoutContext,
   run: RunId,
 ) {
   const seen = readProgress((yield* ledger(() => readRun(ctx.dataDir, run))).entries);
-  if (!isStarting(seen) || seen.stuck !== null) return LEFT;
+  // A stuck decision the reaper did not record is `start`'s to finish.
+  if (!isStarting(seen) || (seen.stuck !== null && seen.launchFailed === null)) return LEFT;
   const decided = yield* decide(ctx, seen);
   if (decided === null) return LEFT;
   const issue = Number(run.issue);
   const detail = yield* ctx.tracker.issue(issue);
   if (detail.closed) return LEFT;
-  const ours = detail.state === "triage" && isOurs(detail.assignees, ctx.trackerUser);
-  if (ours) {
+  const session = mayHaveSession(seen);
+  const earlier = decided === "stuck-by-hand" ? 0 : yield* earlierTimeouts(ctx, run);
+  const atLimit = decided !== "stuck-by-hand" && earlier >= ctx.launchTimeout.retries;
+  // The state the reaper's recorded decision moves the issue to, with nobody else assigned.
+  const ownMove =
+    seen.launchFailed !== null &&
+    detail.state === (atLimit ? "stuck" : "ready") &&
+    detail.assignees.every((login) => asciiLower(login) === asciiLower(ctx.trackerUser));
+  const ours = detail.state === "triage" || ownMove;
+  if (detail.state === "triage" && seen.launchFailed === null && ctx.project.owner === null) {
     const yielded = yield* ctx.yieldToClaim(issue);
-    if (yielded !== null) return { kind: "yielded", machine: yielded.machine } satisfies LaunchReap;
+    if (yielded !== null) {
+      return { kind: "yielded", machine: yielded.machine, mayHaveSession: session } satisfies LaunchReap;
+    }
   }
   const out = yield* ledger(() => Ledger.open(ctx.dataDir, run, { clock: ctx.clock }));
   try {
     const at = progressFrom("pass", seen, "triage");
-    if (!ours) {
-      // A person moved the issue, or another claim holds it: the run is over, the issue is theirs.
-      yield* stopSession(ctx, out, at);
-      yield* ledger(() => out.finish("stuck", null, null, makeCause("pass", "issue-moved")));
-      return { kind: "released" } satisfies LaunchReap;
-    }
     if (decided === "stuck-by-hand") {
+      if (!ours) return yield* release(ctx, out, at, false);
       yield* goStuck(ctx, issue, out, at, "stop-requested", { reason: STOPPED_BY_HAND });
       return {
         kind: "stuck",
@@ -183,22 +194,22 @@ export const reapLaunch = Effect.fn("RunnerLaunchTimeout.reapLaunch")(function* 
     if (seen.launchFailed === null) {
       yield* ledger(() => out.append({ event: "step_changed", data: { step } }, cause));
     }
-    const earlier = yield* earlierTimeouts(ctx, run);
+    if (!ours) return yield* release(ctx, out, at, session);
     const failures = earlier + (decided === "timed-out" ? 1 : 0);
-    const mayHaveSession = seen.launchSent && seen.threadId === null;
-    if (earlier >= ctx.launchTimeout.retries) {
+    if (atLimit) {
       yield* goStuck(ctx, issue, out, at, reason, { reason: LAUNCH_TIMEOUT_REASON });
       return {
         kind: "stuck",
         ended: decided,
         failures,
         limit: true,
-        mayHaveSession,
+        mayHaveSession: session,
       } satisfies LaunchReap;
     }
     // A thread recorded and gone: archiving it changes nothing, and its worktree is removed.
     yield* stopSession(ctx, out, at);
-    // The label swap and release a failed start uses, to `factory:ready` this time.
+    // The label swap and release a failed start uses, to `factory:ready` this time. Both repeat
+    // safely, so a call cut short between them finishes on the next pass.
     yield* ctx.tracker.setState(issue, "ready");
     yield* ctx.tracker.unassign(issue, ctx.trackerUser);
     const from = at.state;
@@ -208,8 +219,20 @@ export const reapLaunch = Effect.fn("RunnerLaunchTimeout.reapLaunch")(function* 
       );
     }
     yield* ledger(() => out.finish("stuck", null, null, cause));
-    return { kind: "ready", ended: decided, failures, mayHaveSession } satisfies LaunchReap;
+    return { kind: "ready", ended: decided, failures, mayHaveSession: session } satisfies LaunchReap;
   } finally {
     out.close();
   }
+});
+
+/** A person moved the issue: its recorded thread is stopped and the run finished, the issue left as it is. */
+const release = Effect.fn("RunnerLaunchTimeout.release")(function* (
+  ctx: LaunchTimeoutContext,
+  out: Ledger,
+  at: Progress,
+  session: boolean,
+) {
+  yield* stopSession(ctx, out, at);
+  yield* ledger(() => out.finish("stuck", null, null, makeCause("pass", "issue-moved")));
+  return { kind: "released", mayHaveSession: session } satisfies LaunchReap;
 });

@@ -439,6 +439,9 @@ const startFresh = Effect.fn("RunnerStart.startFresh")(function* (
     issue,
     yield* ctx.tracker.approval(issue, ctx.project.instructors),
   );
+  if (approval.kind === "not-carried") {
+    return { kind: "skipped", reason: notCarried(issue) } satisfies StartOutcome;
+  }
   if (approval.kind === "refused") return yield* refuseStart(ctx, issue, approval.refusal);
   const { labeledAt, labeledBy } = approval;
   // Also before the claim: with T3 out of reach nothing is claimed, so no issue is left in
@@ -472,19 +475,29 @@ const startFresh = Effect.fn("RunnerStart.startFresh")(function* (
   }
 });
 
+/** How far apart the runner's clock and GitHub's may be when a label is matched to the reap that applied it. */
+const REAP_LABEL_SKEW_MS = 60_000;
+
+/** Why a ready issue whose label is the factory's own, with no reap here to carry, is not claimed. */
+const notCarried = (issue: number) =>
+  `issue ${mention(issue)} has factory:ready from the factory's own login and no launch timeout on this machine to carry an approval from, so it is left for the machine that reaped it`;
+
 /**
  * The approval of an issue the launch reaper put back to `factory:ready` (`launchTimeout.ts`): the
- * label in force is then the factory's own, applied by its login after the issue's newest run
- * recorded `launch-timed-out` or `launch-stopped`, and it says nothing about an instructor. That
- * run's recorded approval is carried over, as a relaunch carries it, once the text is checked
- * unchanged since that approval; so neither a refusal of the factory's label nor an instructor
- * login's own label moves the approval later. Any other judgement stands.
+ * label in force is then the factory's own, applied by its login between the issue's newest run's
+ * `launch-timed-out` or `launch-stopped` step and its `finished` line (give or take
+ * `REAP_LABEL_SKEW_MS`), and it says nothing about an instructor. That run's recorded approval is
+ * carried over, as a relaunch carries it, once the text is checked unchanged since that approval,
+ * so neither a refusal of the factory's label nor an instructor login's own label moves the
+ * approval later. A later label by that login is judged afresh. A refused label by that login with
+ * no reap here to carry is `not-carried`: another machine on the same login reaped the issue, and
+ * a refusal would move it to `factory:proposed`. Any other judgement stands.
  */
 const reapedApproval = Effect.fn("RunnerStart.reapedApproval")(function* (
   ctx: StartContext,
   issue: number,
   judged: Approval,
-): Effect.fn.Return<Approval, GitHubError | LedgerError> {
+): Effect.fn.Return<Approval | { readonly kind: "not-carried" }, GitHubError | LedgerError> {
   const label =
     judged.kind === "approved"
       ? { by: judged.labeledBy, at: judged.labeledAt }
@@ -494,18 +507,19 @@ const reapedApproval = Effect.fn("RunnerStart.reapedApproval")(function* (
   if (label === null || label.by === null || asciiLower(label.by) !== asciiLower(ctx.trackerUser)) {
     return judged;
   }
+  const kept = judged.kind === "refused" ? ({ kind: "not-carried" } as const) : judged;
   const next = nextAttempt(ctx.dataDir, ctx.repo, String(issue));
-  if (next === 1) return judged;
+  if (next === 1) return kept;
   const newest = newRunId(ctx.repo, String(issue), next - 1);
   const reaped = readProgress((yield* ledger(() => readRun(ctx.dataDir, newest))).entries);
-  // The label in force came after the reap's decision, so it is the reap's.
   if (
-    !reaped.finished ||
+    reaped.finishedMs === null ||
     reaped.launchFailedMs === null ||
     reaped.approvedAt === null ||
-    label.at < utcSecond(reaped.launchFailedMs)
+    label.at < utcSecond(reaped.launchFailedMs - REAP_LABEL_SKEW_MS) ||
+    label.at > utcSecond(reaped.finishedMs + REAP_LABEL_SKEW_MS)
   ) {
-    return judged;
+    return kept;
   }
   const since = reaped.approvedAt;
   const check = yield* ctx.tracker.textCheck(issue, since, ctx.project.instructors);

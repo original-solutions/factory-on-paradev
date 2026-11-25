@@ -16,7 +16,7 @@ import type { BoundGitHub, GitHubError, PullRequest } from "../tracker/github.ts
 import { ThreadNotFoundError } from "../sessions.ts";
 import type { FactorySessions, MessageRejectedError, SessionsError } from "../sessions.ts";
 import { questionsComment, statusBody, stuckComment, type WorkLeft } from "./messages.ts";
-import { GATE_RESULTS_POSTED, type Seen } from "./progress.ts";
+import { GATE_RESULTS_POSTED, mayHaveSession, type Seen } from "./progress.ts";
 
 /** What the stop, finish and gate-action paths can fail with. */
 export type RunError =
@@ -488,7 +488,7 @@ export const abandon = Effect.fn("RunnerRun.abandon")(function* (
   const cause = makeCause(step, "issue-closed", actor === null ? {} : { actor });
   const outcome = seen.state === "needs-info" ? "needs-info" : "stuck";
   yield* ledger(() => out.finish(outcome, null, null, cause));
-  return seen.launchSent && seen.threadId === null;
+  return mayHaveSession(seen);
 });
 
 /**
