@@ -67,7 +67,6 @@ import {
 import type { ProxyAnswer } from "./paradev/proxy.ts";
 import { isNoTargetHasRoom, isPinnedNoTargetHasRoom, NO_TARGET_HAS_ROOM, type Model, type SessionsError } from "./sessions.ts";
 import type { LaunchReap } from "./runner/launchTimeout.ts";
-import type { RunError } from "./runner/run.ts";
 import type { StopRequestOutcome } from "./runner/stop.ts";
 import { sanitize } from "./text.ts";
 import {
@@ -289,7 +288,7 @@ export interface PassWorld {
     run: RunId,
     base: string | null,
     timeout: { readonly seconds: number; readonly retries: number },
-  ) => Effect.Effect<LaunchReap, RunError>;
+  ) => Effect.Effect<LaunchReap, StartError>;
   /**
    * The time limit: `runner/building.ts` `timeLimit`. This and every other step of a run take
    * `base`, the base its launch recorded (`RunInfo.base`), so the step is built for the run's base
@@ -534,10 +533,6 @@ export const stuckItem = (repo: string, issue: number, run: string): NewItem => 
 const abandonedText = (label: string): string =>
   `${label} Abandoned: the issue was closed, so the factory stopped the session and closed the run`;
 
-/**
- * The item `abandoned` raises for a run whose issue a person closed, which the background gate
- * raises too when it is the step that finds the issue closed.
- */
 /** The id of the item a run raises when its launch failed with no thread id and the issue had used its retries. */
 export const LAUNCH_TIMEOUT_ITEM = "launch-timeout";
 
@@ -555,6 +550,10 @@ export const launchTimeoutItem = (repo: string, issue: number, run: string): New
   message: `${plain(repo)}${mention(issue)} run ${run} is stuck: its launch never recorded a thread id, and the issue has used its launch_timeout_retries. Look for launch command id softfac:${run}:launch in Paradev, archive what it started, then set factory:ready again`,
 });
 
+/**
+ * The item `abandoned` raises for a run whose issue a person closed, which the background gate
+ * raises too when it is the step that finds the issue closed.
+ */
 export const abandonedItem = (repo: string, issue: number, run: string): NewItem => ({
   id: `attention:${run}:abandoned`,
   kind: "attention",
@@ -1720,6 +1719,10 @@ const runs = Effect.fn("Pass.runs")(function* (world: PassWorld, pass: Pass) {
   return listed.success;
 });
 
+/** The attention line of a reaped launch that was sent with no thread id recorded: a session may run. */
+const sessionMayExistText = (label: string, run: string): string =>
+  `${label} run ${run} was ended with no thread id recorded, and its launch was sent, so a session may exist: look for launch command id softfac:${run}:launch in Paradev and archive what it started by hand`;
+
 /**
  * The launch reaper, at the start of every pass, so the first pass after a restart reaps a launch
  * a crash left mid-way. Each confirmed run still starting (`triage`, or no state) of a loaded repo
@@ -1756,7 +1759,13 @@ const reapLaunches = Effect.fn("Pass.reapLaunches")(function* (
       pass.failed(notes, "launch timeout", "pass", reaped.failure);
     } else {
       const outcome = reaped.success;
-      if (outcome.kind === "ready") {
+      if (outcome.kind === "released") {
+        notes.parts.push(
+          `the issue is no longer factory:triage assigned to ${repo.trackerUser} alone: run ${run} is finished and the issue is left as it is`,
+        );
+      } else if (outcome.kind === "yielded") {
+        notes.parts.push(claimedByLine(outcome.machine));
+      } else if (outcome.kind === "ready") {
         const why =
           outcome.ended === "timed-out"
             ? `the launch recorded no thread id within ${timeout.seconds} seconds`
@@ -1769,6 +1778,9 @@ const reapLaunches = Effect.fn("Pass.reapLaunches")(function* (
         yield* pass.record({ event: "attention", data: { run, reason: LAUNCH_TIMEOUT_ITEM } });
       } else if (outcome.kind === "stuck") {
         pass.stuck(notes, run);
+      }
+      if ((outcome.kind === "ready" || outcome.kind === "stuck") && outcome.mayHaveSession) {
+        yield* pass.attention(notes, sessionMayExistText(notes.label, run), run, "session-may-exist");
       }
       if (outcome.kind !== "left") yield* known.refresh(world, pass, name, issue);
     }
@@ -2505,7 +2517,11 @@ const waitsOnItself = (pass: Pass, notes: Notes, run: string): Effect.Effect<voi
 
 const READY_AGAIN = "its issue is ready again, so it is left to the claim step";
 
-/** A confirmed run still in `triage` (or before any state): what `finishOlderRuns` would end. */
+/**
+ * A confirmed run still in `triage` (or before any state): what `finishOlderRuns` would end, and
+ * what the launch reaper looks at. `isStarting` in `runner/progress.ts` is the same rule over a
+ * run's ledger.
+ */
 const inTriage = (run: RunInfo): boolean =>
   !run.unreadable && run.confirmed && (run.state === null || run.state === "triage");
 

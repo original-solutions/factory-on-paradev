@@ -13,7 +13,12 @@ import * as Schema from "effect/Schema";
 
 import type { ProjectConfig } from "../config.ts";
 import { fallbackOf } from "../cooldown.ts";
-import { refusalReason, unapprovedComment, type Refusal } from "../domain/approval.ts";
+import {
+  refusalReason,
+  unapprovedComment,
+  type Approval,
+  type Refusal,
+} from "../domain/approval.ts";
 import { issueBase } from "../domain/base.ts";
 import { InvalidTransition, stateLabel, transition } from "../domain/lifecycle.ts";
 import { gateLockFile } from "../gate.ts";
@@ -429,7 +434,11 @@ const startFresh = Effect.fn("RunnerStart.startFresh")(function* (
 ): Effect.fn.Return<StartOutcome, StartError> {
   // Before the claim: nothing is written for an issue that is not approved except the
   // explanation.
-  const approval = yield* ctx.tracker.approval(issue, ctx.project.instructors);
+  const approval = yield* reapedApproval(
+    ctx,
+    issue,
+    yield* ctx.tracker.approval(issue, ctx.project.instructors),
+  );
   if (approval.kind === "refused") return yield* refuseStart(ctx, issue, approval.refusal);
   const { labeledAt, labeledBy } = approval;
   // Also before the claim: with T3 out of reach nothing is claimed, so no issue is left in
@@ -461,6 +470,52 @@ const startFresh = Effect.fn("RunnerStart.startFresh")(function* (
   } finally {
     out.close();
   }
+});
+
+/**
+ * The approval of an issue the launch reaper put back to `factory:ready` (`launchTimeout.ts`): the
+ * label in force is then the factory's own, applied by its login after the issue's newest run
+ * recorded `launch-timed-out` or `launch-stopped`, and it says nothing about an instructor. That
+ * run's recorded approval is carried over, as a relaunch carries it, once the text is checked
+ * unchanged since that approval; so neither a refusal of the factory's label nor an instructor
+ * login's own label moves the approval later. Any other judgement stands.
+ */
+const reapedApproval = Effect.fn("RunnerStart.reapedApproval")(function* (
+  ctx: StartContext,
+  issue: number,
+  judged: Approval,
+): Effect.fn.Return<Approval, GitHubError | LedgerError> {
+  const label =
+    judged.kind === "approved"
+      ? { by: judged.labeledBy, at: judged.labeledAt }
+      : judged.refusal.kind === "labeled-by-non-instructor"
+        ? { by: judged.refusal.by, at: judged.refusal.labeledAt }
+        : null;
+  if (label === null || label.by === null || asciiLower(label.by) !== asciiLower(ctx.trackerUser)) {
+    return judged;
+  }
+  const next = nextAttempt(ctx.dataDir, ctx.repo, String(issue));
+  if (next === 1) return judged;
+  const newest = newRunId(ctx.repo, String(issue), next - 1);
+  const reaped = readProgress((yield* ledger(() => readRun(ctx.dataDir, newest))).entries);
+  // The label in force came after the reap's decision, so it is the reap's.
+  if (
+    !reaped.finished ||
+    reaped.launchFailedMs === null ||
+    reaped.approvedAt === null ||
+    label.at < utcSecond(reaped.launchFailedMs)
+  ) {
+    return judged;
+  }
+  const since = reaped.approvedAt;
+  const check = yield* ctx.tracker.textCheck(issue, since, ctx.project.instructors);
+  if (check === "changed") {
+    return { kind: "refused", refusal: { kind: "edited-after-label", labeledAt: since } };
+  }
+  if (check === "unjudged") {
+    return { kind: "refused", refusal: { kind: "edit-history-incomplete", labeledAt: since } };
+  }
+  return { kind: "approved", labeledAt: since, labeledBy: reaped.approvedBy ?? "" };
 });
 
 /**

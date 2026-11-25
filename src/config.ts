@@ -240,7 +240,8 @@ export interface MachineConfig {
   readonly launchTimeoutSeconds: number;
   /**
    * `launch_timeout_retries`: how many times an issue goes back to `factory:ready` after a launch
-   * that recorded no thread id; the next such failure sends it `factory:stuck`.
+   * timeout. Once its earlier timeouts reach this, the next timeout, or a stop by hand of a launch
+   * with no thread id, sends it `factory:stuck`. A stop by hand uses no retry.
    */
   readonly launchTimeoutRetries: number;
   /**

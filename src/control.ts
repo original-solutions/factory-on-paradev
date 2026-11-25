@@ -9,7 +9,7 @@ import { isLedgerError } from "./ledger/errors.ts";
 import { readRun, type Entry } from "./ledger/read.ts";
 import { parseRunId, runIdToString, type RunId } from "./ledger/runId.ts";
 import { formatTs } from "./ledger/time.ts";
-import type { Seen } from "./runner/progress.ts";
+import { isStarting, type Seen } from "./runner/progress.ts";
 import { leaveStopRequest, notBuildingMessage } from "./runner/stop.ts";
 
 /** The id text parsed, or the message of why it is not a run id. Nothing is read from disk. */
@@ -84,8 +84,8 @@ export type StopRun =
 
 /** What the next pass does with a stopped run, as the stop's message says it. */
 const stopTail = (seen: Seen): string =>
-  seen.state !== "building" && seen.threadId === null
-    ? "on the next pass the run ends and the issue goes back to factory:ready, or to factory:stuck when its launch retries are used"
+  isStarting(seen) && seen.threadId === null
+    ? "the run ends on the next pass: with no thread id by then, its issue goes back to factory:ready, or to factory:stuck when its launch retries are used"
     : "the issue goes to factory:stuck on the next pass";
 
 /**

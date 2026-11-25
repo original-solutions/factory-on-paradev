@@ -797,7 +797,15 @@ export const liveWorld = (
     takeStopRequest: (run) => takeStopRequest(dataDir, run, clock),
     reapLaunch: (repo, run, base, launchTimeout) =>
       reapLaunch(
-        { ...buildingContext(repo, runProject(repo.project, base)), launchTimeout },
+        {
+          ...buildingContext(repo, runProject(repo.project, base)),
+          launchTimeout,
+          // A repo `factory.owner` gives to one machine has no claim comments to yield to.
+          yieldToClaim: (issue) =>
+            repo.project.owner === null
+              ? yieldToClaim(startContext(repo), issue)
+              : Effect.succeed(null),
+        },
         run,
       ),
     timeLimit: (repo, run, base) =>

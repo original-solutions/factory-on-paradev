@@ -23,7 +23,7 @@ import { makeCause } from "../ledger/events.ts";
 import { Ledger } from "../ledger/ledger.ts";
 import { readRun } from "../ledger/read.ts";
 import { runIdToString, type RunId } from "../ledger/runId.ts";
-import { readProgress, type Seen } from "./progress.ts";
+import { isStarting, readProgress, type Seen } from "./progress.ts";
 
 /** The directory of the data dir that holds the requests, one file per run. */
 export const STOP_REQUESTS_DIR = "stop-requests";
@@ -33,12 +33,13 @@ export const stopRequestPath = (dataDir: string, run: RunId): string =>
   NodePath.join(dataDir, STOP_REQUESTS_DIR, runIdToString(run));
 
 /**
- * Whether a stop by hand takes the run `seen` reads: one that is `building`, or one still starting,
- * in `triage` or with a `launch-sending` step and no state yet. A run in any other state, or with
- * no state and no launch, is refused as not building.
+ * Whether a stop by hand takes the run `seen` reads: one that is `building`, or one still starting
+ * (`isStarting`) that is in `triage` or has a `launch-sending` step, which the launch reaper ends on
+ * the next pass. A run in any other state, one with no state and no launch, and one with no
+ * approval and no thread (no pass works it) are refused as not building.
  */
 export const stoppable = (seen: Seen): boolean =>
-  seen.state === "building" || seen.state === "triage" || (seen.state === null && seen.launchSent);
+  seen.state === "building" || (isStarting(seen) && (seen.state === "triage" || seen.launchSent));
 
 /**
  * What `takeStopRequest` found. `recorded`: the line is now in the ledger. `already-requested`

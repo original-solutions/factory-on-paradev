@@ -152,6 +152,8 @@ export interface Seen {
    * the issue's `launch_timeout_retries`.
    */
   readonly launchFailed: "timed-out" | "stopped" | null;
+  /** When that `launch-timed-out` or `launch-stopped` step was written; null for none. */
+  readonly launchFailedMs: number | null;
   /**
    * The branch in a `launch-sending resumed-from <branch>` step: the decision to resume, made
    * before the first launch call. Null for a plain `launch-sending` or none. A launch sent again
@@ -337,6 +339,17 @@ export interface Seen {
 }
 
 /**
+ * Whether the run is still starting: confirmed (it records what approved it, or its session),
+ * unfinished, and in `triage` or before any state. The one rule for what the launch reaper looks
+ * at and what a stop by hand takes besides a building run; `inTriage` in `pass.ts` is the same
+ * rule over `RunInfo`.
+ */
+export const isStarting = (seen: Seen): boolean =>
+  !seen.finished &&
+  (seen.approvedAt !== null || seen.threadId !== null) &&
+  (seen.state === null || seen.state === "triage");
+
+/**
  * The pull request's branch when the run's session was launched to push there: to fix a failed
  * re-gate of this run, for feedback, or to continue an earlier attempt's open pull request. Null
  * for a first launch, and for a session resumed from an earlier attempt's branch: older versions
@@ -478,6 +491,7 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
   let launchSent = false;
   let launchSentMs: number | null = null;
   let launchFailed: Seen["launchFailed"] = null;
+  let launchFailedMs: number | null = null;
   let launchResumedFrom: string | null = null;
   let launchResumedPr: string | null = null;
   let launchPullRequest: { branch: string; url: string } | null = null;
@@ -649,8 +663,10 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
         if (step === LAUNCH_SENDING || step.startsWith(LAUNCH_SENDING_RESUMED)) {
           launchSentMs ??= entry.ms;
         }
-        if (step === LAUNCH_TIMED_OUT) launchFailed = "timed-out";
-        else if (step === LAUNCH_STOPPED) launchFailed = "stopped";
+        if (step === LAUNCH_TIMED_OUT || step === LAUNCH_STOPPED) {
+          launchFailed = step === LAUNCH_TIMED_OUT ? "timed-out" : "stopped";
+          launchFailedMs = entry.ms;
+        }
         if (step === LAUNCH_SENDING) {
           launchSent = true;
           launchResumedFrom = null;
@@ -1029,6 +1045,7 @@ export const readProgress = (entries: ReadonlyArray<Entry>): Seen => {
     launchSent,
     launchSentMs,
     launchFailed,
+    launchFailedMs,
     launchResumedFrom,
     launchResumedPr,
     launchBase,
