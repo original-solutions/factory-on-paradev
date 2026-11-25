@@ -172,7 +172,8 @@ export const reapLaunch = Effect.fn("RunnerLaunchTimeout.reapLaunch")(function* 
     detail.state === (atLimit ? "stuck" : "ready") &&
     detail.assignees.every((login) => asciiLower(login) === asciiLower(ctx.trackerUser));
   const ours = detail.state === "triage" || ownMove;
-  if (detail.state === "triage" && seen.launchFailed === null && ctx.project.owner === null) {
+  // Asked again for a recorded decision too: after a cut, another machine may have claimed it.
+  if (detail.state === "triage" && ctx.project.owner === null) {
     const yielded = yield* ctx.yieldToClaim(issue);
     if (yielded !== null) {
       return { kind: "yielded", machine: yielded.machine, mayHaveSession: session } satisfies LaunchReap;
@@ -213,7 +214,8 @@ export const reapLaunch = Effect.fn("RunnerLaunchTimeout.reapLaunch")(function* 
     yield* stopSession(ctx, out, at);
     // The label swap and release a failed start uses, to `factory:ready` this time. Both repeat
     // safely, so a call cut short between them finishes on the next pass. `state_changed` is
-    // written once both are done; a run cut after it is finished by `finishCut`.
+    // written once both are done; a run cut after it is finished by `finishCut`. `judgeApproval`
+    // knows this swap (triage out, ready in, one edit) as the reap's and carries the approval.
     yield* ctx.tracker.setState(issue, "ready");
     yield* ctx.tracker.unassign(issue, ctx.trackerUser);
     const from = at.state;

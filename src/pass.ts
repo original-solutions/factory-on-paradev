@@ -1733,7 +1733,9 @@ const sessionMayExistText = (label: string, run: string, why: string): string =>
 /**
  * The launch reaper, at the start of every pass, so the first pass after a restart reaps a launch
  * a crash left mid-way. Each confirmed run still starting (`triage`, or no state) of a loaded repo
- * has its stop request taken, then `reapLaunch` decides: a launch with no thread id (or with one
+ * has its stop request taken, then `reapLaunch` decides; a confirmed, unfinished run in `ready` or
+ * `stuck` goes to it too, so it can finish a reap that was cut short (no stop request is taken for
+ * it here): a launch with no thread id (or with one
  * that is gone) past `launch_timeout_seconds`, or a stop by hand, finishes the run and frees its
  * slot before any run is worked or issue claimed. A reap that fails leaves the run unresumed for
  * the pass.

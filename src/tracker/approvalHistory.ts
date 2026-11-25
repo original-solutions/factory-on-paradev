@@ -168,9 +168,11 @@ export const textChangesSince = (
 /**
  * Whether the factory may build the issue: an instructor (only ever a `User`) applied the `ready`
  * label in force now, and every body edit and title rename from that second on was an instructor's.
- * A `ready` label in force that `factory`, the factory's own login, applied (the launch reaper's,
- * when that login is no instructor) stands for the instructor's label it carries
- * (`carriedLabel`), which the text is judged from; with none it is refused as anyone else's.
+ * A `ready` label in force that is the launch reaper's (`isReap`: `factory`, the factory's own
+ * login, swapped `factory:triage` for it) stands for the instructor's label it carries
+ * (`carriedLabel`), which the text is judged from, whether or not that login is an instructor;
+ * with none it is judged as its own label. Any other label by the factory's login is judged as
+ * before.
  * Only the newest timeline page is read: it holds the label in force and all after it, and a full
  * page without it is `label-history-incomplete`. Label names match exactly; times compare as text.
  */
@@ -193,7 +195,7 @@ export const judgeApproval = (
   }
   const own = nodes[at] as LabelEvent;
   const carried =
-    factory !== undefined && isLogin(own.actor, factory) && !isHumanInstructor(own.actor, instructors)
+    factory !== undefined && isReap(nodes, at, ready, factory)
       ? carriedLabel(nodes, at, ready, instructors, factory)
       : own;
   if (carried === "incomplete" && cutOff) {
@@ -221,18 +223,43 @@ export const judgeApproval = (
 
 type LabelEvent = Extract<TimelineNode, { __typename: "LabeledEvent" }>;
 
-/** Whether the actor is the account `login`, in any case. */
-const isLogin = (actor: Actor | null | undefined, login: string): boolean =>
-  actor !== null && actor !== undefined && asciiLower(actor.login) === asciiLower(login);
+/** The `factory:` prefix of the state labels, from the `ready` label's name. */
+const familyOf = (ready: string): string => ready.slice(0, ready.indexOf(":") + 1);
 
 /**
- * The instructor's label a `factory:ready` label the factory's own login applied (`nodes[at]`)
- * carries: the launch reaper puts an issue it claimed back to `factory:ready`, which says nothing
- * about an instructor by itself. Walking back, every change of a `factory:` label must be the
- * factory's, until an instructor's (a person's) `factory:ready` label: that is the approval, and
- * the text is judged from it. An earlier `factory:ready` of the factory's own is an earlier reap
- * and the walk goes on. Null when someone else changed a factory label first, `incomplete` when
- * the page ends before an instructor's label is found.
+ * Whether `nodes[at]`, a `factory:ready` label, is the launch reaper's: the factory's login added it
+ * in the same edit (the same second) that it removed `factory:triage`, as `setState` swaps labels.
+ */
+const isReap = (
+  nodes: ReadonlyArray<TimelineNode>,
+  at: number,
+  ready: string,
+  factory: string,
+): boolean => {
+  const own = nodes[at]!;
+  const triage = `${familyOf(ready)}triage`;
+  return (
+    isInstructor(own.__typename === "RenamedTitleEvent" ? null : own.actor, [factory]) &&
+    nodes.some(
+      (event) =>
+        event.__typename === "UnlabeledEvent" &&
+        event.label.name === triage &&
+        event.createdAt === own.createdAt &&
+        isInstructor(event.actor, [factory]),
+    )
+  );
+};
+
+/**
+ * The instructor's label a reap's `factory:ready` (`isReap`, at `nodes[at]`) carries: the launch
+ * reaper puts an issue it claimed back to `factory:ready`, which says nothing about an instructor
+ * by itself, whatever the factory's login is. Walking back, the factory may only have claimed,
+ * built and reaped: its changes of `factory:ready`, `factory:triage` and `factory:building`. Any
+ * other `factory:` state of its own (`stuck`, `needs-info`, `pr-open`, `proposed`) needs a person's
+ * `factory:ready` to leave, so it ends the walk with null, as does anyone else's change of a
+ * `factory:` label. An instructor's (a person's) `factory:ready` is the approval, and the text is
+ * judged from it; the same instructor removing another `factory:` label (`proposed`, as they
+ * approve) is part of that act and is passed over. `incomplete` when the page ends first.
  */
 const carriedLabel = (
   nodes: ReadonlyArray<TimelineNode>,
@@ -241,18 +268,24 @@ const carriedLabel = (
   instructors: ReadonlyArray<string>,
   factory: string,
 ): LabelEvent | "incomplete" | null => {
-  const prefix = ready.slice(0, ready.indexOf(":") + 1);
+  const family = familyOf(ready);
+  const claimPath = new Set([ready, `${family}triage`, `${family}building`]);
   for (let index = at - 1; index >= 0; index -= 1) {
     const event = nodes[index]!;
-    if (event.__typename === "RenamedTitleEvent" || !event.label.name.startsWith(prefix)) continue;
-    if (
-      event.__typename === "LabeledEvent" &&
-      event.label.name === ready &&
-      isHumanInstructor(event.actor, instructors)
-    ) {
-      return event;
+    if (event.__typename === "RenamedTitleEvent" || !event.label.name.startsWith(family)) continue;
+    const name = event.label.name;
+    if (isInstructor(event.actor, [factory]) && !isHumanInstructor(event.actor, instructors)) {
+      if (!claimPath.has(name)) return null;
+      continue;
     }
-    if (!isLogin(event.actor, factory)) return null;
+    if (isHumanInstructor(event.actor, instructors)) {
+      if (event.__typename === "LabeledEvent" && name === ready) return event;
+      if (event.__typename === "UnlabeledEvent" && name !== ready) continue;
+      // The factory's login is an instructor too: its claim-path changes are the factory's.
+      if (isInstructor(event.actor, [factory]) && claimPath.has(name)) continue;
+      return null;
+    }
+    return null;
   }
   return "incomplete";
 };

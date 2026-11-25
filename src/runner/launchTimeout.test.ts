@@ -861,8 +861,10 @@ describe("reapLaunch: a reap cut short", () => {
         limit: true,
         mayHaveSession: true,
       });
+      // The issue is still in triage, so the claim winner is asked again first.
       assert.deepStrictEqual(rig.calls, [
         "issue 10",
+        "yield 10",
         "setState 10 stuck",
         "unassign 10 rawphp",
         "status 10 **Factory status:** stuck",
