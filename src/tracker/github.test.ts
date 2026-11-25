@@ -7862,7 +7862,8 @@ describe("Bad credentials in a claim, and after a 401 outlasted its retries", ()
 
   it.effect("the 401 patterns match in any case, as the run page's sign-out check does", () =>
     Effect.gen(function* () {
-      for (const stderr of ["gh: bad credentials (http 401)", "HTTP 401: BAD CREDENTIALS"]) {
+      // Each pattern on its own: one with no 401 in it, and one with no "Bad credentials".
+      for (const stderr of ["gh: bad credentials", "gh: requires authentication (http 401)"]) {
         const t = setup(fail(1, stderr), reply(LIST_ONE));
         const fiber = yield* Effect.forkChild(t.ok(t.github.listIssues("ready")), {
           startImmediately: true,
