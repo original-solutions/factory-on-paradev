@@ -331,14 +331,17 @@ const readTransient = (stderr: string): string | null =>
 
 /**
  * gh's stderr when GitHub refused the login with a 401: `HTTP 401: Bad credentials (…)` from a
- * GraphQL call, `gh: Bad credentials (HTTP 401)` from `gh api`, or another 401. GitHub refused it
- * before applying anything, so a write is safe to send again; a burst of them passes. A gh with no
- * login at all never asks GitHub and says `gh auth login` with no 401, so it is not here. The name
- * is what the retry log line says.
+ * GraphQL call, `gh: Bad credentials (HTTP 401)` from `gh api`, or another 401. GitHub refused that
+ * request before applying it, so a gh call of one request is safe to send again; a burst of them
+ * passes. A gh call of several requests (`gh issue edit`) may have applied the ones before, which
+ * is why the claim does not resend its edit on one. A gh with no login at all never asks GitHub
+ * and says `gh auth login` with no 401, so it is not here. The name is what the retry log line
+ * says. The run page reads a 401 as signed out by its own `SIGNED_OUT` (runGitHub.ts): keep the
+ * two in step.
  */
 const CREDENTIALS_REFUSED: ReadonlyArray<readonly [reason: string, stderr: RegExp]> = [
-  ["Bad credentials", /Bad credentials/],
-  ["HTTP 401", /HTTP 401\b/],
+  ["Bad credentials", /Bad credentials/i],
+  ["HTTP 401", /HTTP 401\b/i],
 ];
 
 /** Why `stderr` says GitHub refused the login's credentials, or null when it did not. */
@@ -1203,12 +1206,15 @@ export interface GitHubOptions {
 
 /**
  * What a tracker's calls said of the `gh` login's credentials since the reader last started the
- * counts over: `rejected` calls still refused with a 401 after every retry, and `accepted` calls
- * GitHub answered. Never the stderr or anything else a call carried.
+ * counts over: `rejected` calls still refused with a 401 after their retries, and `accepted` calls
+ * GitHub answered. `gaveUp` is set when a 401 outlasted its retries and cleared when a call is
+ * answered: while it is set a 401 is not tried again, so a login that stays refused costs one
+ * retry schedule, not one per call. Never the stderr or anything else a call carried.
  */
 export interface GhCredentialTally {
   rejected: number;
   accepted: number;
+  gaveUp: boolean;
 }
 
 type GitHubEffect<A> = Effect.Effect<A, GitHubError, FactoryProcess>;
@@ -1219,6 +1225,10 @@ export const ghLogin = (ghConfigDir: string) => makeGitHub({ repo: "", ghConfigD
 
 export const makeGitHub = (options: GitHubOptions) => {
   const { repo } = options;
+  /** The caller's tally, or this tracker's own, so `gaveUp` holds without one. */
+  const tally: GhCredentialTally = options.credentials ?? { rejected: 0, accepted: 0, gaveUp: false };
+  /** The 401s already counted: one that a nested retry gave up on comes out through its caller too. */
+  const counted = new WeakSet<GitHubFailed>();
 
   /** Runs `gh` once and returns stdout, or the typed error. */
   const ghOnce = Effect.fn("GitHub.ghOnce")(function* (
@@ -1269,27 +1279,40 @@ export const makeGitHub = (options: GitHubOptions) => {
   /**
    * Runs `attempt`, trying it again up to {@link GH_ATTEMPTS} times after a failure GitHub
    * never received ({@link NOT_RECEIVED}) or refused with a 401 ({@link CREDENTIALS_REFUSED}),
-   * or, when `read`, after an unexpected EOF too. The last failure is returned as it is, so a
-   * caller sees what it would have without the retries. `options.credentials` counts a success,
-   * and a 401 that outlasted the retries.
+   * or, when `read`, after an unexpected EOF too. A 401 is not tried again while the tally has
+   * `gaveUp`, nor when `resendRefused` says the attempt may have applied part of a write. The last
+   * failure is returned as it is, so a caller sees what it would have without the retries. The
+   * tally counts a success, and once each 401 returned after its retries or while `gaveUp`.
    */
   const retryTransient = Effect.fn("GitHub.retryTransient")(function* <A>(
     attempt: Effect.Effect<A, GitHubError, FactoryProcess>,
     read = false,
+    resendRefused: () => boolean = () => true,
   ): GitHubGen<A> {
     const transient = read ? readTransient : notReceived;
-    const tally = options.credentials;
     for (let tried = 1; ; tried += 1) {
       const result = yield* Effect.result(attempt);
       if (result._tag === "Success") {
-        if (tally !== undefined) tally.accepted += 1;
+        tally.accepted += 1;
+        tally.gaveUp = false;
         return result.success;
       }
       const error = result.failure;
       const refused = error._tag === "GitHubFailed" ? credentialsRefused(error.stderr) : null;
-      const reason = error._tag === "GitHubFailed" ? (transient(error.stderr) ?? refused) : null;
+      const retryRefused = refused !== null && !tally.gaveUp && resendRefused();
+      const reason =
+        error._tag === "GitHubFailed"
+          ? (transient(error.stderr) ?? (retryRefused ? refused : null))
+          : null;
       if (error._tag !== "GitHubFailed" || reason === null || tried >= GH_ATTEMPTS) {
-        if (refused !== null && tally !== undefined) tally.rejected += 1;
+        // Counted when it outlasted its retries, or came while an earlier one had: a 401 the
+        // caller would not have resent is its own to handle, not a refusal that persisted.
+        const persisted = retryRefused || (refused !== null && tally.gaveUp);
+        if (persisted && error._tag === "GitHubFailed" && !counted.has(error)) {
+          counted.add(error);
+          tally.rejected += 1;
+          tally.gaveUp = true;
+        }
         return yield* error;
       }
       const delayMs = GH_RETRY_DELAYS_MS[tried - 1]! + (yield* Random.nextIntBetween(0, 1000));
@@ -2532,6 +2555,9 @@ export const makeGitHub = (options: GitHubOptions) => {
     // Posted once: a retry after an edit GitHub never received does not post again.
     let mine: ClaimComment | null = null;
     let postedMs = 0;
+    // The edit is several requests: on a 401 some may have landed (the assignee, say), and a
+    // retry would read that as someone else's claim. Its 401 goes to the caller, which repairs it.
+    let editSent = false;
     const deleteComment = (id: number, why: string) =>
       gh(["api", "-X", "DELETE", `repos/${repo}/issues/comments/${id}`]).pipe(
         Effect.asVoid,
@@ -2543,6 +2569,7 @@ export const makeGitHub = (options: GitHubOptions) => {
       );
     return yield* retryTransient(
       Effect.gen(function* () {
+        editSent = false;
         const stdout = yield* ghOnce(view);
         const current = yield* decode(AssigneesView, view, "an object with `assignees`", stdout);
         if (current.assignees.length > 0) {
@@ -2592,9 +2619,12 @@ export const makeGitHub = (options: GitHubOptions) => {
           yield* deleteComment(winner.id, "of a claim that gave way");
           return { kind: "gave-way" } satisfies ClaimOutcome;
         }
+        editSent = true;
         yield* ghOnce(edit);
         return { kind: "claimed" } satisfies ClaimOutcome;
       }),
+      false,
+      () => !editSent,
     );
   });
 

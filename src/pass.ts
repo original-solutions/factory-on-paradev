@@ -412,9 +412,9 @@ export interface PassWorld {
   readonly proxyMisses: { passes: number };
   /**
    * What the trackers' GitHub calls said of the `gh` login's credentials since the last pass read
-   * it, and how many passes in a row a call was still refused with a 401 after its retries; kept
-   * from pass to pass, and across a config load. At `GH_CREDENTIALS_PASSES` the pass raises
-   * `gh-credentials`.
+   * it (a forked gate's calls included), and how many passes in a row a call was still refused
+   * with a 401 after its retries; kept from pass to pass, and across a config load. At
+   * `GH_CREDENTIALS_PASSES` the pass raises `gh-credentials`.
    */
   readonly ghCredentials: GhCredentialTally & { passes: number };
   /**
@@ -943,7 +943,7 @@ export const runPass = Effect.fn("Pass.runPass")(function* (
     }
   }
   yield* closedStuck(world, repos, pass);
-  // Last of GitHub's calls: the pass's own tally is complete.
+  // After the pass's own GitHub calls; a gate forked meanwhile may add its calls to the next pass's.
   yield* ghCredentials(world, machine, pass);
   const report = pass.report;
   pass.line(
@@ -1311,11 +1311,12 @@ export const GH_CREDENTIALS_PASSES = CLOUD_PROXY_DOWN_PASSES;
 export const GH_CREDENTIALS_ITEM_ID = "gh-credentials";
 
 /**
- * Reads the pass's tally of the `gh` login's credentials and starts it over. A pass in which a
- * call was still refused with a 401 after its retries says so in a line, and the
- * `GH_CREDENTIALS_PASSES`th in a row raises `gh-credentials`; a pass whose calls GitHub only
- * answered starts the count over and clears the item; a pass with no call leaves both. Neither the
- * line nor the item carries gh's stderr: only the login directory, never a token.
+ * Reads the tally of the `gh` login's credentials and starts it over, `gaveUp` too, so the next
+ * pass's first refused call is retried again. A pass in which a call was still refused with a 401
+ * after its retries says so in a line, and the `GH_CREDENTIALS_PASSES`th in a row raises
+ * `gh-credentials`; a pass whose calls GitHub only answered starts the count over and clears the
+ * item; a pass with no call leaves both. Neither the line nor the item carries gh's stderr: only
+ * the login directory, never a token.
  */
 const ghCredentials = Effect.fn("Pass.ghCredentials")(function* (
   world: PassWorld,
@@ -1326,6 +1327,7 @@ const ghCredentials = Effect.fn("Pass.ghCredentials")(function* (
   const { rejected, accepted } = tally;
   tally.rejected = 0;
   tally.accepted = 0;
+  tally.gaveUp = false;
   const dir = plain(machine.ghConfigDir);
   if (rejected === 0) {
     if (accepted === 0) return;

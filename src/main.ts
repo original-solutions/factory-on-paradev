@@ -486,7 +486,7 @@ export const newShared = (): LiveShared => ({
   hostMisses: new Map(),
   hostLoads: new Map(),
   proxyMisses: { passes: 0 },
-  ghCredentials: { rejected: 0, accepted: 0, passes: 0 },
+  ghCredentials: { rejected: 0, accepted: 0, gaveUp: false, passes: 0 },
 });
 
 /** What the pass's branch prune answers: P1 prunes no branch. */
