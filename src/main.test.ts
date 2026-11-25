@@ -59,7 +59,7 @@ import {
 import { landedPluginPath } from "./plugin.ts";
 import { readFixture } from "./paradev/fake-superset.ts";
 import { AgentProcess } from "./paradev/sessions.ts";
-import { writeThread } from "./paradev/state.ts";
+import { writeLaunch, writeThread } from "./paradev/state.ts";
 import * as Paths from "./paths.ts";
 import type { SelfUpdateOptions } from "./selfUpdate.ts";
 import { LOAD_COMMAND, PLUGIN_VERSION_READ, PROXY_ENV_READ, type SshSpawn } from "./paradev/ssh.ts";
@@ -142,6 +142,7 @@ vi.mock("./runner/launchTimeout.ts", async (importOriginal) => {
       readonly project: { readonly base: string };
       readonly launchTimeout: { readonly seconds: number; readonly retries: number };
       readonly yieldToClaim: (issue: number) => import("effect").Effect.Effect<unknown, unknown>;
+      readonly launchThread: (commandId: string) => import("effect").Effect.Effect<unknown, unknown>;
     },
     ...rest: Array<unknown>
   ) => {
@@ -155,6 +156,11 @@ vi.mock("./runner/launchTimeout.ts", async (importOriginal) => {
     return E.exit(ctx.yieldToClaim(10)).pipe(
       E.map((exit) => {
         bases.push(`yieldToClaim ${exit._tag}`);
+      }),
+      // The adapter's launch record is read from the data dir the world was given.
+      E.andThen(ctx.launchThread("softfac:cmd:launch")),
+      E.map((thread) => {
+        bases.push(`launchThread ${String(thread)}`);
         return { kind: "left" };
       }),
     );
@@ -4364,15 +4370,21 @@ const baseLive = (scope: Scope.Scope) => ({
 });
 
 describe("liveWorld: a step of a run is built for the base the pass hands it", () => {
-  it.effect("the launch reaper gets that base and the machine's launch timeout", () =>
+  const reaperDirs = useTempDirs();
+
+  it.effect("the launch reaper gets that base, the machine's launch timeout and the adapter's launch records", () =>
     Effect.gen(function* () {
       bases.length = 0;
       stub.on = true;
+      const dataDir = reaperDirs();
+      yield* writeLaunch(dataDir, "softfac:cmd:launch", "local:ws-1").pipe(
+        Effect.provide(NodeServices.layer),
+      );
       yield* Effect.ensuring(
         Effect.gen(function* () {
           const world = liveWorld(
             baseMachine,
-            "/factory-test/data",
+            dataDir,
             noGh,
             NodeServices.layer,
             stubSessions,
@@ -4393,8 +4405,10 @@ describe("liveWorld: a step of a run is built for the base the pass hands it", (
       assert.deepStrictEqual(bases, [
         "reapLaunch feature/x 120s 0",
         "yieldToClaim Failure",
+        "launchThread local:ws-1",
         "reapLaunch main 120s 0",
         "yieldToClaim Failure",
+        "launchThread local:ws-1",
       ]);
     }),
   );

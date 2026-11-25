@@ -66,7 +66,8 @@ import {
 } from "./runner/start.ts";
 import type { ProxyAnswer } from "./paradev/proxy.ts";
 import { isNoTargetHasRoom, isPinnedNoTargetHasRoom, NO_TARGET_HAS_ROOM, type Model, type SessionsError } from "./sessions.ts";
-import type { LaunchReap } from "./runner/launchTimeout.ts";
+import type { LaunchEnd, LaunchReap } from "./runner/launchTimeout.ts";
+import { isStartingState } from "./runner/progress.ts";
 import type { StopRequestOutcome } from "./runner/stop.ts";
 import { sanitize } from "./text.ts";
 import {
@@ -542,17 +543,31 @@ export const LAUNCH_TIMEOUT_ITEM = "launch-timeout";
 
 /**
  * The item of a run that went `stuck` because its launch recorded no thread id once more after the
- * issue had used `launch_timeout_retries`. A `stuck` item: it stays until the issue is closed or a
- * person dismisses it, as any stuck run's does.
+ * issue had used `launch_timeout_retries`, by the timeout or by a stop by hand (`ended`). A `stuck`
+ * item: it stays until the issue is closed or a person dismisses it, as any stuck run's does. It
+ * points at Paradev only when a launch was sent (`mayHaveSession`).
  */
-export const launchTimeoutItem = (repo: string, issue: number, run: string): NewItem => ({
-  id: `${LAUNCH_TIMEOUT_ITEM}:${run}`,
-  kind: "stuck",
-  repo,
-  issue,
-  run,
-  message: `${plain(repo)}${mention(issue)} run ${run} is stuck: its launch never recorded a thread id, and the issue has used its launch_timeout_retries: ${lookForLaunch(run)}, then set factory:ready again`,
-});
+export const launchTimeoutItem = (
+  repo: string,
+  issue: number,
+  run: string,
+  ended: LaunchEnd,
+  mayHaveSession: boolean,
+): NewItem => {
+  const why =
+    ended === "timed-out"
+      ? "its launch never recorded a thread id"
+      : "it was stopped by hand before its launch recorded a thread id";
+  const todo = mayHaveSession ? `${lookForLaunch(run)}, then set factory:ready again` : "set factory:ready again";
+  return {
+    id: `${LAUNCH_TIMEOUT_ITEM}:${run}`,
+    kind: "stuck",
+    repo,
+    issue,
+    run,
+    message: `${plain(repo)}${mention(issue)} run ${run} is stuck: ${why}, and the issue has used its launch_timeout_retries: ${todo}`,
+  };
+};
 
 /**
  * The item `abandoned` raises for a run whose issue a person closed, which the background gate
@@ -1787,7 +1802,7 @@ const reapLaunches = Effect.fn("Pass.reapLaunches")(function* (
         notes.parts.push(`${why}: run ${run} is finished and the issue is factory:ready again`);
       } else if (outcome.kind === "stuck" && outcome.limit) {
         notes.parts.push(stuckLine(run));
-        notes.raises.push(launchTimeoutItem(name, issue, run));
+        notes.raises.push(launchTimeoutItem(name, issue, run, outcome.ended, outcome.mayHaveSession));
         pass.report.attention += 1;
         yield* pass.record({ event: "attention", data: { run, reason: LAUNCH_TIMEOUT_ITEM } });
       } else if (outcome.kind === "stuck") {
@@ -2540,11 +2555,11 @@ const READY_AGAIN = "its issue is ready again, so it is left to the claim step";
 
 /**
  * A confirmed run still in `triage` (or before any state): what `finishOlderRuns` would end, and
- * what the launch reaper looks at. `isStarting` in `runner/progress.ts` is the same rule over a
- * run's ledger.
+ * what the launch reaper looks at. `isStarting` in `runner/progress.ts`, over a run's ledger,
+ * where `confirmed` and the starting states come from.
  */
 const inTriage = (run: RunInfo): boolean =>
-  !run.unreadable && run.confirmed && (run.state === null || run.state === "triage");
+  !run.unreadable && run.confirmed && isStartingState(run.state);
 
 /**
  * A confirmed run in `triage` that `resume` would not take, for `why`: a person moved or closed

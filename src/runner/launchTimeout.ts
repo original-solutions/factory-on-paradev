@@ -28,11 +28,15 @@ import {
   type Seen,
 } from "./progress.ts";
 import { goStuck, progressFrom, stopSession, type Progress, type RunContext } from "./run.ts";
-import { earlierRuns, type StartError } from "./start.ts";
+import { earlierRuns, launchCommandId, type StartError } from "./start.ts";
 
 /** The public reason of an issue that went `stuck` because its launches keep recording no thread id. */
 export const LAUNCH_TIMEOUT_REASON =
   "the session launch never recorded a thread id, and the issue has used its launch retries";
+
+/** The public reason of an issue whose starting run was stopped by hand once it had used its launch retries. */
+export const LAUNCH_STOPPED_REASON =
+  "the session launch was stopped by hand before it recorded a thread id, and the issue has used its launch retries";
 
 export interface LaunchTimeoutContext extends RunContext {
   /** The run's base, and `factory.owner`: a repo it gives to one machine has no claim to yield to. */
@@ -42,6 +46,11 @@ export interface LaunchTimeoutContext extends RunContext {
   readonly clock: () => number;
   /** `launch_timeout_seconds` and `launch_timeout_retries` from the machine config. */
   readonly launchTimeout: { readonly seconds: number; readonly retries: number };
+  /**
+   * The thread the Paradev adapter recorded for a launch command id, or null: a launch that made
+   * its session and was cut off before the ledger's `session_launched` still has it there.
+   */
+  readonly launchThread: (commandId: string) => Effect.Effect<string | null, StartError>;
   /**
    * `yieldToClaim` for the issue: the machine whose claim comment holds the issue when it is not
    * this one (this machine's runs of it are then finished), else null. Asked only on a repo with no
@@ -121,17 +130,22 @@ const earlierTimeouts = Effect.fn("RunnerLaunchTimeout.earlierTimeouts")(functio
 /**
  * How the run's launch ends now, or null to leave it: a decision already in the ledger stands; a
  * stop by hand ends it at once; else the launch must be older than the timeout with no thread id,
- * or with a thread that is gone. `stuck-by-hand` is a stop of a run whose thread is recorded.
+ * or with a thread that is gone. A sent launch the Paradev adapter recorded a live thread for
+ * (`launchThread`) made its session and was cut off before the ledger said so: it is left for the
+ * pass to resume, which records that thread rather than claiming the issue again beside it.
+ * `stuck-by-hand` is a stop of a run whose thread is recorded.
  */
 const decide = Effect.fn("RunnerLaunchTimeout.decide")(function* (
   ctx: LaunchTimeoutContext,
+  run: RunId,
   seen: Seen,
 ) {
   if (seen.launchFailed !== null) return seen.launchFailed;
   if (seen.stopRequested) return seen.threadId === null ? "stopped" : "stuck-by-hand";
   if (seen.launchSentMs === null) return null;
   if (ctx.clock() - seen.launchSentMs <= ctx.launchTimeout.seconds * 1000) return null;
-  if (seen.threadId !== null && (yield* threadLive(ctx, seen.threadId))) return null;
+  const threadId = seen.threadId ?? (yield* ctx.launchThread(launchCommandId(run)));
+  if (threadId !== null && (yield* threadLive(ctx, threadId))) return null;
   return "timed-out";
 });
 
@@ -158,7 +172,7 @@ export const reapLaunch = Effect.fn("RunnerLaunchTimeout.reapLaunch")(function* 
   if (cutAfterMove(seen)) return yield* finishCut(ctx, run, seen);
   // A stuck decision the reaper did not record is `start`'s to finish.
   if (!isStarting(seen) || (seen.stuck !== null && seen.launchFailed === null)) return LEFT;
-  const decided = yield* decide(ctx, seen);
+  const decided = yield* decide(ctx, run, seen);
   if (decided === null) return LEFT;
   const issue = Number(run.issue);
   const detail = yield* ctx.tracker.issue(issue);
@@ -201,7 +215,8 @@ export const reapLaunch = Effect.fn("RunnerLaunchTimeout.reapLaunch")(function* 
     if (!ours) return yield* release(ctx, out, at, session);
     const failures = earlier + (decided === "timed-out" ? 1 : 0);
     if (atLimit) {
-      yield* goStuck(ctx, issue, out, at, reason, { reason: LAUNCH_TIMEOUT_REASON });
+      const why = decided === "timed-out" ? LAUNCH_TIMEOUT_REASON : LAUNCH_STOPPED_REASON;
+      yield* goStuck(ctx, issue, out, at, reason, { reason: why });
       return {
         kind: "stuck",
         ended: decided,

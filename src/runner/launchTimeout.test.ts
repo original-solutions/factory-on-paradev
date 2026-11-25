@@ -24,11 +24,13 @@ import { T0, useTempDirs } from "../ledger/testSupport.ts";
 import { SessionsError, ThreadNotFoundError, type Thread } from "../sessions.ts";
 import { GitHubFailed, type IssueDetail } from "../tracker/github.ts";
 import {
+  LAUNCH_STOPPED_REASON,
   LAUNCH_TIMEOUT_REASON,
   reapLaunch,
   type LaunchTimeoutContext,
 } from "./launchTimeout.ts";
 import { readProgress } from "./progress.ts";
+import { launchCommandId } from "./start.ts";
 
 const tempDir = useTempDirs();
 
@@ -112,7 +114,11 @@ interface Rig {
     setStateErrsOnce: boolean;
     /** The next `setState` fails, once, leaving the issue as it was. */
     setStateFailsOnce: boolean;
+    /** The thread the Paradev adapter recorded for the run's launch command id. */
+    launched: string | null;
   };
+  /** The launch command ids `launchThread` was asked for. */
+  readonly launchAsks: Array<string>;
   ctx: (over?: { seconds?: number; retries?: number; owner?: string }) => LaunchTimeoutContext;
 }
 
@@ -127,7 +133,9 @@ const rigFor = (): Rig => {
     unassignFailsOnce: false,
     setStateErrsOnce: false,
     setStateFailsOnce: false,
+    launched: null,
   };
+  const launchAsks: Array<string> = [];
   const boom = () => new GitHubFailed({ args: ["issue", "edit"], status: 1, stderr: "boom" });
   const notExpected = (name: string) => () => Effect.die(`${name} was not expected`);
   const ctx = (
@@ -143,6 +151,10 @@ const rigFor = (): Rig => {
     launchTimeout: {
       seconds: over.seconds ?? DEFAULT_LAUNCH_TIMEOUT_SECONDS,
       retries: over.retries ?? DEFAULT_LAUNCH_TIMEOUT_RETRIES,
+    },
+    launchThread: (commandId) => {
+      launchAsks.push(commandId);
+      return Effect.succeed(world.launched);
     },
     yieldToClaim: (n) => {
       calls.push(`yield ${n}`);
@@ -212,7 +224,7 @@ const rigFor = (): Rig => {
       send: notExpected("send"),
     },
   });
-  return { dataDir, calls, clock, world, ctx };
+  return { dataDir, calls, clock, world, launchAsks, ctx };
 };
 
 const linesOf = (dataDir: string, run: RunId) =>
@@ -288,6 +300,30 @@ describe("reapLaunch: the launch-sending timeout", () => {
         assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), { kind: "left" });
         assert.deepStrictEqual(rig.calls, []);
       }),
+  );
+
+  it.effect("leaves a launch whose session the adapter recorded before the ledger did, for the pass to resume", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), SENDING);
+      const bytes = bytesOf(rig.dataDir, runOf(1));
+      rig.clock.now = T0 + 901 * SECOND;
+      rig.world.launched = "local:ws-9";
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), { kind: "left" });
+      assert.deepStrictEqual(rig.launchAsks, [launchCommandId(runOf(1))]);
+      assert.deepStrictEqual(rig.calls, ["thread local:ws-9"]);
+      assert.strictEqual(bytesOf(rig.dataDir, runOf(1)), bytes);
+      // That thread gone: the launch timed out after all.
+      rig.calls.length = 0;
+      rig.world.thread = new ThreadNotFoundError({ threadId: "local:ws-9" });
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), {
+        kind: "ready",
+        ended: "timed-out",
+        failures: 1,
+        mayHaveSession: true,
+      });
+      assert.deepStrictEqual(rig.calls, ["thread local:ws-9", ...READY_CALLS]);
+    }),
   );
 
   it.effect("times out a launch-sending resumed-from step the same way", () =>
@@ -604,6 +640,9 @@ describe("reapLaunch: a stop by hand of a run still starting", () => {
         mayHaveSession: true,
       });
       assert.deepStrictEqual(rig.calls, STUCK_CALLS);
+      // The stuck comment says a person stopped it, not that it timed out.
+      const seen = readProgress(readRun(rig.dataDir, runOf(1)).entries);
+      assert.strictEqual(seen.stuck, LAUNCH_STOPPED_REASON);
     }),
   );
 

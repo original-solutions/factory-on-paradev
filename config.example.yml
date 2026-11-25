@@ -12,8 +12,8 @@ gh_config_dir: /Users/YOU/.config/factory-runner/gh
 # Seconds between passes over GitHub. At least 10.
 poll_seconds: 60
 
-# A launch that has recorded no thread id this many seconds after it was first sent (a wait for
-# room included) is failed at the start of a pass: the run is finished, its slot is freed and
+# A run's launch that has recorded no thread id this many seconds after it was first sent (a wait
+# for room included; a pull request's relaunch is not bounded) is failed at the start of a pass: the run is finished, its slot is freed and
 # the issue goes back to factory:ready. At least 60; the default 900 is longer than a cloud
 # create (5 minutes) plus a cloud workspace becoming ready (5 minutes).
 launch_timeout_seconds: 900

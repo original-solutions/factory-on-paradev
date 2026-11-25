@@ -336,16 +336,19 @@ export interface Seen {
   readonly resumedFromRun: string | null;
 }
 
+/** Whether the run is confirmed: it records what approved it, or its session. `RunInfo.confirmed` is this. */
+export const isConfirmed = (seen: Seen): boolean => seen.approvedAt !== null || seen.threadId !== null;
+
+/** The states of a run still starting: `triage`, or before any state. */
+export const isStartingState = (state: State | null): boolean => state === null || state === "triage";
+
 /**
- * Whether the run is still starting: confirmed (it records what approved it, or its session),
- * unfinished, and in `triage` or before any state. The one rule for what the launch reaper looks
- * at and what a stop by hand takes besides a building run; `inTriage` in `pass.ts` is the same
- * rule over `RunInfo`.
+ * Whether the run is still starting: confirmed (`isConfirmed`), unfinished, and in a starting
+ * state (`isStartingState`). What the launch reaper looks at and what a stop by hand takes besides
+ * a building run; `inTriage` in `pass.ts` applies the same two rules to `RunInfo`.
  */
 export const isStarting = (seen: Seen): boolean =>
-  !seen.finished &&
-  (seen.approvedAt !== null || seen.threadId !== null) &&
-  (seen.state === null || seen.state === "triage");
+  !seen.finished && isConfirmed(seen) && isStartingState(seen.state);
 
 /**
  * Whether a session may exist that the ledger does not name: a launch was sent and no thread id

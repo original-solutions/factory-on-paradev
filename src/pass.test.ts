@@ -2304,6 +2304,28 @@ describe("launches that recorded no thread id", () => {
     }),
   );
 
+  it.effect("the launch-timeout item names a stop by hand as the cause, and points at Paradev only when a launch was sent", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.stopRequests[`${REPO}#12`] = "recorded";
+      fake.reaps[`${REPO}#12`] = [{ kind: "stuck", ended: "stopped", failures: 1, limit: true, mayHaveSession: false }];
+      yield* pass(fake, [REPO], 3);
+      const stopped = fake.items[0]!.message;
+      assert.ok(stopped.includes("stopped by hand before its launch recorded a thread id"), stopped);
+      assert.ok(!stopped.includes("in Paradev"), stopped);
+      assert.ok(stopped.endsWith("set factory:ready again"), stopped);
+      // A timeout whose recorded thread is gone sent no launch that went unrecorded either.
+      const gone = new Fake();
+      gone.runIn(12, "triage");
+      gone.reaps[`${REPO}#12`] = [{ kind: "stuck", ended: "timed-out", failures: 2, limit: true, mayHaveSession: false }];
+      yield* pass(gone, [REPO], 3);
+      const timedOut = gone.items[0]!.message;
+      assert.ok(timedOut.includes("its launch never recorded a thread id"), timedOut);
+      assert.ok(!timedOut.includes("in Paradev"), timedOut);
+    }),
+  );
+
   it.effect("a stop by hand of a starting run is taken before the reap, once, and ends the run", () =>
     Effect.gen(function* () {
       const fake = new Fake();

@@ -738,6 +738,9 @@ const begin = Effect.fn("RunnerStart.begin")(function* (
   return { kind: "started", run, threadId };
 });
 
+/** The command id of a run's first launch: every resend of it uses the same one. */
+export const launchCommandId = (run: RunId): string => `softfac:${runIdToString(run)}:launch`;
+
 /** A launch not sent or refused. `reason` is the public line when it is not `LAUNCH_FAILED`. */
 type Launch =
   | { readonly ok: true; readonly threadId: string; readonly worktree: string | null }
@@ -758,7 +761,7 @@ const launchSession = Effect.fn("RunnerStart.launchSession")(function* (
   seen: Seen,
   found: FactoryProject | null | undefined,
 ): Effect.fn.Return<Launch, StartError> {
-  const commandId = `softfac:${runIdToString(run)}:launch`;
+  const commandId = launchCommandId(run);
   const target = launchable(
     found === undefined ? yield* ctx.sessions.findProject(ctx.repoPath) : found,
     ctx.repo,

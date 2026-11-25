@@ -10,6 +10,7 @@ import {
   HISTORY_PAGE,
   isUtcSecond,
   judgeApproval,
+  REAP_SWAP_SECONDS,
   type TimelineNode,
 } from "./approvalHistory.ts";
 
@@ -306,6 +307,94 @@ describe("judgeApproval: a factory:ready label the factory's own login applied",
 
   it("judges as before with no factory login given", () => {
     assert.strictEqual(judgeApproval(issueOf(reaped()), READY, ["tom"]).kind, "refused");
+  });
+
+  it("never lets a reap by a factory login that is an instructor approve itself when nothing is carried", () => {
+    const instructors = ["tom", FACTORY];
+    const notCarried: Approval = {
+      kind: "refused",
+      refusal: { kind: "labeled-by-non-instructor", by: FACTORY, labeledAt: T(20) },
+    };
+    // A stranger moved a factory label during the stall, and edited the body before the reap.
+    const moved = [unlabeledAs(T(9), "eve", "factory:triage"), labeled(T(9), "eve", "factory:triage")];
+    const edited = issueOf(reaped(moved), [[T(9), "eve"]]);
+    assert.deepStrictEqual(judgeApproval(edited, READY, instructors, FACTORY), notCarried);
+    // A stuck stint in between, which needs a person's factory:ready to leave.
+    const stint = [
+      unlabeledAs(T(9), FACTORY, "factory:triage"),
+      labeled(T(9), FACTORY, "factory:stuck"),
+      unlabeledAs(T(10), FACTORY, "factory:stuck"),
+      labeled(T(10), FACTORY, "factory:triage"),
+    ];
+    assert.deepStrictEqual(judgeApproval(issueOf(reaped(stint)), READY, instructors, FACTORY), notCarried);
+    // A whole page with no instructor's label before the reap.
+    const alone = [labeled(T(1), FACTORY, "factory:triage"), ...reaped().slice(-2)];
+    assert.deepStrictEqual(judgeApproval(issueOf(alone), READY, instructors, FACTORY), notCarried);
+  });
+
+  it("walks past an earlier reap's ready by a factory login that is an instructor, so an edit in the first stall refuses", () => {
+    const again = [
+      unlabeledAs(T(5), FACTORY, "factory:triage"),
+      labeled(T(5), FACTORY),
+      unlabeledAs(T(6), FACTORY, READY),
+      labeled(T(6), FACTORY, "factory:triage"),
+    ];
+    const edited = issueOf(reaped(again), [[T(3), "eve"]]);
+    assert.deepStrictEqual(judgeApproval(edited, READY, ["tom", FACTORY], FACTORY), {
+      kind: "refused",
+      refusal: { kind: "edited-after-label", labeledAt: T(0) },
+    });
+    assert.deepStrictEqual(judgeApproval(issueOf(reaped(again)), READY, ["tom", FACTORY], FACTORY), {
+      kind: "approved",
+      labeledAt: T(0),
+      labeledBy: "Tom",
+    });
+  });
+
+  it(`knows the reaper's swap when GitHub stamps its halves up to ${REAP_SWAP_SECONDS} seconds apart, in either order`, () => {
+    const at = (second: number) => `2026-10-04T10:20:${String(second).padStart(2, "0")}Z`;
+    const head = reaped().slice(0, -2);
+    for (const swap of [
+      // As live issues show it: the removal a second before or after the add.
+      [unlabeledAs(at(0), FACTORY, "factory:triage"), labeled(at(1), FACTORY)],
+      [labeled(at(0), FACTORY), unlabeledAs(at(1), FACTORY, "factory:triage")],
+      [labeled(at(0), FACTORY), unlabeledAs(at(REAP_SWAP_SECONDS), FACTORY, "factory:triage")],
+    ]) {
+      assert.deepStrictEqual(judgeApproval(issueOf([...head, ...swap]), READY, ["tom"], FACTORY), {
+        kind: "approved",
+        labeledAt: T(0),
+        labeledBy: "Tom",
+      });
+    }
+    // Further apart, it is not one edit: the factory's ready is judged as its own label.
+    const apart = [labeled(at(0), FACTORY), unlabeledAs(at(REAP_SWAP_SECONDS + 1), FACTORY, "factory:triage")];
+    assert.deepStrictEqual(judgeApproval(issueOf([...head, ...apart]), READY, ["tom"], FACTORY), {
+      kind: "refused",
+      refusal: { kind: "labeled-by-non-instructor", by: FACTORY, labeledAt: at(0) },
+    });
+    // A factory state change between the two is not one edit either.
+    const between = [
+      unlabeledAs(at(0), FACTORY, "factory:triage"),
+      labeled(at(0), FACTORY, "factory:building"),
+      labeled(at(1), FACTORY),
+    ];
+    assert.strictEqual(judgeApproval(issueOf([...head, ...between]), READY, ["tom"], FACTORY).kind, "refused");
+  });
+
+  it("takes only the factory's own User login for the reaper: an app with that login forges no reap", () => {
+    const bot = { __typename: "Bot", login: FACTORY };
+    const forged = reaped().map((event) =>
+      event.__typename !== "RenamedTitleEvent" && event.actor?.login === FACTORY
+        ? { ...event, actor: bot }
+        : event,
+    );
+    assert.deepStrictEqual(judgeApproval(issueOf(forged), READY, ["tom"], FACTORY), {
+      kind: "refused",
+      refusal: { kind: "labeled-by-non-instructor", by: FACTORY, labeledAt: T(20) },
+    });
+    // The swap by the app, after a claim by the factory's own login, carries nothing either.
+    const swapped = [...reaped().slice(0, -2), ...forged.slice(-2)];
+    assert.strictEqual(judgeApproval(issueOf(swapped), READY, ["tom"], FACTORY).kind, "refused");
   });
 });
 
