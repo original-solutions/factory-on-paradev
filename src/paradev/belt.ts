@@ -124,13 +124,22 @@ const NOT_READY: Readonly<Record<TargetRow["kind"], string>> = {
   cloud: "its proxy or plugin check has not passed; factory-runner status says why",
 };
 
+/** What the belt says of a ready target whose running agents could not be counted. */
+const NOT_COUNTED = "its running agents could not be counted; factory-runner status says why";
+
 /**
  * A target as the belt carries it. The reason of a target that is not ready can be a host check's
  * failing line or a proxy error, which quote paths, users and addresses as an attention message
- * can, so it says only which check failed; `status` has the line. A ready target's reason is
- * placement's own words and numbers.
+ * can, so it says only which check failed; `status` has the line. So does a ready target whose
+ * count is null: its reason names the census error (#117), which can quote ids, tags and CLI
+ * output. Any other ready target's reason is placement's own words and numbers.
  */
-const beltRow = (row: TargetRow): TargetRow => (row.ready ? row : { ...row, reason: NOT_READY[row.kind] });
+const beltRow = (row: TargetRow): TargetRow =>
+  !row.ready
+    ? { ...row, reason: NOT_READY[row.kind] }
+    : row.slots.used === null
+      ? { ...row, reason: NOT_COUNTED }
+      : row;
 
 export interface BeltInput {
   readonly nowMs: number;
