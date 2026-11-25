@@ -174,8 +174,9 @@ export interface CloudConfig {
   /** The `https://` address the org's Claude connection points at, checked before each cloud launch. */
   readonly proxy: string;
   /**
-   * Minutes of wall time cloud's running agents may stay uncountable before the pass raises
-   * `cloud-census-offline` (#117); at least 1, 10 when absent.
+   * Minutes of wall time cloud's count of running agents may stay unknown (null) before the pass
+   * raises `cloud-census-offline` (#117); at least 1, 10 when absent. A numeric count raises
+   * nothing, even one that holds workspaces it could not read as used slots.
    */
   readonly censusOfflineMinutes: number;
 }

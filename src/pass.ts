@@ -1317,7 +1317,8 @@ export const CLOUD_CENSUS_OFFLINE_ITEM_ID = "cloud-census-offline";
  * cannot be counted, placement refuses every cloud launch, so a count that has been null on every
  * pass for more than `cloud.census_offline_minutes` of wall time raises one `cloud-census-offline`
  * item naming the latest census error. A pass that gets a numeric count clears it and stops the
- * clock; a workspace that count holds as a used slot unread is named in cloud's row instead. Run
+ * clock, even one that holds workspaces it could not read as used slots: those are named in the
+ * log, and in cloud's row when they leave it no room. Run
  * only while `cloud` is configured and a repo names a cloud environment, as the proxy check.
  */
 const cloudCensusOffline = Effect.fn("Pass.cloudCensusOffline")(function* (
