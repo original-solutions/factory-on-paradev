@@ -19,6 +19,7 @@ import {
   Screen,
   SESSION_ID,
   SILENT_WORKING_MS,
+  type TargetError,
 } from "./target.ts";
 
 /** Where a cloud sandbox keeps Claude's sessions: its worktree is `/workspace`. */
@@ -27,6 +28,12 @@ export const CLOUD_WORKTREE = "/workspace";
 /** The end marks of the helper terminals' commands. */
 const ALIVE_MARK = "FACTORY-ALIVE-DONE";
 const SESSION_MARK = "FACTORY-SESSION-DONE";
+const LOGIN_MARK = "FACTORY-LOGIN-DONE";
+/**
+ * The env a sandbox terminal gets from the organization's Claude connection: an `api_key`
+ * connection gives `ANTHROPIC_API_KEY`, the others one of the rest. Only presence is read.
+ */
+const LOGIN_TEST = '[ -n "$ANTHROPIC_API_KEY$ANTHROPIC_AUTH_TOKEN$CLAUDE_CODE_OAUTH_TOKEN" ] && echo yes || echo no';
 
 const TerminalCreated = Schema.Struct({ terminalId: Schema.String });
 /** A cloud workspace has no worktree path on this Mac; its `status` goes `provisioning`, then up, then gone. */
@@ -96,7 +103,16 @@ export interface CloudDeps {
   readonly checkStatus: CloudStatusCheck;
 }
 
-export const makeCloudTarget = (deps: CloudDeps): ParadevTarget => {
+/** The cloud module: a {@link ParadevTarget}, and the login check only a cloud launch makes. */
+export interface CloudTarget extends ParadevTarget {
+  /**
+   * Whether a new terminal in the sandbox gets the Claude connection's env. A sandbox can read
+   * `awake` seconds before it does, and an agent started then sits at "Not logged in" for good.
+   */
+  readonly loginReady: (record: ThreadRecord) => Effect.Effect<boolean, TargetError>;
+}
+
+export const makeCloudTarget = (deps: CloudDeps): CloudTarget => {
   const { cli, at, commandOf, aliveReads, checkStatus } = deps;
 
   /** The helper command's output: the end mark, echoed so the echoed command line does not match it. */
@@ -156,7 +172,11 @@ export const makeCloudTarget = (deps: CloudDeps): ParadevTarget => {
       return SESSION_ID.test(id) ? id : null;
     });
 
+  const loginReady = (record: ThreadRecord) =>
+    helperRead(record, LOGIN_TEST, LOGIN_MARK).pipe(Effect.map((text) => lineBefore(text, LOGIN_MARK) === "yes"));
+
   return {
+    loginReady,
     at: at,
     snapshotAt: at,
     onThisMac: false,
