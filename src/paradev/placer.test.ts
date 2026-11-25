@@ -16,6 +16,8 @@ const PROXY = "https://proxy.example.ts.net:8443";
 const machine = (over: Partial<MachineConfig> = {}): MachineConfig => ({
   ghConfigDir: "/gh",
   pollSeconds: 60,
+  launchTimeoutSeconds: 900,
+  launchTimeoutRetries: 1,
   maxConcurrentRuns: 4,
   maxConcurrentGates: 2,
   feedbackSeconds: 600,

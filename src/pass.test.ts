@@ -107,6 +107,8 @@ const rid = (issue: number, repo = REPO): RunId => newRunId(repo, String(issue),
 const machine = (max: number): MachineConfig => ({
   ghConfigDir: "/gh/rawphp",
   pollSeconds: 60,
+  launchTimeoutSeconds: 900,
+  launchTimeoutRetries: 1,
   maxConcurrentRuns: max,
   maxConcurrentGates: 2,
   feedbackSeconds: 600,

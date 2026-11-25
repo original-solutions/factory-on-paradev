@@ -249,6 +249,8 @@ const PARADEV = {
 const baseMachine: MachineConfig = {
   ghConfigDir: "/gh/rawphp",
   pollSeconds: 60,
+  launchTimeoutSeconds: 900,
+  launchTimeoutRetries: 1,
   maxConcurrentRuns: 1,
   maxConcurrentGates: 1,
   feedbackSeconds: 600,
