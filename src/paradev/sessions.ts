@@ -322,7 +322,9 @@ export type ParadevSessions = FactorySessions["Service"] & {
    * runner's. What placement checks against each target's `max_runs`. `running` is null for a
    * target whose snapshot or listing could not be read; for cloud, with that read's error in
    * `error`, which is logged too. One cloud workspace that cannot be counted counts as one used
-   * slot, and its error is in `uncountable` (#117). Never fails.
+   * slot, and its error is in `uncountable` (#117). Never fails. Not a pure read: for cloud it
+   * writes the tags back on this runner's workspaces listed without its tag, each call
+   * (`workspaces update`, the same call a launch sends), as `runningThreads` does (#117).
    */
   readonly runningByTarget: Effect.Effect<ReadonlyArray<TargetCount>>;
   /** Archives the orphaned cloud workspaces; the runner calls it once per pass while a repo names a cloud environment. */
@@ -340,8 +342,13 @@ const failWith =
 const runnerTag = (id: string): string => `factory-${id}`;
 
 /** Whether a listed workspace carries `name` as a tag. */
+const tagNames = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined): ReadonlyArray<string> =>
+  (tags ?? []).map((tag) => (typeof tag === "string" ? tag : tag.name));
 const hasTag = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined, name: string): boolean =>
-  (tags ?? []).some((tag) => (typeof tag === "string" ? tag : tag.name) === name);
+  tagNames(tags).includes(name);
+/** A runner tag among `tags` that is not `mine`: another runner's `factory-<its id>`, else undefined. */
+const otherRunnerTag = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined, mine: string): string | undefined =>
+  tagNames(tags).find((name) => name.startsWith("factory-") && name !== mine);
 
 /**
  * The argv of a `snapshot` of `target` at `snapshotAt`, its location flag, reading `workspaceId`
@@ -1237,7 +1244,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
    * run's, an orphan's, another runner's) is not read or changed: nothing in it would count, and its
    * failed snapshot would lose the count. A workspace of `counted` the listing shows live without
    * this runner's tag gets both tags back with the update a launch sends ({@link tagCloud}), and is
-   * then read as a tagged one (#117). One the listing leaves out is read on its own
+   * then read as a tagged one (#117): so a count writes to cloud. One that carries another runner's
+   * tag instead is not updated, since the update replaces the set and would take it from that
+   * runner; it is uncountable. One the listing leaves out is read on its own
    * ({@link unlistedStatus}): gone, it counts nothing. A record that still cannot be read (the
    * update failed, its snapshot failed, or one left out is not gone or could not be read) is
    * uncountable: it counts as one used slot, and the others are still counted, since a count that
@@ -1261,10 +1270,20 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       const deleted = new Set(rows.filter((row) => isCloudGone(row.status)).map((row) => row.id));
       const listed = new Set(rows.map((row) => row.id));
       const toRead = new Set(counted.map((record) => record.workspaceId).filter((id) => tagged.has(id)));
-      // Each of this ledger's live workspaces listed without the tag gets both back, two at a time.
-      const untagged = counted.filter(
-        (record) => listed.has(record.workspaceId) && !tagged.has(record.workspaceId) && !deleted.has(record.workspaceId),
-      );
+      // Each of this ledger's live workspaces listed without the tag gets both back, two at a time,
+      // unless another runner's tag is on it: the update replaces the set, so it would take that one.
+      const untagged: Array<ThreadRecord> = [];
+      for (const record of counted) {
+        if (!listed.has(record.workspaceId) || tagged.has(record.workspaceId) || deleted.has(record.workspaceId)) continue;
+        const other = otherRunnerTag(rows.find((row) => row.id === record.workspaceId)?.tags, tag);
+        if (other === undefined) untagged.push(record);
+        else {
+          uncountable.push({
+            record,
+            error: `cloud workspace ${record.workspaceId} of ${record.threadId} is listed with another runner's tag ${other}, not ${tag}, so its tags are left as they are`,
+          });
+        }
+      }
       const healed = yield* Effect.forEach(
         untagged,
         (record) => Effect.result(tagCloud(record.workspaceId)).pipe(Effect.map((update) => ({ record, update }))),
@@ -1356,7 +1375,11 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     ...(config.cloud === true ? [{ kind: "cloud" } as const] : []),
   ];
 
-  /** Every counted target read once, all at the same time; a read that failed is its error. */
+  /**
+   * Every counted target read once, all at the same time; a read that failed is its error. Cloud's
+   * read can write: it puts the tags back on this runner's workspaces listed without its tag
+   * ({@link snapshotWorkspaces}), so `runningByTarget` and `runningThreads` each send those updates.
+   */
   const readTargets = Effect.gen(function* () {
     const records = yield* local(listThreads(dataDir));
     return yield* Effect.forEach(

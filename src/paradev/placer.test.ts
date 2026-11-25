@@ -200,7 +200,7 @@ describe("placer", () => {
       assert.deepStrictEqual(drops(t.events), [
         { repo: "acme/hosted", target: "local", reason: "not ready: the factory plugin is not on this Mac" },
       ]);
-      const [row] = yield* t.placer.targets;
+      const [row] = (yield* t.placer.targets).status;
       assert.deepStrictEqual(
         { ready: row!.ready, reason: row!.reason },
         { ready: false, reason: "not ready: the factory plugin is not on this Mac" },
@@ -223,7 +223,7 @@ describe("placer", () => {
         drops(t.events).map((drop) => drop.reason),
         `not ready: ${reason}`,
       );
-      const cloud = (yield* t.placer.targets).find((row) => row.kind === "cloud")!;
+      const cloud = (yield* t.placer.targets).status.find((row) => row.kind === "cloud")!;
       assert.deepStrictEqual({ ready: cloud.ready, reason: cloud.reason }, { ready: false, reason: `not ready: ${reason}` });
     }),
   );
@@ -368,7 +368,7 @@ describe("placer", () => {
       t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
       const refused = yield* t.placer.place(request("cloudy")).pipe(Effect.flip);
       assert.instanceOf(refused, NoTargetHasRoom);
-      const cloudRow = (yield* t.placer.targets).find((row) => row.kind === "cloud");
+      const cloudRow = (yield* t.placer.targets).status.find((row) => row.kind === "cloud");
       assert.strictEqual(cloudRow?.reason, `its running agents could not be counted: ${error}`);
       assert.deepStrictEqual(cloudRow?.slots, { used: null, max: 1 });
       assert.deepStrictEqual(
@@ -403,8 +403,13 @@ describe("placer", () => {
       degraded.placer.beginPass({ localHeld: null, proxy: null, machine: degraded.machine() });
       assert.deepStrictEqual(yield* degraded.placer.cloudCensus, { running: 1, uncountable: [stuck] });
       assert.strictEqual(
-        (yield* degraded.placer.targets).find((row) => row.kind === "cloud")?.reason,
+        (yield* degraded.placer.targets).status.find((row) => row.kind === "cloud")?.reason,
         `slots full: 1 of 1 running (1 of them could not be counted: ${stuck})`,
+      );
+      // The belt's rows come from the same readings, with no census error in a reason.
+      assert.strictEqual(
+        (yield* degraded.placer.targets).belt.find((row) => row.kind === "cloud")?.reason,
+        "slots full: 1 of 1 running (1 of them could not be counted; factory-runner status says why)",
       );
       // A launch placed on such a count keeps the errors: the slot it takes adds to the count only.
       const roomy = setup({
@@ -414,7 +419,7 @@ describe("placer", () => {
       roomy.placer.beginPass({ localHeld: null, proxy: null, machine: roomy.machine() });
       assert.deepStrictEqual(yield* roomy.placer.place(request("cloudy")), { kind: "cloud", environmentId: "env-1", machineSize: "small" });
       assert.strictEqual(
-        (yield* roomy.placer.targets).find((row) => row.kind === "cloud")?.reason,
+        (yield* roomy.placer.targets).status.find((row) => row.kind === "cloud")?.reason,
         `slots full: 2 of 2 running (1 of them could not be counted: ${stuck})`,
       );
       const none = setup({ counts: [{ target: { kind: "local" }, running: 0 }] });
@@ -434,7 +439,7 @@ describe("placer", () => {
         notReady: new Map([["h1", "git identity: no user.email"]]),
       });
       t.placer.beginPass({ localHeld: "high load", proxy: null, machine: t.machine() });
-      assert.deepStrictEqual(yield* t.placer.targets, [
+      assert.deepStrictEqual((yield* t.placer.targets).status, [
         {
           kind: "local",
           name: "local",
@@ -470,9 +475,9 @@ describe("placer", () => {
     Effect.gen(function* () {
       const none = setup({ machine: machine({ cloud: undefined, hosts: [] }) });
       none.placer.beginPass({ localHeld: null, proxy: null, machine: none.machine() });
-      assert.deepStrictEqual((yield* none.placer.targets).map((row) => row.name), ["local"]);
+      assert.deepStrictEqual((yield* none.placer.targets).status.map((row) => row.name), ["local"]);
       const unchecked = setup();
-      const cloud = (yield* unchecked.placer.targets).find((row) => row.kind === "cloud")!;
+      const cloud = (yield* unchecked.placer.targets).status.find((row) => row.kind === "cloud")!;
       assert.deepStrictEqual({ ready: cloud.ready, reason: cloud.reason }, { ready: false, reason: PROXY_NOT_CHECKED });
     }),
   );
@@ -482,7 +487,7 @@ describe("placer", () => {
       const t = setup();
       t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
       assert.deepStrictEqual(yield* t.placer.place(request("hosted")), { kind: "local" });
-      const rows = yield* t.placer.targets;
+      const rows = (yield* t.placer.targets).status;
       assert.deepStrictEqual(t.reads, { running: 1, load: 1 });
       assert.deepStrictEqual(rows[0]!.slots, { used: 1, max: 1 });
     }),
@@ -513,7 +518,7 @@ describe("placer", () => {
       // The next pass begins before the snapshot answers: its launches read their own counts.
       t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
       yield* Deferred.succeed(gate, undefined);
-      assert.deepStrictEqual((yield* Fiber.join(rows)).map((row) => row.slots.used), [1, 0, 0]);
+      assert.deepStrictEqual((yield* Fiber.join(rows)).status.map((row) => row.slots.used), [1, 0, 0]);
       yield* t.placer.place(request("hosted"));
       assert.strictEqual(t.reads.running, 2);
     }),
@@ -523,7 +528,7 @@ describe("placer", () => {
     Effect.gen(function* () {
       const t = setup();
       t.placer.beginPass({ localHeld: null, proxy: null, machine: t.machine() });
-      assert.deepStrictEqual((yield* t.placer.targets).map((row) => row.slots.used), [0, 0, 0]);
+      assert.deepStrictEqual((yield* t.placer.targets).status.map((row) => row.slots.used), [0, 0, 0]);
       assert.deepStrictEqual(yield* t.placer.place(request("hosted")), { kind: "local" });
       assert.deepStrictEqual(t.reads, { running: 1, load: 1 });
     }),

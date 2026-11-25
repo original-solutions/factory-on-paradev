@@ -5174,6 +5174,32 @@ describe("runningByTarget and runningThreads, per target (#55)", () => {
     }),
   );
 
+  it.effect("a cloud workspace that cannot be counted adds 1 to runningThreads, once, beside the ones counted (#117)", () =>
+    Effect.gen(function* () {
+      const stuckWs = "f2e2d3c4-0000-4000-8000-000000000020";
+      const heal = ["workspaces", "update", stuckWs, "--host", "cloud", "--tag", "factory", "--tag", `factory-${RUNNER}`];
+      // One tagged workspace with a working agent, and one listed with only `factory` whose heal fails.
+      const list: Step = {
+        ...cloudList,
+        edit: (answer) => [
+          { ...(answer as ReadonlyArray<object>)[0], id: C3_WS, tags: ["factory", `factory-${RUNNER}`] },
+          { ...(answer as ReadonlyArray<object>)[0], id: stuckWs, tags: ["factory"] },
+        ],
+      };
+      const t = rig([localStep, hostStep, list, { argv: heal, fail: "boom" }, cloudSnapshot], { config: withAll });
+      yield* seedAll(t.data);
+      yield* seed(
+        t.data,
+        cloudRecord({ threadId: `cloud:${stuckWs}`, workspaceId: stuckWs, terminals: ["f2e2d3c4-0000-4000-8000-0000000000aa"] }),
+      );
+      // This Mac 1, the host 1, cloud 1 counted and 1 that could not be: 4.
+      assert.strictEqual(yield* t.run((s) => s.runningThreads), 4);
+      // The heal went once, with both tags, and the tagged workspace's snapshot was read.
+      assert.deepStrictEqual(t.calls.filter(argvIs("workspaces", "update")), [heal]);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
   it.effect("fails runningThreads when this Mac's snapshot cannot be read", () =>
     Effect.gen(function* () {
       const t = rig([{ argv: ["snapshot"], fail: "boom" }, hostStep], { config: { hosts: HOSTS } });
@@ -5441,6 +5467,36 @@ describe("the cloud count, one workspace at a time (#85)", () => {
       ]);
       assert.deepStrictEqual(updates(t.calls), [healArgv(C3_WS)]);
       assert.deepStrictEqual(t.unused(), [bareCloud]);
+    }),
+  );
+
+  it.effect("a live record's workspace listed with another runner's tag instead of this one's is not updated: it counts as 1 used slot, logged (#117)", () =>
+    Effect.gen(function* () {
+      // A data dir copied from another runner, or a runner id made again: the record is here, the tag is not.
+      const theirs = "factory-ffffffff-0000-4000-8000-00000000ffff";
+      for (const tags of [["factory", theirs], [theirs, "hand-added"]]) {
+        const t = rig([localStep, bareCloud, listOf({ id: C3_WS, tags })], { config: { cloud: true } });
+        yield* seedCloud(t.data);
+        const logs = yield* warned(
+          t.run((s) => s.runningByTarget).pipe(
+            Effect.tap((counted) =>
+              Effect.sync(() => {
+                assert.deepStrictEqual(tally(counted), [
+                  { target: { kind: "local" }, running: 1 },
+                  { target: { kind: "cloud" }, running: 1, uncountable: 1 },
+                ]);
+                assert.include(counted[1]!.uncountable![0], `listed with another runner's tag ${theirs}, not ${MINE}`);
+              }),
+            ),
+          ),
+        );
+        // The update replaces the set, so sending it would take the workspace from that runner.
+        assert.deepStrictEqual(updates(t.calls), []);
+        assert.deepStrictEqual(t.calls.filter((argv) => argv[0] === "snapshot" && argv.includes("cloud")), []);
+        const line = logs.find((entry) => entry.includes(`listed with another runner's tag ${theirs}`));
+        assert.isDefined(line, logs.join("\n"));
+        assert.include(line!, "1 used slot");
+      }
     }),
   );
 

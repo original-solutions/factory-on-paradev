@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 
 import type { Load } from "../load.ts";
 import { NO_TARGET_HAS_ROOM } from "../sessions.ts";
-import { type Candidate, choosePlacement, targetRow, withoutCensusErrors } from "./placement.ts";
+import { type Candidate, choosePlacement, targetRow } from "./placement.ts";
 
 const load = (perCore: number, cores = 10): Load => ({ oneMinute: perCore * cores, cores });
 
@@ -272,6 +272,14 @@ describe("targetRow", () => {
     assert.deepStrictEqual(placed.dropped, [
       { id: "cloud", target: "cloud", reason: `its running agents could not be counted: ${error}` },
     ]);
+    // The belt's row, a page others read, says where the error is instead: it can quote ids and paths.
+    assert.strictEqual(
+      targetRow(cloud({ slots: { running: null, max: 1, error } }), "belt").reason,
+      "its running agents could not be counted; factory-runner status says why",
+    );
+    // With no error to point at, both say the same.
+    const bare = host("a", { slots: { running: null, max: 2 }, load: null });
+    assert.strictEqual(targetRow(bare, "belt").reason, targetRow(bare).reason);
   });
 
   it("names the workspaces that count as used slots only because they could not be counted in a full target's reason (#117)", () => {
@@ -282,9 +290,11 @@ describe("targetRow", () => {
       { online: true, slots: { used: 1, max: 1 }, reason: `slots full: 1 of 1 running (1 of them could not be counted: ${error})` },
     );
     assert.strictEqual(
-      withoutCensusErrors(row.reason!),
+      targetRow(cloud({ slots: { running: 1, max: 1, uncountable: [error] } }), "belt").reason,
       "slots full: 1 of 1 running (1 of them could not be counted; factory-runner status says why)",
     );
+    // A full target with no such workspace reads the same on the belt.
+    assert.strictEqual(targetRow(cloud({ slots: { running: 1, max: 1 } }), "belt").reason, "slots full: 1 of 1 running");
     // A target with room is still used: the workspace holds its one slot, no more.
     assert.isNull(targetRow(cloud({ slots: { running: 1, max: 2, uncountable: [error] } })).reason);
   });

@@ -1318,7 +1318,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
     const afterPass = Effect.gen(function* () {
       const nowMs = Date.now();
       const targets = yield* placer.targets;
-      yield* writeFileAtomically(targetsFile, targetsText(targets)).pipe(
+      yield* writeFileAtomically(targetsFile, targetsText(targets.status)).pipe(
         Effect.catch((error) =>
           Effect.logWarning(`the target rows were not written: ${error.message}`).pipe(Effect.andThen(removeTargets)),
         ),
@@ -1332,7 +1332,7 @@ const startFactory = Effect.fn("Factory.startFactory")(function* (options: Runti
           claimsPaused: loadHandPause(factoryDir) !== null,
           paradevOnline,
           attention: yield* attention.list(),
-          targets,
+          targets: targets.belt,
           hostNames,
         },
         beltRuns,

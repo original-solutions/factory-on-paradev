@@ -206,7 +206,8 @@ export const makePlacer = (deps: PlacerDeps) => {
     cloudCensus: passCounts.pipe(Effect.map((running): TargetCensus | null => running.get("cloud") ?? null)),
     /**
      * A row for this Mac, each configured host, and cloud when configured, from this pass's
-     * readings: the pass's counts ({@link passCounts}), and a null count's reason names its error.
+     * readings: the pass's counts ({@link passCounts}). `status`'s reasons name the census errors
+     * (#117); `belt`'s, from the same readings, do not.
      */
     targets: Effect.gen(function* () {
       const began = pass;
@@ -220,7 +221,10 @@ export const makePlacer = (deps: PlacerDeps) => {
         ...deps.machine.hosts.map((host) => hostOf(host, running, notReady)),
         ...(cloud === undefined ? [] : [cloudOf(cloud, running)]),
       ];
-      return readings.map(targetRow);
+      return {
+        status: readings.map((reading) => targetRow(reading, "status")),
+        belt: readings.map((reading) => targetRow(reading, "belt")),
+      };
     }),
     /** The launch of `commandId` ended: its agent is in the snapshots now, so it stops counting on its own. */
     launchEnded: (commandId: string): Effect.Effect<void> =>

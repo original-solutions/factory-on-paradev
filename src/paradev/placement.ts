@@ -81,31 +81,32 @@ export type Placement =
 
 const perCore = (load: Load): number => load.oneMinute / load.cores;
 
-const slotsReason = ({ running, max, error, uncountable = [] }: Slots): string | null =>
-  running === null
-    ? `its running agents could not be counted${error === undefined ? "" : `: ${error}`}`
-    : running >= max
-      ? `slots full: ${running} of ${max} running${uncountable.length === 0 ? "" : ` (${uncountable.length} of them could not be counted: ${uncountable.join("; ")})`}`
-      : null;
-
 /**
- * `reason` with the census errors it names cut out, for a page others read (the belt): those
- * errors can quote ids, tags and CLI output (#117). `status` keeps the whole reason.
+ * Who reads a target's reason: `status` (and the log) gets the census errors (#117); the belt, a
+ * page others read, gets where to find them instead, since they can quote ids, tags and CLI output.
  */
-export const withoutCensusErrors = (reason: string): string => {
-  // Only a reason that names an error gets the pointer: one with none has nothing more in status.
-  if (reason.startsWith("its running agents could not be counted: ")) {
-    return "its running agents could not be counted; factory-runner status says why";
+export type ReasonFor = "status" | "belt";
+
+const IN_STATUS = "factory-runner status says why";
+
+const slotsReason = ({ running, max, error, uncountable = [] }: Slots, readFor: ReasonFor): string | null => {
+  if (running === null) {
+    // Only a count with an error gets the pointer: one with none has nothing more in status.
+    if (error === undefined) return "its running agents could not be counted";
+    return readFor === "status"
+      ? `its running agents could not be counted: ${error}`
+      : `its running agents could not be counted; ${IN_STATUS}`;
   }
-  return reason.replace(
-    / \((\d+) of them could not be counted: [\s\S]*\)$/,
-    " ($1 of them could not be counted; factory-runner status says why)",
-  );
+  if (running < max) return null;
+  const full = `slots full: ${running} of ${max} running`;
+  if (uncountable.length === 0) return full;
+  const why = readFor === "status" ? `: ${uncountable.join("; ")}` : `; ${IN_STATUS}`;
+  return `${full} (${uncountable.length} of them could not be counted${why})`;
 };
 
 /** Why `candidate` cannot take a launch, the first reason that applies; null when it can. */
-const dropReason = (candidate: TargetReading): string | null => {
-  const full = slotsReason(candidate.slots);
+const dropReason = (candidate: TargetReading, readFor: ReasonFor = "status"): string | null => {
+  const full = slotsReason(candidate.slots, readFor);
   if (full !== null) return full;
   switch (candidate.kind) {
     case "local":
@@ -147,10 +148,11 @@ const targetOf = (candidate: Candidate): LaunchTarget =>
       : { kind: "cloud", environmentId: candidate.environmentId, machineSize: candidate.machineSize };
 
 /**
- * The row `status` and the belt show for a target: its readings, whether its own check passed, and
- * the first reason placement would not use it now, as {@link choosePlacement} judges a candidate.
+ * The row `status` or the belt (`readFor`) shows for a target: its readings, whether its own check
+ * passed, and the first reason placement would not use it now, as {@link choosePlacement} judges a
+ * candidate; the belt's names no census error ({@link ReasonFor}).
  */
-export const targetRow = (reading: TargetReading): TargetRow => ({
+export const targetRow = (reading: TargetReading, readFor: ReasonFor = "status"): TargetRow => ({
   kind: reading.kind,
   name: nameOf(reading),
   online: reading.slots.running !== null,
@@ -162,7 +164,7 @@ export const targetRow = (reading: TargetReading): TargetRow => ({
       : reading.kind === "host"
         ? reading.notReady === null
         : reading.proxy === null && reading.notReady === null,
-  reason: dropReason(reading),
+  reason: dropReason(reading, readFor),
 });
 
 /**

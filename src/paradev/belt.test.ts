@@ -191,22 +191,16 @@ describe("beltPayload", () => {
     );
   });
 
-  it("says only that a ready target's agents could not be counted: the census error can quote ids, tags and CLI output (#117)", () => {
+  it("carries a ready target's reason as placement built its belt row: no census error, which can quote ids, tags and CLI output (#117)", () => {
+    const error = "cloud workspace e0fe439f is not listed, and workspaces get failed: /Users/tomk";
     const belt = beltPayload({
       nowMs: NOW,
       runner: {
         ...RUNNER,
         targets: [
-          {
-            kind: "cloud",
-            name: "cloud",
-            online: false,
-            load: null,
-            slots: { used: null, max: 1 },
-            ready: true,
-            reason:
-              "its running agents could not be counted: superset workspaces list --host cloud --json failed (UNKNOWN): No cloud workspace e0fe439f in /Users/tomk",
-          },
+          targetRow({ kind: "cloud", machineSize: "small", slots: { running: null, max: 1, error }, proxy: null, notReady: null }, "belt"),
+          targetRow({ kind: "cloud", machineSize: "small", slots: { running: 1, max: 1, uncountable: [error] }, proxy: null, notReady: null }, "belt"),
+          targetRow({ kind: "host", id: "h1", name: "mini", slots: { running: null, max: 1 }, maxLoadPerCore: 1, load: null, notReady: null }, "belt"),
         ],
       },
       runs: [],
@@ -215,72 +209,14 @@ describe("beltPayload", () => {
     });
     assert.deepStrictEqual(
       belt.runner.targets.map((target) => target.reason),
-      ["its running agents could not be counted; factory-runner status says why"],
+      [
+        "its running agents could not be counted; factory-runner status says why",
+        "slots full: 1 of 1 running (1 of them could not be counted; factory-runner status says why)",
+        "its running agents could not be counted",
+      ],
     );
     const text = JSON.stringify(belt.runner.targets);
-    for (const leak of ["/Users/", "superset", "e0fe439f"]) assert.notInclude(text, leak);
-    // A full target whose used slots include workspaces that could not be counted: the same.
-    const full = beltPayload({
-      nowMs: NOW,
-      runner: {
-        ...RUNNER,
-        targets: [
-          {
-            kind: "cloud",
-            name: "cloud",
-            online: true,
-            load: null,
-            slots: { used: 1, max: 1 },
-            ready: true,
-            reason: "slots full: 1 of 1 running (1 of them could not be counted: cloud workspace e0fe439f is not listed, and workspaces get failed: /Users/tomk)",
-          },
-        ],
-      },
-      runs: [],
-      attention: [],
-      hostNames: HOST_NAMES,
-    });
-    assert.deepStrictEqual(
-      full.runner.targets.map((target) => target.reason),
-      ["slots full: 1 of 1 running (1 of them could not be counted; factory-runner status says why)"],
-    );
-    // Rows as placement builds them, so a change to its wording cannot slip the errors past the belt.
-    const error = "cloud workspace e0fe439f is not listed, and workspaces get failed: /Users/tomk";
-    const built = beltPayload({
-      nowMs: NOW,
-      runner: {
-        ...RUNNER,
-        targets: [
-          targetRow({ kind: "cloud", machineSize: "small", slots: { running: null, max: 1, error }, proxy: null, notReady: null }),
-          targetRow({ kind: "cloud", machineSize: "small", slots: { running: 1, max: 1, uncountable: [error] }, proxy: null, notReady: null }),
-        ],
-      },
-      runs: [],
-      attention: [],
-      hostNames: HOST_NAMES,
-    });
-    assert.notInclude(JSON.stringify(built.runner.targets), "e0fe439f");
-    assert.notInclude(JSON.stringify(built.runner.targets), "/Users/");
-  });
-
-  it("keeps the reason of a ready target uncounted with no error to drop: status has no more to say (#117)", () => {
-    const belt = beltPayload({
-      nowMs: NOW,
-      runner: {
-        ...RUNNER,
-        targets: [
-          targetRow({ kind: "host", id: "h1", name: "mini", slots: { running: null, max: 1 }, maxLoadPerCore: 1, load: null, notReady: null }),
-          targetRow({ kind: "local", slots: { running: null, max: 1 }, load: { oneMinute: 1, cores: 10 }, held: null, notReady: null }),
-        ],
-      },
-      runs: [],
-      attention: [],
-      hostNames: HOST_NAMES,
-    });
-    assert.deepStrictEqual(
-      belt.runner.targets.map((target) => target.reason),
-      ["its running agents could not be counted", "its running agents could not be counted"],
-    );
+    for (const leak of ["/Users/", "e0fe439f"]) assert.notInclude(text, leak);
   });
 
   it("cuts a long title without splitting a character", () => {

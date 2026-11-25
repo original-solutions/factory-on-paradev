@@ -1653,6 +1653,56 @@ describe("on the Paradev CLI", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("a cloud count that could not be read: targets.json's reason names the census error, the belt's does not (#117)", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const paradev = newParadev();
+        // The listing fails with text that quotes a path, as a CLI error can.
+        paradev.cloudList = Effect.succeed("No active organization in /Users/tomk/secret");
+        const writes: Array<{ runner: { targets: Array<{ kind: string; ready: boolean; reason: string | null }> } }> = [];
+        paradev.pages = (argv) => {
+          if (argv[1] === "publish") return reply(0, readFixture("pages-publish-probe-ws").stdout);
+          writes.push(JSON.parse(argv[8]!) as (typeof writes)[number]);
+          return reply(0, readFixture("pages-storage-set-belt").stdout);
+        };
+        const beltOn = named.replace(PARADEV_BLOCK, `paradev:\n  agent: claude\n  cli: ${CLI}\n`);
+        const ws = "c3e2d3c4-0000-4000-8000-000000000003";
+        const { loop, factoryDir } = yield* started(
+          beltOn,
+          noGhProcess,
+          { proxyGet: () => Effect.succeed(401) },
+          paradev,
+          // A live cloud record with an agent, so cloud is read and its listing fails.
+          (made) =>
+            writeThread(made.baseDir, {
+              v: 2,
+              threadId: `cloud:${ws}`,
+              target: { kind: "cloud", environmentId: "edad9805-e48d-40f3-a06c-e19a4105f974" },
+              workspaceId: ws,
+              projectId: "edad9805-e48d-40f3-a06c-e19a4105f974",
+              branch: "superset/fac-7-1-c3e2d3c4",
+              worktreePath: "/workspace",
+              launchCommandId: "command-7",
+              agent: "claude",
+              terminals: ["c3e2d3c4-0000-4000-8000-0000000000aa"],
+              turns: [],
+              archivedAt: null,
+            }),
+        );
+        yield* idleAfter(loop, factoryDir, 1);
+        const cloudRow = () => readTargetRows(factoryDir).find((row) => row.kind === "cloud");
+        const beltCloud = () => writes.at(-1)?.runner.targets.find((row) => row.kind === "cloud");
+        // Cloud's own checks pass, so its reason is the count's, not the not-ready pointer.
+        yield* passesUntil(loop, factoryDir, "a ready cloud row on the belt", () => beltCloud()?.ready === true);
+        assert.isTrue(cloudRow()?.ready);
+        assert.include(cloudRow()?.reason ?? "", "its running agents could not be counted: ");
+        assert.include(cloudRow()?.reason ?? "", "/Users/tomk/secret");
+        assert.strictEqual(beltCloud()?.reason, "its running agents could not be counted; factory-runner status says why");
+        assert.notInclude(JSON.stringify(writes), "/Users/tomk");
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("a sweep still listing holds the next passes' sweeps: one listing is in flight at a time", () =>
     Effect.scoped(
       Effect.gen(function* () {
