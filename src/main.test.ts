@@ -1167,6 +1167,92 @@ describe("on the Paradev CLI", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect(
+    "Bad credentials on every GitHub call raise gh-credentials on the third pass, an answering pass clears it, and no secret reaches the log, the item or targets.json",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const GH_DIR = "/gh/runner-login";
+          // Planted where a leak would come from: gh's own stderr. gh never prints its token.
+          const PLANTED = "ghp_PLANTEDs3cretNotForLogs0123456789";
+          let refusing = true;
+          const process = FactoryProcess.of({
+            run: (input) => {
+              if (input.command !== "gh") return noGhProcess.run(input);
+              if (refusing) {
+                return Effect.succeed(
+                  reply(1, "", `HTTP 401: Bad credentials (https://api.github.com/graphql) ${PLANTED}\nTry authenticating with:  gh auth login\n`),
+                );
+              }
+              // GitHub answers: the answer need not be one the caller can use.
+              return Effect.succeed(reply(0, "{}"));
+            },
+          });
+          const off = `paradev:\n  agent: claude\n  cli: ${CLI}\n  belt:\n    enabled: false\n`;
+          const { loop, logs, factoryDir, attention } = yield* started(
+            configFor([["a/b", "/b"]], GH_DIR, "", off),
+            process,
+            {},
+            newParadev(),
+          );
+          const credentialItem = Effect.map(attention.list(), (list) =>
+            list.find((item) => item.id === "gh-credentials"),
+          );
+          // Each call waits out its retries on the test clock, which moves on until the pass ends.
+          const passEnded = (passes: number) =>
+            Effect.gen(function* () {
+              for (let tick = 0; tick < 2_000 && finishedPasses(factoryDir) < passes; tick++) {
+                yield* TestClock.adjust(10_000);
+                yield* realDelay(1);
+              }
+              assert.isAtLeast(finishedPasses(factoryDir), passes, logs.join("\n"));
+              while (yield* loop.passRunning) yield* realDelay(5);
+            });
+          const nextPass = Effect.gen(function* () {
+            const before = finishedPasses(factoryDir);
+            yield* loop.wake;
+            yield* passEnded(before + 1);
+          });
+          yield* passEnded(1);
+          assert.strictEqual(yield* credentialItem, undefined, logs.join("\n"));
+          yield* nextPass;
+          assert.strictEqual(yield* credentialItem, undefined, logs.join("\n"));
+          yield* nextPass;
+          const item = yield* credentialItem;
+          assert.ok(item !== undefined, logs.join("\n"));
+          assert.strictEqual(item.kind, "attention");
+          assert.include(item.message, GH_DIR);
+          const refusedLines = logs.filter((line) => line.startsWith("gh:"));
+          assert.strictEqual(refusedLines.length, 3, logs.join("\n"));
+          assert.ok(
+            logs.some((line) => /attempt 1 of 5 failed \(Bad credentials\)/.test(line)),
+            logs.join("\n"),
+          );
+          const file = NodePath.join(factoryDir, TARGETS_FILE);
+          yield* waitUntil("the targets file", () => NodeFS.existsSync(file));
+          // The lines this adds: each retry, and each refused pass. Older error lines quote gh's stderr.
+          const retryLines = logs.filter((line) => line.includes("failed (Bad credentials)"));
+          assert.isAbove(retryLines.length, 0);
+          const texts = [
+            item.message,
+            JSON.stringify(item),
+            ...refusedLines,
+            ...retryLines,
+            NodeFS.readFileSync(file, "utf8"),
+          ];
+          for (const text of texts) {
+            assert.notInclude(text, PLANTED);
+            assert.notMatch(text, /gh[opsur]_|github_pat_|token|secret|password/i, text);
+          }
+          // GitHub answers again: the next pass clears the item.
+          refusing = false;
+          yield* nextPass;
+          assert.strictEqual(yield* credentialItem, undefined, logs.join("\n"));
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    { timeout: 60_000 },
+  );
+
   it.effect("a start removes the rows a stopped runner left, so status shows none until this runner's first pass", () => {
     const seen: Array<boolean> = [];
     return Effect.scoped(
@@ -1970,6 +2056,98 @@ describe("liveWorld", () => {
       NodeFS.writeFileSync(next, JSON.stringify({ from: version, to: "999.0.0", starts: 0 }));
       yield* worldOver(other).passFinished;
       assert.strictEqual(NodeFS.existsSync(next), true);
+    }),
+  );
+
+  it.effect("the trackers a world makes tally what GitHub said of the gh login's credentials in the shared state", () =>
+    Effect.gen(function* () {
+      const shared = newShared();
+      const scope = yield* Scope.make();
+      let answer: "refuse" | "answer" | "missing" = "refuse";
+      const process = FactoryProcess.of({
+        run: () =>
+          Effect.sync(() =>
+            answer === "answer"
+              ? reply(0, '{"login":"rawphp"}')
+              : reply(1, "", answer === "refuse" ? "gh: Bad credentials (HTTP 401)\n" : "HTTP 404: Not Found\n"),
+          ),
+      });
+      const build = () =>
+        liveWorld(
+          machine,
+          tempDir(),
+          process,
+          NodeServices.layer,
+          {} as never,
+          () => NOW,
+          "mac-mini",
+          noAttention,
+          { gate: { run: () => Effect.die("no gate") }, wake: Effect.void, scope },
+          undefined,
+          undefined,
+          shared,
+        );
+      const world = build();
+      assert.strictEqual(world.ghCredentials, shared.ghCredentials);
+      const fiber = yield* Effect.forkChild(
+        Effect.result(world.trackerUser({ repo: REPO, path: "/p" })),
+        { startImmediately: true },
+      );
+      yield* TestClock.adjust(60_000);
+      assert.isTrue(Result.isFailure(yield* Fiber.join(fiber)));
+      assert.deepStrictEqual(shared.ghCredentials, { rejected: 1, accepted: 0, gaveUp: true, passes: 0 });
+      answer = "missing";
+      yield* Effect.result(world.trackerUser({ repo: REPO, path: "/p" }));
+      assert.deepStrictEqual(shared.ghCredentials, { rejected: 1, accepted: 0, gaveUp: true, passes: 0 });
+      answer = "answer";
+      assert.strictEqual(yield* world.trackerUser({ repo: REPO, path: "/p" }), "rawphp");
+      assert.deepStrictEqual(shared.ghCredentials, { rejected: 1, accepted: 1, gaveUp: false, passes: 0 });
+      // A world built after a config load goes on with the same count.
+      shared.ghCredentials.passes = 2;
+      assert.strictEqual(build().ghCredentials.passes, 2);
+    }),
+  );
+
+  it.effect("a host check's read of the runner's login goes through the shared tally: after a give-up it is tried once and counted", () =>
+    Effect.gen(function* () {
+      const shared = newShared();
+      shared.ghCredentials.gaveUp = true;
+      const scope = yield* Scope.make();
+      const ghCalls: Array<ReadonlyArray<string>> = [];
+      const process = FactoryProcess.of({
+        run: (input) =>
+          Effect.sync(() => {
+            ghCalls.push(input.args ?? []);
+            return reply(1, "", "gh: Bad credentials (HTTP 401)\n");
+          }),
+      });
+      const host = { id: "h1", name: "mini", ssh: "me@mini", maxRuns: 2, maxLoadPerCore: 1 };
+      const world = liveWorld(
+        { ...machine, hosts: [host] },
+        tempDir(),
+        process,
+        NodeServices.layer,
+        {} as never,
+        () => NOW,
+        "mac-mini",
+        noAttention,
+        {
+          gate: { run: () => Effect.die("no gate") },
+          wake: Effect.void,
+          scope,
+          ssh: () => Effect.succeed({ exitCode: 255, timedOut: false, stdout: "", stderr: "Connection refused\n" }),
+          superset: () => Effect.fail("no Paradev CLI"),
+        },
+        undefined,
+        undefined,
+        shared,
+      );
+      const check = yield* Effect.forkChild(world.checkHost(host), { startImmediately: true });
+      // No wait on the test clock: the refused login read is tried once, as the trackers' are.
+      yield* Effect.yieldNow;
+      assert.isDefined(check.pollUnsafe());
+      assert.deepStrictEqual(ghCalls, [["api", "user"]]);
+      assert.deepStrictEqual(shared.ghCredentials, { rejected: 1, accepted: 0, gaveUp: true, passes: 0 });
     }),
   );
 
@@ -3093,7 +3271,13 @@ status: () =>
     it.effect("a login read GitHub refused is not transient", () =>
       Effect.gen(function* () {
         const world = worldOf(failing("gh: Bad credentials (HTTP 401)"));
-        const result = yield* Effect.result(world.trackerUser({ repo: REPO, path: "/p" }));
+        // A 401 is tried again on the usual waits before it is returned.
+        const fiber = yield* Effect.forkChild(
+          Effect.result(world.trackerUser({ repo: REPO, path: "/p" })),
+          { startImmediately: true },
+        );
+        yield* TestClock.adjust(PAST_RETRIES);
+        const result = yield* Fiber.join(fiber);
         assert.isTrue(Result.isFailure(result));
         if (Result.isFailure(result)) assert.notStrictEqual(result.failure.transient, true);
       }),

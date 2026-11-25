@@ -47,6 +47,7 @@ import {
   isTransientRead,
   isPlainRefName,
   isSafeBranchName,
+  ghLogin,
   makeGitHub,
 } from "./github.ts";
 
@@ -7440,6 +7441,460 @@ describe("retrying a call GitHub never received", () => {
         claimListCall,
         edit,
       ]);
+    }),
+  );
+});
+
+describe("retrying a call GitHub refused with Bad credentials", () => {
+  // What gh prints for a 401: the GraphQL form, and the REST form of `gh api`.
+  const GRAPHQL_401 =
+    "HTTP 401: Bad credentials (https://api.github.com/graphql)\nTry authenticating with:  gh auth login\n";
+  const REST_401 = "gh: Bad credentials (HTTP 401)\n";
+  const OTHER_401 = "gh: Requires authentication (HTTP 401)\n";
+  const PAST_RETRIES = 2_000 + 5_000 + 15_000 + 30_000 + 4_000;
+
+  const capturing = () => {
+    const logs: Array<{ level: string; text: string }> = [];
+    const logger = Logger.layer(
+      [
+        Logger.make(({ logLevel, message }) => {
+          logs.push({ level: logLevel, text: String(Array.isArray(message) ? message[0] : message) });
+        }),
+      ],
+      { mergeWithExisting: false },
+    );
+    return { logs, logger };
+  };
+
+  /** `setup`, with a tracker that counts its calls' credential outcomes in `tally`. */
+  const tallied = (...answers: ReadonlyArray<Answer>) => {
+    const t = setup(...answers);
+    const tally = { rejected: 0, accepted: 0, gaveUp: false };
+    return {
+      ...t,
+      tally,
+      github: makeGitHub({ repo: REPO, ghConfigDir: GH_CONFIG_DIR, credentials: tally }),
+    };
+  };
+
+  it.effect("a read refused with Bad credentials once is retried, and the retry line names it", () =>
+    Effect.gen(function* () {
+      const { logs, logger } = capturing();
+      const t = setup(fail(1, GRAPHQL_401), reply(LIST_ONE));
+      const fiber = yield* Effect.forkChild(
+        t.ok(t.github.listIssues("ready")).pipe(Effect.provide(logger)),
+        { startImmediately: true },
+      );
+      yield* TestClock.adjust("3 seconds");
+      const listing = yield* Fiber.join(fiber);
+      assert.strictEqual(listing.items.length, 1);
+      assert.strictEqual(t.inputs.length, 2);
+      assert.deepEqual(t.calls()[0], t.calls()[1]);
+      assert.strictEqual(logs.length, 1);
+      assert.strictEqual(logs[0]!.level, "Info");
+      assert.match(
+        logs[0]!.text,
+        /^`gh issue list --repo rawphp\/softfac .*` attempt 1 of 5 failed \(Bad credentials\); trying again in [23]\.\d s$/,
+      );
+    }),
+  );
+
+  it.effect("a write refused with Bad credentials once is sent again: GitHub applied nothing", () =>
+    Effect.gen(function* () {
+      const { logs, logger } = capturing();
+      const t = setup(fail(1, REST_401), reply(""));
+      const fiber = yield* Effect.forkChild(
+        t.ok(t.github.postComment(6, "a hidden body")).pipe(Effect.provide(logger)),
+        { startImmediately: true },
+      );
+      yield* TestClock.adjust("3 seconds");
+      yield* Fiber.join(fiber);
+      assert.strictEqual(t.inputs.length, 2);
+      assert.deepEqual(t.calls()[0], t.calls()[1]);
+      assert.strictEqual(logs.length, 1);
+      assert.match(
+        logs[0]!.text,
+        /^`gh issue comment 6 --repo rawphp\/softfac --body <\d+ bytes>` attempt 1 of 5 failed \(Bad credentials\); trying again in [23]\.\d s$/,
+      );
+      assert.notInclude(logs[0]!.text, "hidden body");
+    }),
+  );
+
+  it.effect("any other HTTP 401 is retried too, and its line says HTTP 401", () =>
+    Effect.gen(function* () {
+      const { logs, logger } = capturing();
+      const t = setup(fail(1, OTHER_401), reply('{"login":"rawphp"}'));
+      const fiber = yield* Effect.forkChild(
+        t.ok(t.github.login()).pipe(Effect.provide(logger)),
+        { startImmediately: true },
+      );
+      yield* TestClock.adjust("3 seconds");
+      assert.strictEqual(yield* Fiber.join(fiber), "rawphp");
+      assert.strictEqual(t.inputs.length, 2);
+      assert.match(logs[0]!.text, /^`gh api user` attempt 1 of 5 failed \(HTTP 401\)/);
+    }),
+  );
+
+  it.effect("a 401 on every attempt is tried five times on the usual waits and returns that error", () =>
+    Effect.gen(function* () {
+      const seed = "retry-jitter";
+      const draws = yield* Effect.all([
+        Random.nextIntBetween(0, 1000),
+        Random.nextIntBetween(0, 1000),
+        Random.nextIntBetween(0, 1000),
+        Random.nextIntBetween(0, 1000),
+      ]).pipe(Random.withSeed(seed));
+      const { logs, logger } = capturing();
+      const t = setup(
+        fail(1, GRAPHQL_401),
+        fail(1, GRAPHQL_401),
+        fail(1, GRAPHQL_401),
+        fail(1, GRAPHQL_401),
+        fail(1, "fifth: " + GRAPHQL_401),
+      );
+      const fiber = yield* Effect.forkChild(
+        t.err(t.github.listIssues("ready")).pipe(Random.withSeed(seed), Effect.provide(logger)),
+        { startImmediately: true },
+      );
+      for (const [index, delay] of [2_000, 5_000, 15_000, 30_000].entries()) {
+        yield* TestClock.adjust(delay + draws[index]! - 1);
+        assert.strictEqual(t.inputs.length, index + 1);
+        yield* TestClock.adjust(1);
+        assert.strictEqual(t.inputs.length, index + 2);
+      }
+      const error = yield* Fiber.join(fiber);
+      assert.strictEqual(t.inputs.length, 5);
+      assert.strictEqual(error._tag, "GitHubFailed");
+      if (error._tag !== "GitHubFailed") return;
+      assert.strictEqual(error.status, 1);
+      assert.strictEqual(error.stderr, "fifth: " + GRAPHQL_401);
+      assert.strictEqual(logs.length, 4);
+      logs.forEach((line, index) =>
+        assert.match(line.text, new RegExp(`attempt ${index + 1} of 5 failed \\(Bad credentials\\)`)),
+      );
+    }),
+  );
+
+  it.effect("a write refused on every attempt returns that error after five", () =>
+    Effect.gen(function* () {
+      const t = setup(
+        fail(1, REST_401),
+        fail(1, REST_401),
+        fail(1, REST_401),
+        fail(1, REST_401),
+        fail(1, REST_401),
+      );
+      const fiber = yield* Effect.forkChild(t.err(t.github.postComment(6, "x")), {
+        startImmediately: true,
+      });
+      yield* TestClock.adjust(PAST_RETRIES);
+      const error = yield* Fiber.join(fiber);
+      assert.strictEqual(t.inputs.length, 5);
+      assert.strictEqual(error._tag, "GitHubFailed");
+      if (error._tag === "GitHubFailed") assert.strictEqual(error.stderr, REST_401);
+    }),
+  );
+
+  it.effect("a signed-out gh, and any failure that is not a 401, is still not retried", () =>
+    Effect.gen(function* () {
+      const stderrs = [
+        // No login at all: gh never asked GitHub, and its own path reads it.
+        "To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n",
+        "You are not logged into any GitHub hosts. To log in, run: gh auth login\n",
+        "HTTP 403: Resource not accessible by integration (https://api.github.com/graphql)",
+        "HTTP 404: Not Found",
+        "HTTP 502: Bad Gateway (https://api.github.com/graphql)",
+        "HTTP 4010: not a status",
+      ];
+      for (const stderr of stderrs) {
+        for (const write of [false, true]) {
+          const t = setup(fail(1, stderr), reply(LIST_ONE));
+          const error = yield* t.err(
+            write ? t.github.postComment(6, "x") : t.github.listIssues("ready"),
+          );
+          assert.strictEqual(error._tag, "GitHubFailed", stderr);
+          assert.strictEqual(t.inputs.length, 1, stderr);
+        }
+      }
+    }),
+  );
+
+  it("a 401 is not a failure GitHub never received, nor a transient read for the last good copy", () => {
+    const args = ["api", "user"];
+    for (const stderr of [GRAPHQL_401, REST_401, OTHER_401]) {
+      const failed = new GitHubFailed({ args, status: 1, stderr });
+      assert.isFalse(isNotReceived(failed), stderr);
+      assert.isFalse(isTransientRead(failed), stderr);
+    }
+  });
+
+  it.effect("the tally counts a call that answered, and one still refused after its retries", () =>
+    Effect.gen(function* () {
+      const ok = tallied(fail(1, GRAPHQL_401), reply(LIST_ONE));
+      const fiber = yield* Effect.forkChild(ok.ok(ok.github.listIssues("ready")), {
+        startImmediately: true,
+      });
+      yield* TestClock.adjust("3 seconds");
+      yield* Fiber.join(fiber);
+      // A refusal that a retry got past is not one that persisted.
+      assert.deepStrictEqual(ok.tally, { rejected: 0, accepted: 1, gaveUp: false });
+
+      const refused = tallied(
+        fail(1, REST_401),
+        fail(1, REST_401),
+        fail(1, REST_401),
+        fail(1, REST_401),
+        fail(1, REST_401),
+      );
+      const refusedFiber = yield* Effect.forkChild(refused.err(refused.github.postComment(6, "x")), {
+        startImmediately: true,
+      });
+      yield* TestClock.adjust(PAST_RETRIES);
+      yield* Fiber.join(refusedFiber);
+      assert.deepStrictEqual(refused.tally, { rejected: 1, accepted: 0, gaveUp: true });
+
+      // Any other failure says nothing about the credentials.
+      const other = tallied(fail(1, "HTTP 404: Not Found"));
+      yield* other.err(other.github.listIssues("ready"));
+      assert.deepStrictEqual(other.tally, { rejected: 0, accepted: 0, gaveUp: false });
+
+      const plain = tallied(reply(LIST_ONE), reply(""));
+      yield* plain.ok(plain.github.listIssues("ready"));
+      yield* plain.ok(plain.github.postComment(6, "x"));
+      assert.deepStrictEqual(plain.tally, { rejected: 0, accepted: 2, gaveUp: false });
+    }),
+  );
+});
+
+describe("Bad credentials in a claim, and after a 401 outlasted its retries", () => {
+  const REFUSED = "HTTP 401: Bad credentials (https://api.github.com/graphql)\nTry authenticating with:  gh auth login\n";
+  const PAST_RETRIES = 2_000 + 5_000 + 15_000 + 30_000 + 4_000;
+  const refusedTimes = (n: number) => Array.from({ length: n }, () => fail(1, REFUSED));
+
+  const tallied = (...answers: ReadonlyArray<Answer>) => {
+    const t = setup(...answers);
+    const tally = { rejected: 0, accepted: 0, gaveUp: false };
+    return {
+      ...t,
+      tally,
+      github: makeGitHub({ repo: REPO, ghConfigDir: GH_CONFIG_DIR, credentials: tally }),
+    };
+  };
+
+  it.effect("a claim whose first view is refused once views again and claims", () =>
+    Effect.gen(function* () {
+      const t = setup(
+        fail(1, REFUSED),
+        reply('{"assignees":[]}'),
+        claimPosted(50),
+        claimList(claimRow(50, "mac-mini", CLAIMED_AT)),
+        reply(""),
+      );
+      const fiber = yield* Effect.forkChild(t.ok(claim6(t)), { startImmediately: true });
+      yield* TestClock.adjust("3 seconds");
+      assert.deepStrictEqual(yield* Fiber.join(fiber), { kind: "claimed" });
+      assert.deepStrictEqual(t.calls(), [
+        claimViewCall,
+        claimViewCall,
+        claimPostCall(),
+        claimListCall,
+        claimEditCall,
+      ]);
+    }),
+  );
+
+  it.effect("a claim comment refused once is posted again, once, and the claim goes on", () =>
+    Effect.gen(function* () {
+      const t = setup(
+        reply('{"assignees":[]}'),
+        fail(1, "gh: Bad credentials (HTTP 401)\n"),
+        reply('{"assignees":[]}'),
+        claimPosted(50),
+        claimList(claimRow(50, "mac-mini", CLAIMED_AT)),
+        reply(""),
+      );
+      const fiber = yield* Effect.forkChild(t.ok(claim6(t)), { startImmediately: true });
+      yield* TestClock.adjust("3 seconds");
+      assert.deepStrictEqual(yield* Fiber.join(fiber), { kind: "claimed" });
+      assert.deepStrictEqual(t.calls(), [
+        claimViewCall,
+        claimPostCall(),
+        claimViewCall,
+        claimPostCall(),
+        claimListCall,
+        claimEditCall,
+      ]);
+    }),
+  );
+
+  it.effect("a claim edit refused with Bad credentials is not sent again: it may have half landed, so the caller repairs it", () =>
+    Effect.gen(function* () {
+      // Had the claim been retried, this view would answer the runner's own half-made assignment.
+      const t = setup(
+        reply('{"assignees":[]}'),
+        claimPosted(50),
+        claimList(claimRow(50, "mac-mini", CLAIMED_AT)),
+        fail(1, REFUSED),
+        reply('{"assignees":[{"login":"rawphp"}]}'),
+      );
+      const fiber = yield* Effect.forkChild(t.err(claim6(t)), { startImmediately: true });
+      yield* TestClock.adjust(PAST_RETRIES);
+      const error = yield* Fiber.join(fiber);
+      assert.strictEqual(error._tag, "GitHubFailed");
+      if (error._tag === "GitHubFailed") assert.strictEqual(error.stderr, REFUSED);
+      assert.deepStrictEqual(t.calls(), [claimViewCall, claimPostCall(), claimListCall, claimEditCall]);
+    }),
+  );
+
+  it.effect("a claim whose edit GitHub never received, then whose re-view is refused once, still claims", () =>
+    Effect.gen(function* () {
+      const TLS = 'Post "https://api.github.com/graphql": net/http: TLS handshake timeout';
+      const t = setup(
+        reply('{"assignees":[]}'),
+        claimPosted(50),
+        claimList(claimRow(50, "mac-mini", CLAIMED_AT)),
+        fail(1, TLS),
+        fail(1, REFUSED),
+        reply('{"assignees":[]}'),
+        claimList(claimRow(50, "mac-mini", CLAIMED_AT)),
+        reply(""),
+      );
+      const fiber = yield* Effect.forkChild(t.ok(claim6(t)), { startImmediately: true });
+      yield* TestClock.adjust(2_000 + 5_000 + 2_000);
+      assert.deepStrictEqual(yield* Fiber.join(fiber), { kind: "claimed" });
+      assert.deepStrictEqual(t.calls(), [
+        claimViewCall,
+        claimPostCall(),
+        claimListCall,
+        claimEditCall,
+        claimViewCall,
+        claimViewCall,
+        claimListCall,
+        claimEditCall,
+      ]);
+    }),
+  );
+
+  it.effect("the runner's login read counts in a tally it is given, and after a give-up is tried once", () =>
+    Effect.gen(function* () {
+      const t = setup(fail(1, REFUSED), reply('{"login":"rawphp"}'));
+      const tally = { rejected: 0, accepted: 0, gaveUp: true };
+      const refused = yield* Effect.forkChild(t.err(ghLogin(GH_CONFIG_DIR, tally)), {
+        startImmediately: true,
+      });
+      // No wait on the test clock: it is tried once.
+      yield* Effect.yieldNow;
+      assert.isDefined(refused.pollUnsafe());
+      assert.strictEqual(t.inputs.length, 1);
+      assert.deepStrictEqual(tally, { rejected: 1, accepted: 0, gaveUp: true });
+      assert.strictEqual(yield* t.ok(ghLogin(GH_CONFIG_DIR, tally)), "rawphp");
+      assert.deepStrictEqual(tally, { rejected: 1, accepted: 1, gaveUp: false });
+    }),
+  );
+
+  it.effect("a claim edit's 401 that was not resent is no refusal that outlasted its retries: the repair's reads still retry", () =>
+    Effect.gen(function* () {
+      const t = tallied(
+        reply('{"assignees":[]}'),
+        claimPosted(50),
+        claimList(claimRow(50, "mac-mini", CLAIMED_AT)),
+        fail(1, REFUSED),
+        fail(1, REFUSED),
+        reply('{"assignees":[{"login":"rawphp"}]}'),
+      );
+      yield* t.err(claim6(t));
+      // The comment read was answered; the edit's 401 is the caller's to repair, not a give-up.
+      assert.deepStrictEqual(t.tally, { rejected: 0, accepted: 1, gaveUp: false });
+      // What the caller's repair reads next is tried again on a 401, as any read is.
+      const repair = yield* Effect.forkChild(t.ok(t.github.login()).pipe(Effect.flip), {
+        startImmediately: true,
+      });
+      yield* TestClock.adjust("3 seconds");
+      yield* Fiber.join(repair);
+      assert.strictEqual(t.inputs.length, 6);
+    }),
+  );
+
+  it.effect("once a call has outlasted its 401 retries, the next refused call is tried once", () =>
+    Effect.gen(function* () {
+      const t = tallied(...refusedTimes(5), fail(1, REFUSED), reply(LIST_ONE));
+      const first = yield* Effect.forkChild(t.err(t.github.listIssues("ready")), {
+        startImmediately: true,
+      });
+      yield* TestClock.adjust(PAST_RETRIES);
+      yield* Fiber.join(first);
+      assert.strictEqual(t.inputs.length, 5);
+      assert.isTrue(t.tally.gaveUp);
+      const second = yield* t.err(t.github.postComment(6, "x"));
+      assert.strictEqual(second._tag, "GitHubFailed");
+      assert.strictEqual(t.inputs.length, 6);
+      assert.deepStrictEqual(t.tally, { rejected: 2, accepted: 0, gaveUp: true });
+    }),
+  );
+
+  it.effect("a call GitHub answers ends that: the next refused call is retried again", () =>
+    Effect.gen(function* () {
+      const t = tallied(...refusedTimes(5), reply(LIST_ONE), fail(1, REFUSED), reply(LIST_ONE));
+      const first = yield* Effect.forkChild(t.err(t.github.listIssues("ready")), {
+        startImmediately: true,
+      });
+      yield* TestClock.adjust(PAST_RETRIES);
+      yield* Fiber.join(first);
+      yield* t.ok(t.github.listIssues("ready"));
+      assert.isFalse(t.tally.gaveUp);
+      const third = yield* Effect.forkChild(t.ok(t.github.listIssues("ready")), {
+        startImmediately: true,
+      });
+      yield* TestClock.adjust("3 seconds");
+      assert.strictEqual((yield* Fiber.join(third)).items.length, 1);
+      assert.strictEqual(t.inputs.length, 8);
+      assert.deepStrictEqual(t.tally, { rejected: 1, accepted: 2, gaveUp: false });
+    }),
+  );
+
+  it.effect("without a tally a tracker still stops retrying once a 401 outlasted its retries", () =>
+    Effect.gen(function* () {
+      const t = setup(...refusedTimes(6));
+      const first = yield* Effect.forkChild(t.err(t.github.listIssues("ready")), {
+        startImmediately: true,
+      });
+      yield* TestClock.adjust(PAST_RETRIES);
+      yield* Fiber.join(first);
+      const second = yield* Effect.forkChild(t.err(t.github.listIssues("ready")), {
+        startImmediately: true,
+      });
+      // Tried once and done, with no wait for the test clock to move.
+      yield* Effect.yieldNow;
+      assert.strictEqual(t.inputs.length, 6);
+      assert.isDefined(second.pollUnsafe());
+    }),
+  );
+
+  it.effect("a claim whose comment read outlasts its 401 retries counts one refusal, not one per layer", () =>
+    Effect.gen(function* () {
+      const t = tallied(reply('{"assignees":[]}'), claimPosted(50), ...refusedTimes(5));
+      const fiber = yield* Effect.forkChild(t.err(claim6(t)), { startImmediately: true });
+      yield* TestClock.adjust(PAST_RETRIES);
+      const error = yield* Fiber.join(fiber);
+      assert.strictEqual(error._tag, "GitHubFailed");
+      // The claim does not run its block again around a read that gave up: 2 + 5 calls.
+      assert.strictEqual(t.inputs.length, 7);
+      assert.strictEqual(t.tally.rejected, 1);
+    }),
+  );
+
+  it.effect("the 401 patterns match in any case, as the run page's sign-out check does", () =>
+    Effect.gen(function* () {
+      // Each pattern on its own: one with no 401 in it, and one with no "Bad credentials".
+      for (const stderr of ["gh: bad credentials", "gh: requires authentication (http 401)"]) {
+        const t = setup(fail(1, stderr), reply(LIST_ONE));
+        const fiber = yield* Effect.forkChild(t.ok(t.github.listIssues("ready")), {
+          startImmediately: true,
+        });
+        yield* TestClock.adjust("3 seconds");
+        yield* Fiber.join(fiber);
+        assert.strictEqual(t.inputs.length, 2, stderr);
+      }
     }),
   );
 });
