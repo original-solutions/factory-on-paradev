@@ -692,6 +692,68 @@ describe("reapLaunch: a stop by hand of a run still starting", () => {
   );
 });
 
+describe("reapLaunch: a stop of a launch whose thread only the adapter recorded", () => {
+  it.effect("stops that thread as a building stop does, and the issue goes stuck, not back to ready", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), [...SENDING, STOP_LINE]);
+      rig.world.launched = "local:ws-9";
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), {
+        kind: "stuck",
+        ended: "stopped",
+        failures: 0,
+        limit: false,
+        mayHaveSession: false,
+      });
+      assert.deepStrictEqual(rig.launchAsks, [launchCommandId(runOf(1))]);
+      assert.deepStrictEqual(rig.calls, [
+        "issue 10",
+        "yield 10",
+        "archive local:ws-9",
+        "thread local:ws-9",
+        "removeWorktree /t3/wt",
+        "comment 10",
+        "setState 10 stuck",
+        "unassign 10 rawphp",
+        "status 10 **Factory status:** stuck",
+      ]);
+      const seen = readProgress(readRun(rig.dataDir, runOf(1)).entries);
+      assert.isTrue(seen.finished);
+      assert.strictEqual(seen.stuck, "stopped by hand");
+    }),
+  );
+
+  it.effect("archives it too when a person moved the issue, which is left as it is", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), [...SENDING, STOP_LINE]);
+      rig.world.launched = "local:ws-9";
+      rig.world.issue = issueDetail("proposed");
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), {
+        kind: "released",
+        mayHaveSession: false,
+      });
+      assert.deepStrictEqual(rig.calls, [
+        "issue 10",
+        "archive local:ws-9",
+        "thread local:ws-9",
+        "removeWorktree /t3/wt",
+      ]);
+    }),
+  );
+
+  it.effect("does not ask the adapter for a stopped run that never sent its launch", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), [...CLAIMED, STOP_LINE]);
+      rig.world.launched = "local:ws-9";
+      const reaped = yield* reapLaunch(rig.ctx(), runOf(1));
+      assert.strictEqual(reaped.kind, "ready");
+      assert.deepStrictEqual(rig.launchAsks, []);
+    }),
+  );
+});
+
 describe("reapLaunch: a run whose thread or workspace is gone", () => {
   it.effect("fails a triage run whose thread is gone once it is past the timeout", () =>
     Effect.gen(function* () {

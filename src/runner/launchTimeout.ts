@@ -128,25 +128,46 @@ const earlierTimeouts = Effect.fn("RunnerLaunchTimeout.earlierTimeouts")(functio
 });
 
 /**
+ * The thread the run's launch made: the ledger's, else, for a launch that was sent, the one the
+ * Paradev adapter recorded under its command id (`launchThread`), which a launch cut off before
+ * `session_launched` has there and the ledger lacks.
+ */
+const launchedThread = (ctx: LaunchTimeoutContext, run: RunId, seen: Seen) =>
+  seen.threadId !== null || !seen.launchSent
+    ? Effect.succeed(seen.threadId)
+    : ctx.launchThread(launchCommandId(run));
+
+/** How a starting run's launch ends, and the thread that ending stops (`stuck-by-hand` only). */
+interface Decision {
+  readonly end: LaunchEnd | "stuck-by-hand";
+  readonly threadId: string | null;
+}
+
+/**
  * How the run's launch ends now, or null to leave it: a decision already in the ledger stands; a
  * stop by hand ends it at once; else the launch must be older than the timeout with no thread id,
- * or with a thread that is gone. A sent launch the Paradev adapter recorded a live thread for
- * (`launchThread`) made its session and was cut off before the ledger said so: it is left for the
- * pass to resume, which records that thread rather than claiming the issue again beside it.
- * `stuck-by-hand` is a stop of a run whose thread is recorded.
+ * or with a thread that is gone. `stuck-by-hand` is a stop of a run whose launch made a thread
+ * (`launchedThread`), which is stopped as a building stop's is. A timed-out launch whose thread
+ * only the adapter recorded, and is live, made its session and was cut off before the ledger said
+ * so: it is left for the pass to resume, which records that thread rather than claiming the issue
+ * again beside it.
  */
 const decide = Effect.fn("RunnerLaunchTimeout.decide")(function* (
   ctx: LaunchTimeoutContext,
   run: RunId,
   seen: Seen,
 ) {
-  if (seen.launchFailed !== null) return seen.launchFailed;
-  if (seen.stopRequested) return seen.threadId === null ? "stopped" : "stuck-by-hand";
+  const ended = (end: LaunchEnd): Decision => ({ end, threadId: seen.threadId });
+  if (seen.launchFailed !== null) return ended(seen.launchFailed);
+  if (seen.stopRequested) {
+    const threadId = yield* launchedThread(ctx, run, seen);
+    return threadId === null ? ended("stopped") : ({ end: "stuck-by-hand", threadId } satisfies Decision);
+  }
   if (seen.launchSentMs === null) return null;
   if (ctx.clock() - seen.launchSentMs <= ctx.launchTimeout.seconds * 1000) return null;
-  const threadId = seen.threadId ?? (yield* ctx.launchThread(launchCommandId(run)));
+  const threadId = yield* launchedThread(ctx, run, seen);
   if (threadId !== null && (yield* threadLive(ctx, threadId))) return null;
-  return "timed-out";
+  return ended("timed-out");
 });
 
 /**
@@ -172,8 +193,9 @@ export const reapLaunch = Effect.fn("RunnerLaunchTimeout.reapLaunch")(function* 
   if (cutAfterMove(seen)) return yield* finishCut(ctx, run, seen);
   // A stuck decision the reaper did not record is `start`'s to finish.
   if (!isStarting(seen) || (seen.stuck !== null && seen.launchFailed === null)) return LEFT;
-  const decided = yield* decide(ctx, run, seen);
-  if (decided === null) return LEFT;
+  const decision = yield* decide(ctx, run, seen);
+  if (decision === null) return LEFT;
+  const decided = decision.end;
   const issue = Number(run.issue);
   const detail = yield* ctx.tracker.issue(issue);
   if (detail.closed) return LEFT;
@@ -196,6 +218,8 @@ export const reapLaunch = Effect.fn("RunnerLaunchTimeout.reapLaunch")(function* 
   const out = yield* ledger(() => Ledger.open(ctx.dataDir, run, { clock: ctx.clock }));
   try {
     const at = progressFrom("pass", seen, "triage");
+    // A stop's thread may be one only the adapter recorded: it is the one stopped.
+    at.threadId = decision.threadId;
     if (decided === "stuck-by-hand") {
       if (!ours) return yield* release(ctx, out, at, false);
       yield* goStuck(ctx, issue, out, at, "stop-requested", { reason: STOPPED_BY_HAND });
