@@ -2419,16 +2419,17 @@ describe("launches that recorded no thread id", () => {
     }),
   );
 
-  it.effect("a ready issue left for the machine that reaped it says so", () =>
+  it.effect("a run a cut reap left in ready or stuck is handed to the reaper, with no stop request taken", () =>
     Effect.gen(function* () {
       const fake = new Fake();
-      fake.ready[REPO] = [12];
-      fake.pushStart(`${REPO}#12`, { kind: "skipped", reason: "left", leftForReaper: true });
-      const { lines } = yield* pass(fake, [REPO], 3);
-      const line = runLine(lines, `${REPO}#12 ready:`);
-      assert.ok(
-        line.includes("factory:ready is the factory's own, from another machine's launch timeout: left for that machine"),
-        line,
+      fake.runIn(12, "ready");
+      fake.runIn(13, "stuck");
+      fake.reaps[`${REPO}#12`] = [{ kind: "ready", ended: "timed-out", failures: 1, mayHaveSession: false }];
+      yield* pass(fake, [REPO], 3);
+      assert.deepEqual(fake.reapCalls, [`${RUN12} 900s 1`, `${runIdToString(rid(13))} 900s 1`]);
+      assert.deepEqual(
+        fake.calls.filter((c) => c.startsWith("stop_request")),
+        [`stop_request ${REPO}#13`],
       );
     }),
   );

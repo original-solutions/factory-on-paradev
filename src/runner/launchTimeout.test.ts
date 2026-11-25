@@ -224,10 +224,10 @@ const linesOf = (dataDir: string, run: RunId) =>
 
 const bytesOf = (dataDir: string, run: RunId) => JSON.stringify(readRun(dataDir, run).entries);
 
-/** The lines a launch timeout appends after the run's own, for a run left in `triage`. */
-/** The lines a reap that puts the issue back to ready appends: its step, then the finished line alone. */
+/** The lines a reap that puts a `triage` run's issue back to ready appends after the run's own. */
 const readyTail = (marker: string, reason: string, totalMs: number) => [
   { event: "step_changed", data: { step: marker }, cause: makeCause("pass", reason) },
+  { event: "state_changed", data: { from: "triage", to: "ready" }, cause: makeCause("pass", reason) },
   {
     event: "finished",
     data: { ...FINISHED.data, total_ms: totalMs },
@@ -906,14 +906,51 @@ describe("reapLaunch: a reap cut short", () => {
     }),
   );
 
-  it.effect("finishes the ready move with its finished line alone, so no cut leaves the run in ready", () =>
+  it.effect("finishes a run a cut left in ready after its state_changed, with no GitHub call", () =>
     Effect.gen(function* () {
       const rig = rigFor();
-      seed(rig.dataDir, runOf(1), SENDING);
-      rig.clock.now = T0 + 16 * MINUTE;
-      yield* reapLaunch(rig.ctx(), runOf(1));
-      const events = readRun(rig.dataDir, runOf(1)).entries.map((entry) => entry.event);
-      assert.deepStrictEqual(events.slice(SENDING.length), ["step_changed", "finished"]);
+      seed(rig.dataDir, runOf(1), [...SENDING, step("launch-timed-out"), moved("triage", "ready")]);
+      rig.world.issue = { ...issueDetail("ready"), assignees: [] };
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), {
+        kind: "ready",
+        ended: "timed-out",
+        failures: 1,
+        mayHaveSession: true,
+      });
+      assert.deepStrictEqual(rig.calls, []);
+      assert.deepStrictEqual(listUnfinishedRuns(rig.dataDir), []);
+    }),
+  );
+
+  it("finishes a run a cut left in stuck at the limit, as the launch-timeout outcome", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), [...SENDING, step("launch-timed-out"), FINISHED]);
+      seed(rig.dataDir, runOf(2), [
+        ...SENDING,
+        step("launch-timed-out"),
+        { event: "stuck", data: { reason: LAUNCH_TIMEOUT_REASON } },
+        moved("triage", "stuck"),
+      ]);
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(2)), {
+        kind: "stuck",
+        ended: "timed-out",
+        failures: 2,
+        limit: true,
+        mayHaveSession: true,
+      });
+      assert.deepStrictEqual(rig.calls, []);
+      assert.deepStrictEqual(listUnfinishedRuns(rig.dataDir), []);
+    }),
+  );
+
+  it("leaves a run in ready or stuck that the reaper did not decide", () =>
+    Effect.gen(function* () {
+      for (const to of ["ready", "stuck"] as const) {
+        const rig = rigFor();
+        seed(rig.dataDir, runOf(1), [...SENDING, moved("triage", to)]);
+        assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), { kind: "left" });
+      }
     }),
   );
 

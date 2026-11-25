@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import { describe } from "vitest";
 
 import type { Approval } from "../domain/approval.ts";
 
@@ -160,6 +161,101 @@ it("judgeApproval refuses a stranger's edit or rename at or after the label, not
   assert.equal(judgeApproval(before, READY, ["tom"]).kind, "approved");
   const instructor = issueOf([labeled(LABELED, "tom"), renamed(AFTER, "tom")], [[AFTER, "tom"]]);
   assert.equal(judgeApproval(instructor, READY, ["tom"]).kind, "approved");
+});
+
+describe("judgeApproval: a factory:ready label the factory's own login applied", () => {
+  const FACTORY = "softfac-bot";
+  const T = (minute: number) => `2026-10-04T10:${String(minute).padStart(2, "0")}:00Z`;
+  const unlabeledAs = (at: string, login: string, name: string): TimelineNode => ({
+    __typename: "UnlabeledEvent",
+    createdAt: at,
+    actor: user(login),
+    label: { name },
+  });
+  /** An instructor's ready at 10:00, the claim's swap to triage, then the reaper's swap back to ready. */
+  const reaped = (extra: ReadonlyArray<TimelineNode> = []): Array<TimelineNode> => [
+    labeled(T(0), "Tom"),
+    unlabeledAs(T(1), FACTORY, READY),
+    labeled(T(1), FACTORY, "factory:triage"),
+    ...extra,
+    unlabeledAs(T(20), FACTORY, "factory:triage"),
+    labeled(T(20), FACTORY),
+  ];
+
+  it("carries the instructor's earlier label when every factory label change since was the factory's", () => {
+    assert.deepStrictEqual(judgeApproval(issueOf(reaped()), READY, ["tom"], FACTORY), {
+      kind: "approved",
+      labeledAt: T(0),
+      labeledBy: "Tom",
+    });
+  });
+
+  it("carries it through earlier reaps and a building stint as well", () => {
+    const again = [
+      unlabeledAs(T(5), FACTORY, "factory:triage"),
+      labeled(T(5), FACTORY),
+      unlabeledAs(T(6), FACTORY, READY),
+      labeled(T(6), FACTORY, "factory:triage"),
+      unlabeledAs(T(7), FACTORY, "factory:triage"),
+      labeled(T(7), FACTORY, "factory:building"),
+      unlabeledAs(T(8), FACTORY, "factory:building"),
+      labeled(T(8), FACTORY, "factory:triage"),
+    ];
+    assert.deepStrictEqual(judgeApproval(issueOf(reaped(again)), READY, ["tom"], FACTORY), {
+      kind: "approved",
+      labeledAt: T(0),
+      labeledBy: "Tom",
+    });
+    // Other labels anyone sets in between do not matter.
+    const other = [labeled(T(9), "eve", "bug")];
+    assert.strictEqual(judgeApproval(issueOf(reaped(other)), READY, ["tom"], FACTORY).kind, "approved");
+  });
+
+  it("judges the text from the instructor's label, so a stranger's edit during the stall refuses it", () => {
+    const edited = issueOf(reaped(), [[T(10), "eve"]]);
+    assert.deepStrictEqual(judgeApproval(edited, READY, ["tom"], FACTORY), {
+      kind: "refused",
+      refusal: { kind: "edited-after-label", labeledAt: T(0) },
+    });
+  });
+
+  it("refuses when someone else moved a factory label in between, or no instructor's label is found", () => {
+    const moved = [unlabeledAs(T(9), "eve", "factory:triage"), labeled(T(9), "eve", "factory:triage")];
+    const byEve = judgeApproval(issueOf(reaped(moved)), READY, ["tom"], FACTORY);
+    assert.deepStrictEqual(byEve, {
+      kind: "refused",
+      refusal: { kind: "labeled-by-non-instructor", by: FACTORY, labeledAt: T(20) },
+    });
+    // The ready before the claim was a stranger's.
+    const stranger = [labeled(T(0), "eve"), ...reaped().slice(1)];
+    assert.strictEqual(judgeApproval(issueOf(stranger), READY, ["tom"], FACTORY).kind, "refused");
+    // Nothing before the factory's label at all.
+    assert.strictEqual(
+      judgeApproval(issueOf([labeled(T(20), FACTORY)]), READY, ["tom"], FACTORY).kind,
+      "refused",
+    );
+  });
+
+  it("says a full page that holds no instructor's label before the factory's is incomplete", () => {
+    const filler = Array.from({ length: HISTORY_PAGE - 2 }, () => labeled(T(9), "eve", "bug"));
+    const page = [...filler, unlabeledAs(T(20), FACTORY, "factory:triage"), labeled(T(20), FACTORY)];
+    assert.deepStrictEqual(
+      judgeApproval(issueOf(page, [], { events: HISTORY_PAGE + 5 }), READY, ["tom"], FACTORY),
+      { kind: "refused", refusal: { kind: "label-history-incomplete" } },
+    );
+  });
+
+  it("takes the factory login's label as its own approval when that login is an instructor, as before", () => {
+    assert.deepStrictEqual(judgeApproval(issueOf(reaped()), READY, ["tom", FACTORY], FACTORY), {
+      kind: "approved",
+      labeledAt: T(20),
+      labeledBy: FACTORY,
+    });
+  });
+
+  it("judges as before with no factory login given", () => {
+    assert.strictEqual(judgeApproval(issueOf(reaped()), READY, ["tom"]).kind, "refused");
+  });
 });
 
 it("judgeApproval refuses an edit history cut off after the label", () => {

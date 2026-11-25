@@ -133,6 +133,7 @@ const fakeTracker = (script: {
 }) => {
   const calls: Array<string> = [];
   const claimers: Array<Claimer> = [];
+  const approvalLogins: Array<string> = [];
   const issues = [...(script.issues ?? [detail("ready")])];
   const claims = [...(script.claims ?? [{ kind: "claimed" } as const])];
   const textChecks = [...(script.textChecks ?? [])];
@@ -147,7 +148,8 @@ const fakeTracker = (script: {
       calls.push(`issue ${n}`);
       return answer(issues, detail("ready"));
     },
-    approval: (n, instructors) => {
+    approval: (n, instructors, factory) => {
+      approvalLogins.push(factory ?? "");
       calls.push(`approval ${n} ${instructors.join(",")}`);
       return Effect.succeed(
         script.approval ?? { kind: "approved", labeledAt: LABELED, labeledBy: "tomkaczocha" },
@@ -234,7 +236,7 @@ const fakeTracker = (script: {
     markPrDraft: () => Effect.die("not the claim's"),
     commentOnPr: () => Effect.die("not the claim's"),
   };
-  return { tracker, calls, claimers };
+  return { tracker, calls, claimers, approvalLogins };
 };
 
 const isSessionsError = Schema.is(SessionsError);
@@ -711,184 +713,14 @@ describe("start: a fresh ready issue", () => {
     }),
   );
 
-  describe("a re-claim after the launch reaper put the issue back to ready", () => {
-    const run2: RunId = { ...run7, attempt: 2 };
-    /** Attempt 1, approved on `LABELED`, whose launch the reaper failed (`marker`) at `T0`. */
-    const reaped = (dataDir: string, marker = "launch-timed-out", finishedAt = T0) => {
-      let now = T0;
-      const ledger = Ledger.create(dataDir, run7, { clock: () => now });
-      handles.push(ledger);
-      const why = makeCause("start", "seed");
-      ledger.append(
-        { event: "step_changed", data: { step: `approved ${LABELED}` } },
-        makeCause("start", "approved", { actor: "tomkaczocha" }),
-      );
-      ledger.append({ event: "claimed", data: { machine: "m", github_user: USER } }, why);
-      ledger.append({ event: "state_changed", data: { from: "ready", to: "triage" } }, why);
-      ledger.append({ event: "step_changed", data: { step: "launch-sending" } }, why);
-      ledger.append({ event: "step_changed", data: { step: marker } }, why);
-      now = finishedAt;
-      ledger.finish("stuck", null, null, why);
-    };
-    /** The ready label in force, applied by the factory's own login a second after the reap. */
-    const BY_FACTORY = utcSecond(T0 + 1000);
-    const firstLine = (dataDir: string) => readRun(dataDir, run2).entries[0]!;
-
-    it.effect("carries the reaped run's approval over when the factory's own label is refused", () =>
-      Effect.gen(function* () {
-        const dataDir = tempDir();
-        reaped(dataDir);
-        const refusal = { kind: "labeled-by-non-instructor", by: USER, labeledAt: BY_FACTORY } as const;
-        const { tracker, calls } = fakeTracker({ approval: { kind: "refused", refusal } });
-        const outcome = yield* startIn(dataDir, tracker);
-        assert.deepStrictEqual(outcome, { kind: "started", run: run2, threadId: "thread-1" });
-        // The text is checked from the carried approval before anything is claimed.
-        assert.deepStrictEqual(calls.slice(0, 4), [
-          "issue 7",
-          "approval 7 tomkaczocha",
-          `textCheck 7 ${LABELED} tomkaczocha`,
-          "claim 7 rawphp ready->triage",
-        ]);
-        const first = firstLine(dataDir);
-        assert.deepStrictEqual(first.data, { step: `approved ${LABELED}` });
-        assert.strictEqual(first.cause?.actor, "tomkaczocha");
-      }),
-    );
-
-    it.effect("carries it over too when the factory's login is an instructor, so the approval keeps its time", () =>
-      Effect.gen(function* () {
-        const dataDir = tempDir();
-        reaped(dataDir, "launch-stopped");
-        const { tracker } = fakeTracker({
-          approval: { kind: "approved", labeledAt: BY_FACTORY, labeledBy: USER },
-        });
-        assert.strictEqual((yield* startIn(dataDir, tracker)).kind, "started");
-        assert.deepStrictEqual(firstLine(dataDir).data, { step: `approved ${LABELED}` });
-      }),
-    );
-
-    it.effect("refuses as edited when the text changed since the carried approval", () =>
-      Effect.gen(function* () {
-        const dataDir = tempDir();
-        reaped(dataDir);
-        const refusal = { kind: "labeled-by-non-instructor", by: USER, labeledAt: BY_FACTORY } as const;
-        const { tracker, calls } = fakeTracker({
-          approval: { kind: "refused", refusal },
-          textChecks: ["changed"],
-        });
-        const outcome = yield* startIn(dataDir, tracker);
-        assert.strictEqual(outcome.kind, "refused");
-        const edited = { kind: "edited-after-label", labeledAt: LABELED } as const;
-        assert.ok(calls.includes(`comment 7 ${unapprovedComment(edited)}`), calls.join("\n"));
-        assert.ok(calls.includes("setState 7 proposed"), calls.join("\n"));
-        assert.strictEqual(NodeFS.existsSync(runPath(dataDir, run2)), false);
-      }),
-    );
-
-    it.effect("carries it over for a label in the same second as the reap, or a little before by the runner's clock", () =>
-      Effect.gen(function* () {
-        for (const labeledAt of [utcSecond(T0), utcSecond(T0 - 30_000)]) {
-          const dataDir = tempDir();
-          reaped(dataDir);
-          const refusal = { kind: "labeled-by-non-instructor", by: USER, labeledAt } as const;
-          const { tracker } = fakeTracker({ approval: { kind: "refused", refusal } });
-          assert.strictEqual((yield* startIn(dataDir, tracker)).kind, "started", labeledAt);
-          assert.deepStrictEqual(firstLine(dataDir).data, { step: `approved ${LABELED}` });
-        }
-      }),
-    );
-
-    it.effect("refuses as unjudged when the edit history cannot reach back to the carried approval", () =>
-      Effect.gen(function* () {
-        const dataDir = tempDir();
-        reaped(dataDir);
-        const refusal = { kind: "labeled-by-non-instructor", by: USER, labeledAt: BY_FACTORY } as const;
-        const { tracker, calls } = fakeTracker({
-          approval: { kind: "refused", refusal },
-          textChecks: ["unjudged"],
-        });
-        assert.strictEqual((yield* startIn(dataDir, tracker)).kind, "refused");
-        const incomplete = { kind: "edit-history-incomplete", labeledAt: LABELED } as const;
-        assert.ok(calls.includes(`comment 7 ${unapprovedComment(incomplete)}`), calls.join("\n"));
-      }),
-    );
-
-    it.effect("judges a later label by an instructor's factory login as a fresh approval", () =>
-      Effect.gen(function* () {
-        const dataDir = tempDir();
-        reaped(dataDir);
-        const later = utcSecond(T0 + 10 * 60_000);
-        const { tracker, calls } = fakeTracker({
-          approval: { kind: "approved", labeledAt: later, labeledBy: USER },
-        });
-        assert.strictEqual((yield* startIn(dataDir, tracker)).kind, "started");
-        assert.deepStrictEqual(firstLine(dataDir).data, { step: `approved ${later}` });
-        assert.strictEqual(calls[2], "claim 7 rawphp ready->triage");
-      }),
-    );
-
-    it.effect("carries it over up to a minute past a reap that finished passes after its step", () =>
-      Effect.gen(function* () {
-        // The label calls failed for ten minutes, then landed and the run finished.
-        for (const [at, kind] of [
-          [T0 + 10 * 60_000, "started"],
-          [T0 + 11 * 60_000, "started"],
-          [T0 + 12 * 60_000, "refused"],
-        ] as const) {
-          const dataDir = tempDir();
-          reaped(dataDir, "launch-timed-out", T0 + 10 * 60_000);
-          const refusal = { kind: "labeled-by-non-instructor", by: USER, labeledAt: utcSecond(at) } as const;
-          const { tracker } = fakeTracker({ approval: { kind: "refused", refusal } });
-          assert.strictEqual((yield* startIn(dataDir, tracker)).kind, kind, utcSecond(at));
-        }
-      }),
-    );
-
-    it.effect("leaves the factory's own label for another machine only when none here knows the issue and no machine owns the repo", () =>
-      Effect.gen(function* () {
-        const refusal = { kind: "labeled-by-non-instructor", by: USER, labeledAt: BY_FACTORY } as const;
-        // No ledger of the issue here, and no owner: another machine on the same login reaped it.
-        const fresh = tempDir();
-        const none = fakeTracker({ approval: { kind: "refused", refusal } });
-        assert.deepStrictEqual(yield* startIn(fresh, none.tracker), {
-          kind: "skipped",
-          reason:
-            "issue #7 has factory:ready from the factory's own login and no ledger of the issue on this machine, so it is left for the machine whose launch timeout applied it",
-          leftForReaper: true,
-        });
-        assert.deepStrictEqual(none.calls, ["issue 7", "approval 7 tomkaczocha"]);
-        // A repo factory.owner gives to this machine: no other machine reaped it, so it is refused.
-        const owned = tempDir();
-        const mine = fakeTracker({ approval: { kind: "refused", refusal } });
-        const outcome = yield* startIn(owned, mine.tracker, undefined, {
-          project: { ...project(), owner: "mac-mini" },
-        });
-        assert.strictEqual(outcome.kind, "refused");
-        // This machine knows the issue: an earlier run that was not reaped, a label well before
-        // the reap, or one well after it is judged as before and refused.
-        const plain = tempDir();
-        olderRun(plain, 1, "triage", true, true);
-        const first = fakeTracker({ approval: { kind: "refused", refusal } });
-        assert.strictEqual((yield* startIn(plain, first.tracker)).kind, "refused");
-        const early = tempDir();
-        reaped(early);
-        const before = { ...refusal, labeledAt: utcSecond(T0 - 5 * 60_000) };
-        const second = fakeTracker({ approval: { kind: "refused", refusal: before } });
-        assert.strictEqual((yield* startIn(early, second.tracker)).kind, "refused");
-        const late = tempDir();
-        reaped(late);
-        const after = { ...refusal, labeledAt: utcSecond(T0 + 30 * 60_000) };
-        const third = fakeTracker({ approval: { kind: "refused", refusal: after } });
-        assert.strictEqual((yield* startIn(late, third.tracker)).kind, "refused");
-        // Someone else's label is judged as before, whatever the earlier run was.
-        const other = tempDir();
-        reaped(other);
-        const eve = { ...refusal, by: "eve" };
-        const fourth = fakeTracker({ approval: { kind: "refused", refusal: eve } });
-        assert.strictEqual((yield* startIn(other, fourth.tracker)).kind, "refused");
-      }),
-    );
-  });
+  it.effect("hands the approval check the factory's login, so a label it applied after a launch timeout is judged as one", () =>
+    Effect.gen(function* () {
+      const dataDir = tempDir();
+      const { tracker, approvalLogins } = fakeTracker({});
+      assert.strictEqual((yield* startIn(dataDir, tracker)).kind, "started");
+      assert.deepStrictEqual(approvalLogins, [USER]);
+    }),
+  );
 
   it.effect("a refusal already explained since the label is not commented again", () =>
     Effect.gen(function* () {
