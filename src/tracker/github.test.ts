@@ -7722,6 +7722,29 @@ describe("Bad credentials in a claim, and after a 401 outlasted its retries", ()
     }),
   );
 
+  it.effect("a claim edit's 401 that was not resent is no refusal that outlasted its retries: the repair's reads still retry", () =>
+    Effect.gen(function* () {
+      const t = tallied(
+        reply('{"assignees":[]}'),
+        claimPosted(50),
+        claimList(claimRow(50, "mac-mini", CLAIMED_AT)),
+        fail(1, REFUSED),
+        fail(1, REFUSED),
+        reply('{"assignees":[{"login":"rawphp"}]}'),
+      );
+      yield* t.err(claim6(t));
+      // The comment read was answered; the edit's 401 is the caller's to repair, not a give-up.
+      assert.deepStrictEqual(t.tally, { rejected: 0, accepted: 1, gaveUp: false });
+      // What the caller's repair reads next is tried again on a 401, as any read is.
+      const repair = yield* Effect.forkChild(t.ok(t.github.login()).pipe(Effect.flip), {
+        startImmediately: true,
+      });
+      yield* TestClock.adjust("3 seconds");
+      yield* Fiber.join(repair);
+      assert.strictEqual(t.inputs.length, 6);
+    }),
+  );
+
   it.effect("once a call has outlasted its 401 retries, the next refused call is tried once", () =>
     Effect.gen(function* () {
       const t = tallied(...refusedTimes(5), fail(1, REFUSED), reply(LIST_ONE));
