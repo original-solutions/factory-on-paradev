@@ -329,6 +329,22 @@ const UNEXPECTED_EOF = /"https?:\/\/[^"\n]*": unexpected EOF/;
 const readTransient = (stderr: string): string | null =>
   notReceived(stderr) ?? (UNEXPECTED_EOF.test(stderr) ? "unexpected EOF" : null);
 
+/**
+ * gh's stderr when GitHub refused the login with a 401: `HTTP 401: Bad credentials (…)` from a
+ * GraphQL call, `gh: Bad credentials (HTTP 401)` from `gh api`, or another 401. GitHub refused it
+ * before applying anything, so a write is safe to send again; a burst of them passes. A gh with no
+ * login at all never asks GitHub and says `gh auth login` with no 401, so it is not here. The name
+ * is what the retry log line says.
+ */
+const CREDENTIALS_REFUSED: ReadonlyArray<readonly [reason: string, stderr: RegExp]> = [
+  ["Bad credentials", /Bad credentials/],
+  ["HTTP 401", /HTTP 401\b/],
+];
+
+/** Why `stderr` says GitHub refused the login's credentials, or null when it did not. */
+const credentialsRefused = (stderr: string): string | null =>
+  CREDENTIALS_REFUSED.find(([, pattern]) => pattern.test(stderr))?.[0] ?? null;
+
 const utf8Bytes = (text: string): number => new TextEncoder().encode(text).length;
 
 const oneLine = (text: string): string => text.replaceAll("\r", "\\r").replaceAll("\n", "\\n");
@@ -1181,6 +1197,18 @@ export interface GitHubOptions {
   readonly repo: string;
   /** The `gh` login directory (`GH_CONFIG_DIR`) the calls run as. */
   readonly ghConfigDir: string;
+  /** Counts what the calls said of the login's credentials, for the pass to read; none when absent. */
+  readonly credentials?: GhCredentialTally;
+}
+
+/**
+ * What a tracker's calls said of the `gh` login's credentials since the reader last started the
+ * counts over: `rejected` calls still refused with a 401 after every retry, and `accepted` calls
+ * GitHub answered. Never the stderr or anything else a call carried.
+ */
+export interface GhCredentialTally {
+  rejected: number;
+  accepted: number;
 }
 
 type GitHubEffect<A> = Effect.Effect<A, GitHubError, FactoryProcess>;
@@ -1240,20 +1268,28 @@ export const makeGitHub = (options: GitHubOptions) => {
 
   /**
    * Runs `attempt`, trying it again up to {@link GH_ATTEMPTS} times after a failure GitHub
-   * never received ({@link NOT_RECEIVED}), or, when `read`, after an unexpected EOF too. The
-   * last failure is returned as it is, so a caller sees what it would have without the retries.
+   * never received ({@link NOT_RECEIVED}) or refused with a 401 ({@link CREDENTIALS_REFUSED}),
+   * or, when `read`, after an unexpected EOF too. The last failure is returned as it is, so a
+   * caller sees what it would have without the retries. `options.credentials` counts a success,
+   * and a 401 that outlasted the retries.
    */
   const retryTransient = Effect.fn("GitHub.retryTransient")(function* <A>(
     attempt: Effect.Effect<A, GitHubError, FactoryProcess>,
     read = false,
   ): GitHubGen<A> {
     const transient = read ? readTransient : notReceived;
+    const tally = options.credentials;
     for (let tried = 1; ; tried += 1) {
       const result = yield* Effect.result(attempt);
-      if (result._tag === "Success") return result.success;
+      if (result._tag === "Success") {
+        if (tally !== undefined) tally.accepted += 1;
+        return result.success;
+      }
       const error = result.failure;
-      const reason = error._tag === "GitHubFailed" ? transient(error.stderr) : null;
+      const refused = error._tag === "GitHubFailed" ? credentialsRefused(error.stderr) : null;
+      const reason = error._tag === "GitHubFailed" ? (transient(error.stderr) ?? refused) : null;
       if (error._tag !== "GitHubFailed" || reason === null || tried >= GH_ATTEMPTS) {
+        if (refused !== null && tally !== undefined) tally.rejected += 1;
         return yield* error;
       }
       const delayMs = GH_RETRY_DELAYS_MS[tried - 1]! + (yield* Random.nextIntBetween(0, 1000));
