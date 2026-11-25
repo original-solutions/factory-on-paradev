@@ -133,6 +133,28 @@ vi.mock("./runner/start.ts", async (importOriginal) => {
   return { ...actual, start: start as unknown as typeof actual.start };
 });
 
+// The launch reaper is not run when `stub.on`: the test is about the context `liveWorld` builds.
+vi.mock("./runner/launchTimeout.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./runner/launchTimeout.ts")>();
+  const { Effect: E } = await import("effect");
+  const reapLaunch = (
+    ctx: {
+      readonly project: { readonly base: string };
+      readonly launchTimeout: { readonly seconds: number; readonly retries: number };
+    },
+    ...rest: Array<unknown>
+  ) => {
+    if (!stub.on) {
+      return (actual.reapLaunch as unknown as (...args: Array<unknown>) => unknown)(ctx, ...rest);
+    }
+    bases.push(
+      `reapLaunch ${ctx.project.base} ${ctx.launchTimeout.seconds}s ${ctx.launchTimeout.retries}`,
+    );
+    return E.succeed({ kind: "left" });
+  };
+  return { ...actual, reapLaunch: reapLaunch as unknown as typeof actual.reapLaunch };
+});
+
 vi.mock("./runner/feedback.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./runner/feedback.ts")>();
   const { Effect: E } = await import("effect");
@@ -4335,6 +4357,36 @@ const baseLive = (scope: Scope.Scope) => ({
 });
 
 describe("liveWorld: a step of a run is built for the base the pass hands it", () => {
+  it.effect("the launch reaper gets that base and the machine's launch timeout", () =>
+    Effect.gen(function* () {
+      bases.length = 0;
+      stub.on = true;
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          const world = liveWorld(
+            baseMachine,
+            "/factory-test/data",
+            noGh,
+            NodeServices.layer,
+            stubSessions,
+            () => 0,
+            "mac-mini",
+            noAttention,
+            baseLive(yield* Scope.make()),
+          );
+          const run = newRunId("rawphp/softfac", "10", 1);
+          for (const base of ["feature/x", null]) {
+            yield* world.reapLaunch(baseRepo, run, base, { seconds: 120, retries: 0 });
+          }
+        }),
+        Effect.sync(() => {
+          stub.on = false;
+        }),
+      );
+      assert.deepStrictEqual(bases, ["reapLaunch feature/x 120s 0", "reapLaunch main 120s 0"]);
+    }),
+  );
+
   it.effect("each step's context has that base, or the repo's when the run recorded none", () =>
     Effect.gen(function* () {
       bases.length = 0;

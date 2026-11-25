@@ -5,6 +5,7 @@ import type { Entry } from "../ledger/read.ts";
 import {
   attemptsSincePass,
   committingFeedback,
+  isStarting,
   movedSince,
   nextGateAttempt,
   pendingRelaunch,
@@ -667,6 +668,12 @@ describe("readProgress: when the launch was sent, and how a launch with no threa
     assert.strictEqual(resumed.launchSentMs, 7 * MINUTE);
   });
 
+  it("keeps when the launch was ended with no thread", () => {
+    const seen = readProgress([step(1, "launch-sending"), step(7 * MINUTE, "launch-timed-out")]);
+    assert.strictEqual(seen.launchFailedMs, 7 * MINUTE);
+    assert.strictEqual(readProgress([step(1, "launch-sending")]).launchFailedMs, null);
+  });
+
   it("reads the step that says the launch timed out, or was stopped by hand, with no thread", () => {
     assert.strictEqual(
       readProgress([step(1, "launch-sending"), step(2, "launch-timed-out")]).launchFailed,
@@ -676,6 +683,23 @@ describe("readProgress: when the launch was sent, and how a launch with no threa
       readProgress([step(1, "launch-sending"), step(2, "launch-stopped")]).launchFailed,
       "stopped",
     );
+  });
+});
+
+describe("isStarting: a run still starting", () => {
+  const approved = step(1, "approved 2026-10-04T10:00:00Z");
+  it("is a confirmed, unfinished run in triage or with no state", () => {
+    assert.isTrue(isStarting(readProgress([approved, moved(2, "ready", "triage")])));
+    assert.isTrue(isStarting(readProgress([approved, step(2, "launch-sending")])));
+    assert.isTrue(isStarting(readProgress([moved(2, "ready", "triage"), launched(3)])));
+  });
+  it("is not a run with no approval and no thread, a finished run, or one in another state", () => {
+    assert.isFalse(isStarting(readProgress([moved(2, "ready", "triage")])));
+    assert.isFalse(
+      isStarting(readProgress([approved, moved(2, "ready", "triage"), line(3, "finished", {})])),
+    );
+    assert.isFalse(isStarting(readProgress([approved, moved(2, "triage", "building")])));
+    assert.isFalse(isStarting(readProgress([approved, moved(2, "building", "needs-info")])));
   });
 });
 

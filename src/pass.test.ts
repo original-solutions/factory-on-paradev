@@ -2244,7 +2244,7 @@ describe("launches that recorded no thread id", () => {
     Effect.gen(function* () {
       const fake = new Fake();
       fake.runIn(12, "triage");
-      fake.reaps[`${REPO}#12`] = [{ kind: "ready", ended: "timed-out", failures: 1 }];
+      fake.reaps[`${REPO}#12`] = [{ kind: "ready", ended: "timed-out", failures: 1, mayHaveSession: false }];
       fake.ready[REPO] = [12];
       fake.pushStart(`${REPO}#12`, started(12));
       const { lines } = yield* pass(fake, [REPO], 1);
@@ -2262,7 +2262,7 @@ describe("launches that recorded no thread id", () => {
       // A fresh world: the runner just started, and the ledger is all it has.
       const fake = new Fake();
       fake.runIn(12, "triage");
-      fake.reaps[`${REPO}#12`] = [{ kind: "ready", ended: "timed-out", failures: 1 }];
+      fake.reaps[`${REPO}#12`] = [{ kind: "ready", ended: "timed-out", failures: 1, mayHaveSession: false }];
       const { report } = yield* pass(fake, [REPO], 1);
       assert.deepEqual(fake.reapCalls, [`${RUN12} 900s 1`]);
       assert.deepEqual(starts(fake), []);
@@ -2274,7 +2274,7 @@ describe("launches that recorded no thread id", () => {
     Effect.gen(function* () {
       const fake = new Fake();
       fake.runIn(12, "triage");
-      fake.reaps[`${REPO}#12`] = [{ kind: "stuck", ended: "timed-out", failures: 2, limit: true }];
+      fake.reaps[`${REPO}#12`] = [{ kind: "stuck", ended: "timed-out", failures: 2, limit: true, mayHaveSession: false }];
       const { lines, report } = yield* pass(fake, [REPO], 3);
       assert.deepEqual(starts(fake), []);
       const line = runLine(lines, `${REPO}#12 triage:`);
@@ -2303,7 +2303,7 @@ describe("launches that recorded no thread id", () => {
       const fake = new Fake();
       fake.runIn(12, "triage");
       fake.stopRequests[`${REPO}#12`] = "recorded";
-      fake.reaps[`${REPO}#12`] = [{ kind: "ready", ended: "stopped", failures: 1 }];
+      fake.reaps[`${REPO}#12`] = [{ kind: "ready", ended: "stopped", failures: 0, mayHaveSession: false }];
       const { lines } = yield* pass(fake, [REPO], 3);
       assert.deepEqual(
         fake.calls.filter((c) => c.startsWith("stop_request")),
@@ -2322,7 +2322,7 @@ describe("launches that recorded no thread id", () => {
       const fake = new Fake();
       fake.runIn(12, "triage", REPO, true);
       fake.stopRequests[`${REPO}#12`] = "recorded";
-      fake.reaps[`${REPO}#12`] = [{ kind: "stuck", ended: "stopped", failures: 0, limit: false }];
+      fake.reaps[`${REPO}#12`] = [{ kind: "stuck", ended: "stopped", failures: 0, limit: false, mayHaveSession: false }];
       const { lines } = yield* pass(fake, [REPO], 3);
       assert.deepEqual(starts(fake), []);
       assert.ok(runLine(lines, `${REPO}#12 triage:`).includes(`stuck, the reason is in the ledger of run ${RUN12}`));
@@ -2348,6 +2348,49 @@ describe("launches that recorded no thread id", () => {
       // The next pass tries again, and resumes it when it is left.
       yield* pass(fake, [REPO], 3);
       assert.deepEqual(starts(fake), [`resume ${REPO}#12`]);
+    }),
+  );
+
+  it.effect("a reaped launch that may have started a session says where to look for it", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage", REPO, true);
+      fake.reaps[`${REPO}#12`] = [
+        { kind: "ready", ended: "timed-out", failures: 1, mayHaveSession: true },
+      ];
+      const { lines, report } = yield* pass(fake, [REPO], 3);
+      const attention = lines.find((line) => line.startsWith("ATTENTION:"));
+      assert.ok(attention !== undefined, lines.join("\n"));
+      assert.ok(attention.includes(`look for launch command id softfac:${RUN12}:launch`), attention);
+      assert.deepEqual(
+        fake.events.filter((e) => e.event === "attention"),
+        [{ event: "attention", data: { run: RUN12, reason: "session-may-exist" } }],
+      );
+      assert.equal(report.attention, 1);
+    }),
+  );
+
+  it.effect("a run whose issue is no longer its own is finished, and the issue is left as it is", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.reaps[`${REPO}#12`] = [{ kind: "released" }];
+      const { lines } = yield* pass(fake, [REPO], 3);
+      assert.deepEqual(starts(fake), []);
+      const line = runLine(lines, `${REPO}#12 triage:`);
+      assert.ok(line.includes(`run ${RUN12} is finished and the issue is left as it is`), line);
+      assert.deepEqual(fake.items, []);
+    }),
+  );
+
+  it.effect("a run another machine's claim beat is left to that machine", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.reaps[`${REPO}#12`] = [{ kind: "yielded", machine: "mac-studio" }];
+      const { lines } = yield* pass(fake, [REPO], 3);
+      assert.deepEqual(starts(fake), []);
+      assert.ok(runLine(lines, `${REPO}#12 triage:`).includes("claimed by machine mac-studio"));
     }),
   );
 

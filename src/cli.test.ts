@@ -48,6 +48,7 @@ const BUILDING: ReadonlyArray<RunEvent> = [
 ];
 
 const TRIAGE: ReadonlyArray<RunEvent> = BUILDING.slice(0, 2);
+const APPROVED: RunEvent = { event: "step_changed", data: { step: "approved 2026-10-04T10:00:00Z" } };
 
 const seed = (dir: string, events: ReadonlyArray<RunEvent> = BUILDING) => {
   let now = T0;
@@ -346,7 +347,7 @@ describe("runs stop", () => {
 
   it("stops a run in triage, exit 0", async () => {
     const s = setup();
-    seed(s.dataDir, TRIAGE);
+    seed(s.dataDir, [APPROVED, ...TRIAGE]);
     expect(await runCli(["runs", "stop", ID], s.io)).toBe(0);
     expect(NodeFS.existsSync(stopRequestPath(s.dataDir, run10))).toBe(true);
     expect(s.outs.join("\n")).toContain("factory:ready");
@@ -355,12 +356,21 @@ describe("runs stop", () => {
   it("stops a run in launch-sending with no thread id, exit 0", async () => {
     const s = setup();
     seed(s.dataDir, [
+      APPROVED,
       ...TRIAGE,
       { event: "step_changed", data: { step: "launch-sending resumed-from t3code/abc" } },
     ]);
     expect(await runCli(["runs", "stop", ID], s.io)).toBe(0);
     expect(NodeFS.existsSync(stopRequestPath(s.dataDir, run10))).toBe(true);
     expect(s.outs.join("\n")).toContain("stop requested");
+  });
+
+  it("refuses a triage run with no approval and no thread, exit 1", async () => {
+    const s = setup();
+    seed(s.dataDir, TRIAGE);
+    expect(await runCli(["runs", "stop", ID], s.io)).toBe(1);
+    expect(s.errs.join("\n")).toContain("its state is triage");
+    expect(NodeFS.existsSync(stopRequestPath(s.dataDir, run10))).toBe(false);
   });
 
   it("refuses a run waiting on its pull request, or finished, exit 1", async () => {

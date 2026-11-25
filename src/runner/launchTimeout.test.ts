@@ -104,6 +104,8 @@ interface Rig {
   world: {
     issue: IssueDetail;
     thread: Thread | ThreadNotFoundError | SessionsError;
+    /** The machine whose claim comment holds the issue, when it is another machine's. */
+    winner: string | null;
   };
   ctx: (over?: { seconds?: number; retries?: number }) => LaunchTimeoutContext;
 }
@@ -115,6 +117,7 @@ const rigFor = (): Rig => {
   const world: Rig["world"] = {
     issue: issueDetail("triage"),
     thread: { worktreePath: "/t3/wt", branch: "t3code/abc", archived: false },
+    winner: null,
   };
   const notExpected = (name: string) => () => Effect.die(`${name} was not expected`);
   const ctx = (over: { seconds?: number; retries?: number } = {}): LaunchTimeoutContext => ({
@@ -128,6 +131,12 @@ const rigFor = (): Rig => {
     launchTimeout: {
       seconds: over.seconds ?? DEFAULT_LAUNCH_TIMEOUT_SECONDS,
       retries: over.retries ?? DEFAULT_LAUNCH_TIMEOUT_RETRIES,
+    },
+    yieldToClaim: (n) => {
+      calls.push(`yield ${n}`);
+      return Effect.succeed(
+        world.winner === null ? null : { machine: world.winner, finished: [] },
+      );
     },
     tracker: {
       issue: (n) => {
@@ -199,8 +208,15 @@ const readyTail = (marker: string, reason: string, totalMs: number) => [
   },
 ];
 
-const READY_CALLS = ["issue 10", "setState 10 ready", "unassign 10 rawphp"];
-const STUCK_CALLS = ["issue 10", "comment 10", "setState 10 stuck", "unassign 10 rawphp", "status 10 **Factory status:** stuck"];
+const READY_CALLS = ["issue 10", "yield 10", "setState 10 ready", "unassign 10 rawphp"];
+const STUCK_CALLS = [
+  "issue 10",
+  "yield 10",
+  "comment 10",
+  "setState 10 stuck",
+  "unassign 10 rawphp",
+  "status 10 **Factory status:** stuck",
+];
 
 describe("reapLaunch: the launch-sending timeout", () => {
   it.effect("leaves a launch-sending run with no thread id that is younger than the timeout", () =>
@@ -227,6 +243,7 @@ describe("reapLaunch: the launch-sending timeout", () => {
           kind: "ready",
           ended: "timed-out",
           failures: 1,
+          mayHaveSession: true,
         });
         assert.deepStrictEqual(rig.calls, READY_CALLS);
         assert.deepStrictEqual(rig.world.issue.state, "ready");
@@ -255,6 +272,7 @@ describe("reapLaunch: the launch-sending timeout", () => {
         kind: "ready",
         ended: "timed-out",
         failures: 1,
+        mayHaveSession: true,
       });
       assert.deepStrictEqual(rig.calls, READY_CALLS);
     }),
@@ -264,7 +282,7 @@ describe("reapLaunch: the launch-sending timeout", () => {
     Effect.gen(function* () {
       const rig = rigFor();
       seed(rig.dataDir, runOf(1), CLAIMED);
-      // The launch was sent 30 minutes after the claim, waiting for room.
+      // The launch was first sent 30 minutes after the claim.
       const ledger = Ledger.open(rig.dataDir, runOf(1), { clock: () => T0 + 30 * MINUTE });
       ledger.append(step("launch-sending"), makeCause("start", "launch-sending"));
       ledger.close();
@@ -315,6 +333,7 @@ describe("reapLaunch: the launch-sending timeout", () => {
         kind: "ready",
         ended: "timed-out",
         failures: 1,
+        mayHaveSession: true,
       });
       assert.deepStrictEqual(listUnfinishedRuns(rig.dataDir), []);
     }),
@@ -390,6 +409,7 @@ describe("reapLaunch: the launch-sending timeout", () => {
         kind: "ready",
         ended: "timed-out",
         failures: 1,
+        mayHaveSession: true,
       });
       const steps = linesOf(rig.dataDir, runOf(1)).filter(
         (line) => line.event === "step_changed" && JSON.stringify(line.data).includes("launch-timed-out"),
@@ -442,6 +462,7 @@ describe("reapLaunch: the retry limit", () => {
         ended: "timed-out",
         failures: 2,
         limit: true,
+        mayHaveSession: true,
       });
       assert.deepStrictEqual(rig.calls, STUCK_CALLS);
       assert.strictEqual(rig.world.issue.state, "stuck");
@@ -463,26 +484,30 @@ describe("reapLaunch: the retry limit", () => {
         ended: "timed-out",
         failures: 1,
         limit: true,
+        mayHaveSession: true,
       });
       assert.deepStrictEqual(rig.calls, STUCK_CALLS);
     }),
   );
 
-  it.effect("counts only this issue's earlier launch failures in this repo, stops by hand included", () =>
+  it.effect("counts only this issue's earlier launch timeouts in this repo, not its stops by hand", () =>
     Effect.gen(function* () {
       const rig = rigFor();
       timedOutBefore(rig.dataDir, 1, "launch-stopped");
+      timedOutBefore(rig.dataDir, 4, "launch-timed-out");
       // An earlier run that failed some other way does not count.
       seed(rig.dataDir, runOf(2), [...SENDING, LAUNCHED, moved("triage", "building"), FINISHED]);
       // Another issue's, and another repo's, failures do not count.
       seed(rig.dataDir, { repo: REPO, issue: "11", attempt: 1 }, [...SENDING, step("launch-timed-out"), FINISHED]);
       seed(rig.dataDir, { repo: "rawphp/other", issue: "10", attempt: 1 }, [...SENDING, step("launch-timed-out"), FINISHED]);
-      seed(rig.dataDir, runOf(3), SENDING);
+      seed(rig.dataDir, runOf(5), SENDING);
       rig.clock.now = T0 + 16 * MINUTE;
-      assert.deepStrictEqual(yield* reapLaunch(rig.ctx({ retries: 2 }), runOf(3)), {
+      // Run 4's timeout is the one prior failure: this one makes 2, within 2 retries.
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx({ retries: 2 }), runOf(5)), {
         kind: "ready",
         ended: "timed-out",
         failures: 2,
+        mayHaveSession: true,
       });
     }),
   );
@@ -498,7 +523,8 @@ describe("reapLaunch: a stop by hand of a run still starting", () => {
       assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), {
         kind: "ready",
         ended: "stopped",
-        failures: 1,
+        failures: 0,
+        mayHaveSession: true,
       });
       assert.deepStrictEqual(rig.calls, READY_CALLS);
       assert.deepStrictEqual(
@@ -508,12 +534,49 @@ describe("reapLaunch: a stop by hand of a run still starting", () => {
     }),
   );
 
-  it.effect("ends a triage run that never sent its launch the same way", () =>
+  it.effect("ends a triage run that never sent its launch the same way, with no session to look for", () =>
     Effect.gen(function* () {
       const rig = rigFor();
       seed(rig.dataDir, runOf(1), [...CLAIMED, STOP_LINE]);
-      assert.strictEqual((yield* reapLaunch(rig.ctx(), runOf(1))).kind, "ready");
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), {
+        kind: "ready",
+        ended: "stopped",
+        failures: 0,
+        mayHaveSession: false,
+      });
       assert.deepStrictEqual(rig.calls, READY_CALLS);
+    }),
+  );
+
+  it.effect("a stop is not a timeout: it uses no retry, and a later first timeout goes back to ready", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), [...SENDING, STOP_LINE]);
+      assert.strictEqual((yield* reapLaunch(rig.ctx(), runOf(1))).kind, "ready");
+      rig.world.issue = issueDetail("triage");
+      seed(rig.dataDir, runOf(2), SENDING, T0 + MINUTE);
+      rig.clock.now = T0 + 20 * MINUTE;
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(2)), {
+        kind: "ready",
+        ended: "timed-out",
+        failures: 1,
+        mayHaveSession: true,
+      });
+    }),
+  );
+
+  it.effect("with launch_timeout_retries 0 the limit is used from the start, so a stop is stuck", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), [...SENDING, STOP_LINE]);
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx({ retries: 0 }), runOf(1)), {
+        kind: "stuck",
+        ended: "stopped",
+        failures: 0,
+        limit: true,
+        mayHaveSession: true,
+      });
+      assert.deepStrictEqual(rig.calls, STUCK_CALLS);
     }),
   );
 
@@ -525,8 +588,9 @@ describe("reapLaunch: a stop by hand of a run still starting", () => {
       assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(2)), {
         kind: "stuck",
         ended: "stopped",
-        failures: 2,
+        failures: 1,
         limit: true,
+        mayHaveSession: true,
       });
       assert.deepStrictEqual(rig.calls, STUCK_CALLS);
     }),
@@ -541,9 +605,11 @@ describe("reapLaunch: a stop by hand of a run still starting", () => {
         ended: "stopped",
         failures: 0,
         limit: false,
+        mayHaveSession: false,
       });
       assert.deepStrictEqual(rig.calls, [
         "issue 10",
+        "yield 10",
         "archive thread-1",
         "thread thread-1",
         "removeWorktree /t3/wt",
@@ -573,10 +639,12 @@ describe("reapLaunch: a run whose thread or workspace is gone", () => {
         kind: "ready",
         ended: "timed-out",
         failures: 1,
+        mayHaveSession: false,
       });
       assert.deepStrictEqual(rig.calls, [
         "thread thread-1",
         "issue 10",
+        "yield 10",
         "archive thread-1",
         "thread thread-1",
         "removeWorktree /t3/wt",
@@ -608,5 +676,105 @@ describe("reapLaunch: a run whose thread or workspace is gone", () => {
       assert.strictEqual(error._tag, "FactorySessionsError");
       assert.strictEqual(bytesOf(rig.dataDir, runOf(1)), bytes);
     }),
+  );
+});
+
+describe("reapLaunch: an issue that is no longer the run's", () => {
+  it.effect.each<{ name: string; issue: IssueDetail }>([
+    { name: "moved to building by another claim", issue: { ...issueDetail("building"), assignees: ["eve"] } },
+    { name: "moved to needs-info", issue: issueDetail("needs-info") },
+    { name: "moved to proposed", issue: issueDetail("proposed") },
+    { name: "with no factory label", issue: issueDetail(null) },
+    { name: "put back to ready by a person", issue: { ...issueDetail("ready"), assignees: [] } },
+    { name: "in triage assigned to someone else too", issue: { ...issueDetail("triage"), assignees: ["rawphp", "eve"] } },
+    { name: "in triage with nobody assigned", issue: { ...issueDetail("triage"), assignees: [] } },
+  ])("finishes the run in the ledger only when the issue is $name, and moves no label", ({ issue }) =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), SENDING);
+      rig.world.issue = issue;
+      rig.clock.now = T0 + 16 * MINUTE;
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), { kind: "released" });
+      assert.deepStrictEqual(rig.calls, ["issue 10"]);
+      const seen = readProgress(readRun(rig.dataDir, runOf(1)).entries);
+      assert.isTrue(seen.finished);
+      // Not a launch failure of this issue's: nothing is counted against its retries.
+      assert.strictEqual(seen.launchFailed, null);
+      assert.deepStrictEqual(listUnfinishedRuns(rig.dataDir), []);
+    }),
+  );
+
+  it.effect("leaves the issue to another machine whose claim won it, and moves no label", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), SENDING);
+      rig.world.winner = "mac-studio";
+      const bytes = bytesOf(rig.dataDir, runOf(1));
+      rig.clock.now = T0 + 16 * MINUTE;
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), {
+        kind: "yielded",
+        machine: "mac-studio",
+      });
+      assert.deepStrictEqual(rig.calls, ["issue 10", "yield 10"]);
+      // `yieldToClaim` finishes this machine's runs itself; the reaper writes nothing.
+      assert.strictEqual(bytesOf(rig.dataDir, runOf(1)), bytes);
+    }),
+  );
+
+  it.effect("stops the thread of a stopped run whose issue was moved, then finishes it in the ledger only", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), [...SENDING, LAUNCHED, STOP_LINE]);
+      rig.world.issue = issueDetail("needs-info");
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), { kind: "released" });
+      assert.deepStrictEqual(rig.calls, [
+        "issue 10",
+        "archive thread-1",
+        "thread thread-1",
+        "removeWorktree /t3/wt",
+      ]);
+      assert.isTrue(readProgress(readRun(rig.dataDir, runOf(1)).entries).finished);
+    }),
+  );
+});
+
+describe("reapLaunch: what the ledger already decided", () => {
+  it.effect("leaves a run whose stuck decision is recorded, for start to finish", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), [
+        ...SENDING,
+        { event: "stuck", data: { reason: "the factory could not launch the session" } },
+      ]);
+      const bytes = bytesOf(rig.dataDir, runOf(1));
+      rig.clock.now = T0 + 60 * MINUTE;
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), { kind: "left" });
+      assert.deepStrictEqual(rig.calls, []);
+      assert.strictEqual(bytesOf(rig.dataDir, runOf(1)), bytes);
+      // A stop by hand of it is left to start as well.
+      const stopped = rigFor();
+      seed(stopped.dataDir, runOf(1), [
+        ...SENDING,
+        { event: "stuck", data: { reason: "the factory could not launch the session" } },
+        STOP_LINE,
+      ]);
+      assert.deepStrictEqual(yield* reapLaunch(stopped.ctx(), runOf(1)), { kind: "left" });
+    }),
+  );
+
+  it.effect(
+    "times out a launch that keeps being refused for room: the issue asks for any launch-sending run with no thread id",
+    () =>
+      Effect.gen(function* () {
+        const rig = rigFor();
+        // A refusal for room writes nothing: each pass sends again under the same step.
+        seed(rig.dataDir, runOf(1), SENDING);
+        for (const minutes of [1, 5, 10, 15]) {
+          rig.clock.now = T0 + minutes * MINUTE;
+          assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), { kind: "left" });
+        }
+        rig.clock.now = T0 + 16 * MINUTE;
+        assert.strictEqual((yield* reapLaunch(rig.ctx(), runOf(1))).kind, "ready");
+      }),
   );
 });

@@ -32,7 +32,11 @@ const BUILDING: ReadonlyArray<RunEvent> = [
   { event: "state_changed", data: { from: "triage", to: "building" } },
 ];
 
+const APPROVED: RunEvent = { event: "step_changed", data: { step: "approved 2026-10-04T10:00:00Z" } };
+
+/** A confirmed run in `triage`: approved and claimed. */
 const TRIAGE: ReadonlyArray<RunEvent> = [
+  APPROVED,
   { event: "claimed", data: { machine: "mac-mini", github_user: "rawphp" } },
   { event: "state_changed", data: { from: "ready", to: "triage" } },
 ];
@@ -227,7 +231,7 @@ describe("requestStop", () => {
     { name: "in triage", events: TRIAGE },
     { name: "in launch-sending", events: [...TRIAGE, SENDING] },
     { name: "in launch-sending resumed-from a branch", events: [...TRIAGE, SENDING_RESUMED] },
-    { name: "in launch-sending with no state", events: [BUILDING[0]!, SENDING] },
+    { name: "in launch-sending with no state", events: [APPROVED, BUILDING[0]!, SENDING] },
   ])("records a stop for a run $name, once", ({ events }) => {
     const dataDir = tempDir();
     seed(dataDir, events);
@@ -307,6 +311,18 @@ describe("leaveStopRequest", () => {
     assert.strictEqual(NodeFS.readFileSync(stopRequestPath(dataDir, run10), "utf8"), "operator\n");
     assert.strictEqual(bytesOf(dataDir), bytes);
     assert.strictEqual(leaveStopRequest(dataDir, run10).outcome, "already-requested");
+  });
+
+  it("refuses a triage run with no approval and no thread, which no pass ends, as today", () => {
+    const dataDir = tempDir();
+    seed(dataDir, [BUILDING[0]!, BUILDING[1]!, SENDING]);
+    const { outcome, seen } = leaveStopRequest(dataDir, run10);
+    assert.strictEqual(outcome, "not-building");
+    assert.strictEqual(
+      notBuildingMessage("id", seen),
+      "run id is not building: its state is triage. Only a building run is stopped this way. To end it, close its issue.",
+    );
+    assert.strictEqual(NodeFS.existsSync(stopRequestPath(dataDir, run10)), false);
   });
 
   it("refuses a needs-info run, and a finished run that was in triage, and leaves no file", () => {
