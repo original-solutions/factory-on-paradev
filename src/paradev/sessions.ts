@@ -54,6 +54,7 @@ import { type CliError, SupersetCli } from "./cli.ts";
 import { listProjects, listProjectsAt, type ParadevProject, projectAt } from "./projects.ts";
 import { shellQuote, type SshError, type SshRunner, sshRunner } from "./ssh.ts";
 import {
+  isRunnerId,
   listCloudCreates,
   listThreads,
   markCloudCreate,
@@ -341,14 +342,18 @@ const failWith =
 /** The tag that marks a cloud workspace as made by the runner of this id. */
 const runnerTag = (id: string): string => `factory-${id}`;
 
-/** Whether a listed workspace carries `name` as a tag. */
+/** The names of a listed workspace's tags. */
 const tagNames = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined): ReadonlyArray<string> =>
   (tags ?? []).map((tag) => (typeof tag === "string" ? tag : tag.name));
+/** Whether a listed workspace carries `name` as a tag. */
 const hasTag = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined, name: string): boolean =>
   tagNames(tags).includes(name);
-/** A runner tag among `tags` that is not `mine`: another runner's `factory-<its id>`, else undefined. */
+/**
+ * A runner tag among `tags` that is not `mine`: another runner's `factory-<its id>`, else undefined.
+ * Only `factory-` and a runner id's shape is one; a hand tag such as `factory-debug` is not.
+ */
 const otherRunnerTag = (tags: ReadonlyArray<typeof Tag.Type> | null | undefined, mine: string): string | undefined =>
-  tagNames(tags).find((name) => name.startsWith("factory-") && name !== mine);
+  tagNames(tags).find((name) => name !== mine && name.startsWith("factory-") && isRunnerId(name.slice("factory-".length)));
 
 /**
  * The argv of a `snapshot` of `target` at `snapshotAt`, its location flag, reading `workspaceId`

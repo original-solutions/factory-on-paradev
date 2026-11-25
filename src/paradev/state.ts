@@ -161,6 +161,9 @@ const cloudCreatesDir = (path: Path.Path, dataDir: string) => path.join(dataDir,
 
 const RUNNER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+/** Whether `id` has the shape of a runner id, as {@link runnerId} writes one. */
+export const isRunnerId = (id: string): boolean => RUNNER_ID.test(id);
+
 /** The file's text; null when it does not exist. */
 const readText = (file: string) =>
   Effect.gen(function* () {

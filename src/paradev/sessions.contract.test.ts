@@ -5465,6 +5465,25 @@ describe("the cloud count, one workspace at a time (#85)", () => {
     }),
   );
 
+  it.effect("a hand tag that starts with factory- is not another runner's: the workspace is healed and keeps it (#117)", () =>
+    Effect.gen(function* () {
+      // Only `factory-` and a runner id is a runner's tag; a sidebar folder such as `factory-debug` is not.
+      for (const hand of ["factory-debug", "factory-0a1b2c3d"]) {
+        const heal = [...healArgv(C3_WS), `--tag=${hand}`];
+        const t = rig(
+          [localStep, bareCloud, listOf({ id: C3_WS, tags: ["factory", hand] }), { argv: heal, answer: { id: C3_WS } }, snapshotAt(C3_WS)],
+          { config: { cloud: true } },
+        );
+        yield* seedCloud(t.data);
+        assert.deepStrictEqual(yield* t.run((s) => s.runningByTarget), [
+          { target: { kind: "local" }, running: 1 },
+          { target: { kind: "cloud" }, running: 1 },
+        ]);
+        assert.deepStrictEqual(updates(t.calls), [heal]);
+      }
+    }),
+  );
+
   it.effect("a workspace with another runner's tag and no record in this ledger is not updated, and does not fail this runner's count (#117)", () =>
     Effect.gen(function* () {
       const t = rig(
