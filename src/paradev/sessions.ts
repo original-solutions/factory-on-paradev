@@ -824,10 +824,9 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
       ),
     );
 
-  /** Reads the cloud workspace every `cloudReadyPollMs` until it is up, for `cloudReadyMaxMs` at most. */
-  const waitReady = (record: ThreadRecord) =>
+  /** Reads the cloud workspace every `cloudReadyPollMs` until it is up, for `cloudReadyMaxMs` from `started` at most. */
+  const waitReady = (record: ThreadRecord, started: number) =>
     Effect.gen(function* () {
-      const started = yield* Clock.currentTimeMillis;
       for (;;) {
         const got = yield* getCloudWorkspace(cli, cloudTarget.at, record.workspaceId, checkCloudStatus);
         if (isCloudUp(got.status)) return;
@@ -837,6 +836,30 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         if ((yield* Clock.currentTimeMillis) - started >= cloudReadyMaxMs) {
           return yield* fail(
             `cloud workspace ${record.workspaceId} was not ready within ${cloudReadyMaxMs / 1000} s (still ${got.status})`,
+          );
+        }
+        yield* Effect.sleep(cloudReadyPollMs);
+      }
+    });
+
+  /**
+   * Reads every `cloudReadyPollMs` until a new terminal in the sandbox gets the Claude connection's
+   * env, within the same `cloudReadyMaxMs` from `started` as {@link waitReady}, so the launch
+   * timeout's budget holds. An awake sandbox can start a terminal without the env for some
+   * seconds, and an agent started then stays at "Not logged in". A failed read is one more wait,
+   * so a flaky helper terminal does not cost the launch.
+   */
+  const waitLoggedIn = (record: ThreadRecord, started: number) =>
+    Effect.gen(function* () {
+      for (;;) {
+        const read = yield* Effect.result(cloudTarget.loginReady(record));
+        if (read._tag === "Success" && read.success) return;
+        if ((yield* Clock.currentTimeMillis) - started >= cloudReadyMaxMs) {
+          const last = read._tag === "Failure"
+            ? `the last read failed: ${read.failure.message}`
+            : "no ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or CLAUDE_CODE_OAUTH_TOKEN";
+          return yield* fail(
+            `cloud workspace ${record.workspaceId} gave a new terminal no Claude login within ${cloudReadyMaxMs / 1000} s (${last})`,
           );
         }
         yield* Effect.sleep(cloudReadyPollMs);
@@ -863,7 +886,7 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
     });
 
   /**
-   * Steps 3 to 5 of a cloud launch: the tags, ready, then the agent. A retry (`look`) sends the tags
+   * Steps 3 to 5 of a cloud launch: the tags, ready, the login, then the agent. A retry (`look`) sends the tags
    * again and takes an agent of the preset an earlier attempt started. A failed update archives the
    * workspace even on a retry, whose earlier agent may run there: a recorded workspace with an agent
    * and no tag leaves the cloud count to heal it (#87, #117). A cloud worktree gets no
@@ -880,12 +903,14 @@ export const make = Effect.fn("ParadevSessions.make")(function* (config: Paradev
         return yield* fail(`cloud workspace ${record.workspaceId} was given up when an earlier launch failed`);
       }
       yield* tagCloud(record.workspaceId);
-      yield* waitReady(record);
+      const started = yield* Clock.currentTimeMillis;
+      yield* waitReady(record, started);
       if (look) {
         const found = yield* findAgent(record.target, record.workspaceId, record.agent, []);
         if (found !== null && "unclear" in found) return yield* noAgentYet(record);
         if (found !== null) return yield* withAgent(record, found.terminal, request);
       }
+      yield* waitLoggedIn(record, started);
       return yield* withAgent(record, yield* createOrFind(record, request), request);
     }).pipe(Effect.catch((error) => giveUpCloud(record, error)));
 

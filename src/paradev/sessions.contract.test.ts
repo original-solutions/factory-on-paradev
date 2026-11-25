@@ -2730,6 +2730,12 @@ const H11_FOLDER = "-Users-tomk--paradev-worktrees-factory-paradev-spike-fac-11-
 const aliveScreen = (count: number) =>
   `❯ pgrep -c 'claude'; echo FACTORY-ALIVE-''DONE\n${count}\nFACTORY-ALIVE-DONE\n❯ `;
 
+/** What the login helper's screen shows: `yes` when a new terminal gets the Claude connection's env. */
+const loginScreen = (yes: boolean) =>
+  `❯ [ -n "$ANTHROPIC_API_KEY$ANTHROPIC_AUTH_TOKEN$CLAUDE_CODE_OAUTH_TOKEN" ] && echo yes || echo no; echo FACTORY-LOGIN-''DONE\n${yes ? "yes" : "no"}\nFACTORY-LOGIN-DONE\n❯ `;
+/** The login helper a cloud launch runs in `ws` before its agents create. */
+const loginSteps = (ws = C3_WS, yes = true): ReadonlyArray<Step> => helperSteps(ws, "FACTORY-LOGIN-DONE", loginScreen(yes));
+
 /** The logs the body wrote, as `<level> <text>`. */
 const logged = <A, E>(body: Effect.Effect<A, E, never>) =>
   Effect.gen(function* () {
@@ -2910,6 +2916,7 @@ describe("launch in the cloud", () => {
           { argv: createArgv, fixture: "ws-create-cloud" },
           tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          ...loginSteps(),
           { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
         ],
         { config: onCloud },
@@ -2927,6 +2934,7 @@ describe("launch in the cloud", () => {
           { argv: createArgv, fixture: "ws-create-cloud" },
           tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          ...loginSteps(),
           { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
         ],
         { config: onCloud },
@@ -2955,6 +2963,7 @@ describe("launch in the cloud", () => {
             },
           },
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          ...loginSteps(),
           { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
         ],
         { config: onCloud },
@@ -3004,6 +3013,97 @@ describe("launch in the cloud", () => {
     }),
   );
 
+  it.live("an awake workspace whose new terminals have no Claude login yet is read again, and the agent starts once they do", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
+          { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          ...loginSteps(C3_WS, false),
+          ...loginSteps(C3_WS, true),
+          { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
+        ],
+        { config: onCloud },
+      );
+      const launched = yield* t.run((s) => s.launch(request()));
+      assert.strictEqual(launched.threadId, `cloud:${C3_WS}`);
+      assert.deepStrictEqual(t.unused(), []);
+      // The check reads presence only: no value of the env is on the helper's command line.
+      assert.strictEqual(
+        flag(t.calls.find(argvIs("terminals", "create")), "--command"),
+        `[ -n "$ANTHROPIC_API_KEY$ANTHROPIC_AUTH_TOKEN$CLAUDE_CODE_OAUTH_TOKEN" ] && echo yes || echo no; echo FACTORY-LOGIN-''DONE`,
+      );
+      const order = t.calls.map((argv) => argv.slice(0, 2).join(" "));
+      assert.isBelow(order.lastIndexOf("terminals close"), order.indexOf("agents create"));
+    }),
+  );
+
+  it.live("a login read that fails is one more wait, not a failed launch", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
+          { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          { argv: argvIs("terminals", "create", "--host", "cloud", "--workspace", C3_WS, "--command"), fail: "Request timed out" },
+          ...loginSteps(),
+          { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
+        ],
+        { config: onCloud },
+      );
+      const launched = yield* t.run((s) => s.launch(request()));
+      assert.strictEqual(launched.threadId, `cloud:${C3_WS}`);
+      assert.deepStrictEqual(t.unused(), []);
+    }),
+  );
+
+  it.live("a workspace whose new terminals get no Claude login in time is archived and the launch fails, with no agent started", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
+          { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          ...loginSteps(C3_WS, false),
+          { argv: ["workspaces", "archive", C3_WS, "--host", "cloud"], fixture: "ws-archive-cloud" },
+        ],
+        { config: { ...onCloud, cloudReadyMaxMs: 0 } },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(
+        String(error.cause),
+        `cloud workspace ${C3_WS} gave a new terminal no Claude login within 0 s ` +
+          "(no ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or CLAUDE_CODE_OAUTH_TOKEN); the workspace was archived",
+      );
+      assert.deepStrictEqual(t.unused(), []);
+      assert.isUndefined(t.calls.find(argvIs("agents", "create")));
+      const saved = yield* readThread(t.data, C3_WS).pipe(Effect.provide(NodeServices.layer));
+      assert.isNotNull(saved!.archivedAt);
+      assert.deepStrictEqual(saved!.terminals, []);
+    }),
+  );
+
+  it.live("the login wait has what is left of the ready limit, not a limit of its own, so the launch timeout's budget holds", () =>
+    Effect.gen(function* () {
+      const t = rig(
+        [
+          { argv: createArgv, fixture: "ws-create-cloud" },
+          tagged,
+          // Up, but only after the whole ready limit: one login read is all that is left.
+          { argv: getArgv, fixture: "ws-get-cloud-ready", around: (answer) => Effect.sleep(80).pipe(Effect.andThen(answer)) },
+          ...loginSteps(C3_WS, false),
+          { argv: ["workspaces", "archive", C3_WS, "--host", "cloud"], fixture: "ws-archive-cloud" },
+        ],
+        { config: { ...onCloud, cloudReadyMaxMs: 50 } },
+      );
+      const error = yield* t.run((s) => s.launch(request())).pipe(Effect.flip);
+      assert.include(String(error.cause), "gave a new terminal no Claude login within 0.05 s");
+      assert.deepStrictEqual(t.unused(), []);
+      assert.strictEqual(t.calls.filter(argvIs("terminals", "create")).length, 1);
+    }),
+  );
+
   /** CLI 2.0.11 says `awake` where 2.0.8 said `ready`, and `archived` where it said `deleted`. */
   const awake = "../2.0.11/ws-get-cloud-awake";
   const archived = "../2.0.11/ws-get-cloud-archived";
@@ -3015,6 +3115,7 @@ describe("launch in the cloud", () => {
           { argv: createArgv, fixture: "ws-create-cloud" },
           tagged,
           { argv: getArgv, fixture: awake },
+          ...loginSteps(),
           { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
         ],
         { config: onCloud },
@@ -3136,6 +3237,7 @@ describe("launch in the cloud", () => {
           { argv: createArgv, fixture: "ws-create-cloud" },
           tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          ...loginSteps(),
           { argv: argvIs("agents", "create", "--host", "cloud"), fail: "Request timed out" },
           noAgentSnapshot,
           noAgentSnapshot,
@@ -3205,6 +3307,7 @@ describe("launch in the cloud", () => {
               ).pipe(Effect.andThen(answer)),
           },
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          ...loginSteps(),
           { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
           { argv: ["snapshot"], fixture: "snapshot-local-after-resume" },
           listedAsTagged(() => t.calls),
@@ -3238,6 +3341,7 @@ describe("launch in the cloud", () => {
           { argv: updateArgv, fail: "Could not connect to API" },
           tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          ...loginSteps(),
           { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
         ],
         { config: onCloud },
@@ -3296,6 +3400,7 @@ describe("launch in the cloud", () => {
           },
           tagged,
           { argv: getArgv, fixture: "ws-get-cloud-ready" },
+          ...loginSteps(),
           { argv: argvIs("agents", "create", "--host", "cloud"), fixture: "agents-create-cloud-resume" },
         ],
         { config: onCloud },
@@ -4485,6 +4590,7 @@ describe("cycle 1: liveness a send can trust, and what a failed cloud launch lea
     Effect.gen(function* () {
       const t = cloudLaunch([
         { argv: getC3, fixture: "ws-get-cloud-ready" },
+        ...loginSteps(),
         { argv: argvIs("agents", "create"), fail: "Workspace not found on host cloud" },
         { argv: ["snapshot", "--host", "cloud", "--workspace", C3_WS], fixture: "snapshot-cloud", edit: snapshotOf(C3_WS, []) },
         { argv: archiveC3, fixture: "ws-archive-cloud" },
