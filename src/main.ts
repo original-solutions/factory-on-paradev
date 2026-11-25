@@ -122,6 +122,7 @@ import {
   yieldToClaim,
   type StartContext,
 } from "./runner/start.ts";
+import { reapLaunch } from "./runner/launchTimeout.ts";
 import { takeStopRequest } from "./runner/stop.ts";
 import * as Paths from "./paths.ts";
 import { hostNamesOf, TARGETS_FILE, targetsText } from "./targets.ts";
@@ -794,6 +795,11 @@ export const liveWorld = (
       ),
     yieldToClaim: (repo: Repo, issue: number) => yieldToClaim(startContext(repo), issue),
     takeStopRequest: (run) => takeStopRequest(dataDir, run, clock),
+    reapLaunch: (repo, run, base, launchTimeout) =>
+      reapLaunch(
+        { ...buildingContext(repo, runProject(repo.project, base)), launchTimeout },
+        run,
+      ),
     timeLimit: (repo, run, base) =>
       timeLimit(buildingContext(repo, runProject(repo.project, base)), run),
     watch: (repo, run, base) => watch(buildingContext(repo, runProject(repo.project, base)), run),
