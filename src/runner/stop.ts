@@ -2,8 +2,11 @@
 /**
  * A stop by hand, ported from softfac's `runs stop`. `factory/scripts/stop-run.sh <run id>`
  * leaves a file in `<dataDir>/stop-requests/`, and the pass takes it into the run's ledger as a
- * `stop_requested` line (`takeStopRequest`), so only the server writes the ledger. The run goes
- * `stuck` on that pass. The HTTP API leaves the same file (`leaveStopRequest`).
+ * `stop_requested` line (`takeStopRequest`), so only the server writes the ledger. A building run
+ * goes `stuck` on that pass. A run still starting (`triage`, or a `launch-sending` step with no
+ * state) is ended by the launch reaper on that pass (`launchTimeout.ts`): with no thread id its
+ * issue goes back to `factory:ready`, with one it goes `stuck` as a building run does. The HTTP API
+ * leaves the same file (`leaveStopRequest`).
  */
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -30,10 +33,18 @@ export const stopRequestPath = (dataDir: string, run: RunId): string =>
   NodePath.join(dataDir, STOP_REQUESTS_DIR, runIdToString(run));
 
 /**
+ * Whether a stop by hand takes the run `seen` reads: one that is `building`, or one still starting,
+ * in `triage` or with a `launch-sending` step and no state yet. A run in any other state, or with
+ * no state and no launch, is refused as not building.
+ */
+export const stoppable = (seen: Seen): boolean =>
+  seen.state === "building" || seen.state === "triage" || (seen.state === null && seen.launchSent);
+
+/**
  * What `takeStopRequest` found. `recorded`: the line is now in the ledger. `already-requested`
  * and `finished`: the request is stale (the line is there, or the run is over) and is dropped.
- * `not-building`: the run left `building` (or has no state yet) after the script checked, so
- * the request is dropped and no line is written.
+ * `not-building`: the run is no longer one a stop takes (`stoppable`) after the script checked,
+ * so the request is dropped and no line is written.
  */
 export type StopRequestOutcome =
   | "recorded"
@@ -43,8 +54,8 @@ export type StopRequestOutcome =
   | "not-building";
 
 /**
- * Records a stop by hand for `run`, as `takeStopRequest` does: when the run is building and no
- * stop was asked for, appends the `stop_requested` line. Throws the ledger's errors; a caller
+ * Records a stop by hand for `run`, as `takeStopRequest` does: when a stop takes the run
+ * (`stoppable`) and no stop was asked for, appends the `stop_requested` line. Throws the ledger's errors; a caller
  * runs it through `ledgerCall`. `none` is not an outcome here: the caller asked. `seen` is the
  * progress the decision was made from.
  */
@@ -56,7 +67,7 @@ export const requestStop = (
   const seen = readProgress(readRun(dataDir, run).entries);
   if (seen.finished) return { outcome: "finished", seen };
   if (seen.stopRequested) return { outcome: "already-requested", seen };
-  if (seen.state !== "building") return { outcome: "not-building", seen };
+  if (!stoppable(seen)) return { outcome: "not-building", seen };
   const out = Ledger.open(dataDir, run, { clock });
   try {
     out.append(
@@ -84,7 +95,7 @@ export const leaveStopRequest = (
 } => {
   const seen = readProgress(readRun(dataDir, run).entries);
   if (seen.finished) return { outcome: "finished", seen };
-  if (seen.state !== "building") return { outcome: "not-building", seen };
+  if (!stoppable(seen)) return { outcome: "not-building", seen };
   const path = stopRequestPath(dataDir, run);
   if (seen.stopRequested || NodeFS.existsSync(path)) return { outcome: "already-requested", seen };
   const dir = NodePath.dirname(path);
@@ -105,7 +116,7 @@ export const leaveStopRequest = (
 };
 
 /**
- * Why a stop by hand is refused for a run that is not building, in the words of
+ * Why a stop by hand is refused for a run it does not take (`stoppable`), in the words of
  * `factory/scripts/stop-run.sh`: `seen` is the run's progress, and the tail says how the run ends
  * instead.
  */
@@ -128,7 +139,7 @@ export const notBuildingMessage = (id: string, seen: Seen): string => {
 /**
  * Takes the stop request for `run`, if there is one. The file is removed after the ledger line is
  * written, so a crash between the two leaves the file and the line, and the next pass finds the
- * line and only removes the file. A run that is finished, or no longer building, gets no line. A ledger that cannot be
+ * line and only removes the file. A run that is finished, or no longer one a stop takes, gets no line. A ledger that cannot be
  * read or written is an error and the file is kept for the next pass.
  */
 export const takeStopRequest = (
