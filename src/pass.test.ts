@@ -83,6 +83,8 @@ import {
   type StartError,
   type StartOutcome,
 } from "./runner/start.ts";
+import type { LaunchReap } from "./runner/launchTimeout.ts";
+import type { RunError } from "./runner/run.ts";
 import type { StopRequestOutcome } from "./runner/stop.ts";
 import {
   MessageRejectedError,
@@ -110,6 +112,8 @@ const rid = (issue: number, repo = REPO): RunId => newRunId(repo, String(issue),
 const machine = (max: number): MachineConfig => ({
   ghConfigDir: "/gh/rawphp",
   pollSeconds: 60,
+  launchTimeoutSeconds: 900,
+  launchTimeoutRetries: 1,
   maxConcurrentRuns: max,
   maxConcurrentGates: 2,
   feedbackSeconds: 600,
@@ -206,6 +210,10 @@ class Fake implements PassWorld {
   feedbacks: Array<string> = [];
   /** What `takeStopRequest` answers per `"<repo>#<issue>"`; `none` otherwise. */
   stopRequests: Record<string, StopRequestOutcome | LedgerIoError> = {};
+  /** What the launch reaper answers per `"<repo>#<issue>"`, popped per call; `left` once exhausted. */
+  reaps: Record<string, Array<LaunchReap | RunError>> = {};
+  /** `<run id> <seconds>s <retries>`: each call of the launch reaper, with the machine's timeout. */
+  reapCalls: Array<string> = [];
   pause: HandPause | null = null;
   /** What failed in Paradev this pass, if anything. */
   down: ParadevDown | null = null;
@@ -602,6 +610,24 @@ class Fake implements PassWorld {
     this.calls.push(`${call} ${key}`);
     const answer = table[key]?.shift() ?? fallback;
     return "kind" in answer ? Effect.succeed(answer as T) : Effect.fail(answer);
+  }
+
+  /** A reap that ends the run takes it off the list, as the ledger does. Kept out of `calls`. */
+  reapLaunch(
+    _repo: Repo,
+    run: RunId,
+    _base: string | null,
+    timeout: { readonly seconds: number; readonly retries: number },
+  ) {
+    const key = `${run.repo}#${run.issue}`;
+    this.reapCalls.push(`${runIdToString(run)} ${timeout.seconds}s ${timeout.retries}`);
+    this.order.push(`reap ${key}`);
+    const answer = this.reaps[key]?.shift() ?? ({ kind: "left" } as const);
+    if (!("kind" in answer)) return Effect.fail(answer);
+    if (answer.kind !== "left") {
+      this.runs = this.runs.filter((r) => runIdToString(r.id) !== runIdToString(run));
+    }
+    return Effect.succeed(answer);
   }
 
   takeStopRequest(run: RunId) {
@@ -2179,6 +2205,273 @@ describe("runs that are confirmed and still in triage", () => {
       );
       yield* pass(fake, [REPO], 3);
       assert.equal(fake.runErrors[0]!.kind, "t3");
+    }),
+  );
+});
+
+describe("launches that recorded no thread id", () => {
+  const RUN12 = runIdToString(rid(12));
+
+  it.effect("the reaper looks at every confirmed starting run first, with the machine's timeout", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.runIn(13, null);
+      fake.runIn(14, BUILDING, REPO, true);
+      fake.runIn(15, "pr-open", REPO, true);
+      fake.runIn(16, "needs-info", REPO, true);
+      fake.runs.push({ ...fake.runs[0]!, id: rid(17), confirmed: false });
+      fake.runs.push({ ...fake.runs[0]!, id: rid(18), unreadable: true });
+      fake.pushStart(`${REPO}#12`, started(12));
+      fake.pushStart(`${REPO}#13`, started(13));
+      yield* pass(fake, [REPO], 9);
+      assert.deepEqual(fake.reapCalls, [`${RUN12} 900s 1`, `${runIdToString(rid(13))} 900s 1`]);
+      // Before any run is worked: the resumes come after every reap.
+      assert.deepEqual(
+        fake.order.filter((o) => o.startsWith("reap") || o.startsWith("resume")),
+        [`reap ${REPO}#12`, `reap ${REPO}#13`, `resume ${REPO}#12`, `resume ${REPO}#13`],
+      );
+    }),
+  );
+
+  it.effect("a run the reaper leaves is resumed as before", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.pushStart(`${REPO}#12`, started(12));
+      const { lines } = yield* pass(fake, [REPO], 3);
+      assert.deepEqual(starts(fake), [`resume ${REPO}#12`]);
+      assert.ok(runLine(lines, `${REPO}#12 triage:`).includes("session started"), lines.join("\n"));
+    }),
+  );
+
+  it.effect("a timed-out launch frees its slot, its issue is ready, and the claim takes it in the same pass", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.reaps[`${REPO}#12`] = [{ kind: "ready", ended: "timed-out", failures: 1, mayHaveSession: false }];
+      fake.ready[REPO] = [12];
+      fake.pushStart(`${REPO}#12`, started(12));
+      const { lines } = yield* pass(fake, [REPO], 1);
+      // Not resumed: the run is over, and the one slot went to the new claim.
+      assert.deepEqual(starts(fake), [`start ${REPO}#12`]);
+      const line = runLine(lines, `${REPO}#12 triage:`);
+      assert.ok(line.includes(`the launch recorded no thread id within 900 seconds`), line);
+      assert.ok(line.includes("launch timeout 1, launch_timeout_retries 1"), line);
+      assert.ok(line.includes(`run ${RUN12} is finished and the issue is factory:ready again`), line);
+      assert.deepEqual(fake.items, []);
+    }),
+  );
+
+  it.effect("a leftover launch-sending run is reaped on the first pass after a restart", () =>
+    Effect.gen(function* () {
+      // A fresh world: the runner just started, and the ledger is all it has.
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.reaps[`${REPO}#12`] = [{ kind: "ready", ended: "timed-out", failures: 1, mayHaveSession: false }];
+      const { report } = yield* pass(fake, [REPO], 1);
+      assert.deepEqual(fake.reapCalls, [`${RUN12} 900s 1`]);
+      assert.deepEqual(starts(fake), []);
+      assert.equal(report.errors, 0);
+    }),
+  );
+
+  it.effect("a launch that times out with the retries used is stuck, with one launch-timeout item", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      // A launch sent with no thread id: the item names the command id, so no second line is raised.
+      fake.reaps[`${REPO}#12`] = [{ kind: "stuck", ended: "timed-out", failures: 2, limit: true, mayHaveSession: true }];
+      const { lines, report } = yield* pass(fake, [REPO], 3);
+      assert.deepEqual(starts(fake), []);
+      const line = runLine(lines, `${REPO}#12 triage:`);
+      assert.ok(line.includes(`stuck, the reason is in the ledger of run ${RUN12}`), line);
+      assert.deepEqual(
+        fake.items.map(({ id, kind, repo, issue, run }) => ({ id, kind, repo, issue, run })),
+        [{ id: `launch-timeout:${RUN12}`, kind: "stuck", repo: REPO, issue: 12, run: RUN12 }],
+      );
+      const message = fake.items[0]!.message;
+      assert.ok(message.includes(`${REPO}#12`) && message.includes(RUN12), message);
+      assert.ok(message.includes("never recorded a thread id"), message);
+      assert.ok(
+        message.includes(`look for launch command id softfac:${RUN12}:launch in Paradev`),
+        message,
+      );
+      assert.equal(report.attention, 1);
+      assert.deepEqual(
+        fake.events.filter((e) => e.event === "attention"),
+        [{ event: "attention", data: { run: RUN12, reason: "launch-timeout" } }],
+      );
+      // The item stays after the pass, and a later pass raises nothing again.
+      yield* pass(fake, [REPO], 3);
+      assert.equal(fake.items.length, 1);
+      assert.equal(fake.events.filter((e) => e.event === "attention").length, 1);
+    }),
+  );
+
+  it.effect("the launch-timeout item names a stop by hand as the cause, and points at Paradev only when a launch was sent", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.stopRequests[`${REPO}#12`] = "recorded";
+      fake.reaps[`${REPO}#12`] = [{ kind: "stuck", ended: "stopped", failures: 1, limit: true, mayHaveSession: false }];
+      yield* pass(fake, [REPO], 3);
+      const stopped = fake.items[0]!.message;
+      assert.ok(stopped.includes("stopped by hand before its launch recorded a thread id"), stopped);
+      assert.ok(!stopped.includes("in Paradev"), stopped);
+      assert.ok(stopped.endsWith("set factory:ready again"), stopped);
+      // A timeout whose recorded thread is gone sent no launch that went unrecorded either.
+      const gone = new Fake();
+      gone.runIn(12, "triage");
+      gone.reaps[`${REPO}#12`] = [{ kind: "stuck", ended: "timed-out", failures: 2, limit: true, mayHaveSession: false }];
+      yield* pass(gone, [REPO], 3);
+      const timedOut = gone.items[0]!.message;
+      assert.ok(timedOut.includes("its launch never recorded a thread id"), timedOut);
+      assert.ok(!timedOut.includes("in Paradev"), timedOut);
+    }),
+  );
+
+  it.effect("a stop by hand of a starting run is taken before the reap, once, and ends the run", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.stopRequests[`${REPO}#12`] = "recorded";
+      fake.reaps[`${REPO}#12`] = [{ kind: "ready", ended: "stopped", failures: 0, mayHaveSession: false }];
+      const { lines } = yield* pass(fake, [REPO], 3);
+      assert.deepEqual(
+        fake.calls.filter((c) => c.startsWith("stop_request")),
+        [`stop_request ${REPO}#12`],
+      );
+      assert.deepEqual(starts(fake), []);
+      const line = runLine(lines, `${REPO}#12 triage:`);
+      assert.ok(line.includes("stop requested by hand"), line);
+      assert.ok(line.includes("stopped by hand before its launch recorded a thread id"), line);
+      assert.ok(line.includes("factory:ready again"), line);
+    }),
+  );
+
+  it.effect("a stop by hand of a starting run that has a thread is stuck, as a building stop is", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage", REPO, true);
+      fake.stopRequests[`${REPO}#12`] = "recorded";
+      fake.reaps[`${REPO}#12`] = [{ kind: "stuck", ended: "stopped", failures: 0, limit: false, mayHaveSession: false }];
+      const { lines } = yield* pass(fake, [REPO], 3);
+      assert.deepEqual(starts(fake), []);
+      assert.ok(runLine(lines, `${REPO}#12 triage:`).includes(`stuck, the reason is in the ledger of run ${RUN12}`));
+      assert.deepEqual(fake.items.map((item) => item.id), [`run:${RUN12}:stuck`]);
+    }),
+  );
+
+  it.effect("a reap that fails is an error on the run, and the run is not resumed this pass", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.reaps[`${REPO}#12`] = [
+        new GitHubFailed({ args: ["issue", "edit"], status: 1, stderr: "boom" }),
+      ];
+      fake.pushStart(`${REPO}#12`, started(12));
+      const { report } = yield* pass(fake, [REPO], 3);
+      assert.deepEqual(starts(fake), []);
+      assert.equal(report.errors, 1);
+      assert.deepEqual(
+        fake.runErrors.map(({ run, step }) => ({ run, step })),
+        [{ run: rid(12), step: "pass" }],
+      );
+      // The next pass tries again, and resumes it when it is left.
+      yield* pass(fake, [REPO], 3);
+      assert.deepEqual(starts(fake), [`resume ${REPO}#12`]);
+    }),
+  );
+
+  it.effect("a reaped launch that may have started a session says where to look for it", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage", REPO, true);
+      fake.reaps[`${REPO}#12`] = [
+        { kind: "ready", ended: "timed-out", failures: 1, mayHaveSession: true },
+      ];
+      const { lines, report } = yield* pass(fake, [REPO], 3);
+      const attention = lines.find((line) => line.startsWith("ATTENTION:"));
+      assert.ok(attention !== undefined, lines.join("\n"));
+      assert.strictEqual(
+        attention,
+        `ATTENTION: ${REPO}#12 its launch recorded no thread id before the run was ended, and a session may exist for ${RUN12}: look for launch command id softfac:${RUN12}:launch in Paradev and archive what it started by hand`,
+      );
+      assert.deepEqual(
+        fake.events.filter((e) => e.event === "attention"),
+        [{ event: "attention", data: { run: RUN12, reason: "session-may-exist" } }],
+      );
+      assert.equal(report.attention, 1);
+    }),
+  );
+
+  it.effect("a run whose issue is no longer its own is finished, and the issue is left as it is", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.reaps[`${REPO}#12`] = [{ kind: "released", mayHaveSession: false }];
+      const { lines } = yield* pass(fake, [REPO], 3);
+      assert.deepEqual(starts(fake), []);
+      const line = runLine(lines, `${REPO}#12 triage:`);
+      assert.ok(line.includes(`run ${RUN12} is finished and the issue is left as it is`), line);
+      assert.deepEqual(fake.items, []);
+    }),
+  );
+
+  it.effect.each<{ name: string; reap: LaunchReap }>([
+    { name: "released", reap: { kind: "released", mayHaveSession: true } },
+    { name: "yielded", reap: { kind: "yielded", machine: "mac-studio", mayHaveSession: true } },
+  ])("a $name run whose launch was sent with no thread id says where to look for its session", ({ reap }) =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage", REPO, true);
+      fake.reaps[`${REPO}#12`] = [reap];
+      yield* pass(fake, [REPO], 3);
+      assert.deepEqual(
+        fake.events.filter((e) => e.event === "attention"),
+        [{ event: "attention", data: { run: RUN12, reason: "session-may-exist" } }],
+      );
+    }),
+  );
+
+  it.effect("a run another machine's claim beat is left to that machine", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.reaps[`${REPO}#12`] = [{ kind: "yielded", machine: "mac-studio", mayHaveSession: false }];
+      const { lines } = yield* pass(fake, [REPO], 3);
+      assert.deepEqual(starts(fake), []);
+      assert.ok(runLine(lines, `${REPO}#12 triage:`).includes("claimed by machine mac-studio"));
+    }),
+  );
+
+  it.effect("a run a cut reap left in ready or stuck is handed to the reaper, with no stop request taken", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "ready");
+      fake.runIn(13, "stuck");
+      fake.reaps[`${REPO}#12`] = [{ kind: "ready", ended: "timed-out", failures: 1, mayHaveSession: false }];
+      yield* pass(fake, [REPO], 3);
+      assert.deepEqual(fake.reapCalls, [`${RUN12} 900s 1`, `${runIdToString(rid(13))} 900s 1`]);
+      assert.deepEqual(
+        fake.calls.filter((c) => c.startsWith("stop_request")),
+        [`stop_request ${REPO}#13`],
+      );
+    }),
+  );
+
+  it.effect("the timeout and the retries come from the machine config", () =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage");
+      fake.watched = watchedOf([REPO]);
+      yield* runPass(
+        fake,
+        { ...machine(3), launchTimeoutSeconds: 120, launchTimeoutRetries: 0 },
+        () => {},
+      );
+      assert.deepEqual(fake.reapCalls, [`${RUN12} 120s 0`]);
     }),
   );
 });
@@ -4837,7 +5130,7 @@ describe("following a building run", () => {
         lines.filter((l) => l.startsWith("ATTENTION: ")),
         [
           `ATTENTION: ${REPO}#12 Abandoned: the issue was closed, so the factory stopped the session and closed the run`,
-          `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in T3 Code and archive that thread by hand`,
+          `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in Paradev and archive what it started by hand`,
         ],
       );
       assert.equal(report.attention, 2);
@@ -4893,7 +5186,7 @@ describe("following a building run", () => {
             lines.filter((l) => l.startsWith("ATTENTION: ")),
             [
               `ATTENTION: ${REPO}#12 Abandoned: the issue was closed, so the factory stopped the session and closed the run`,
-              `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in T3 Code and archive that thread by hand`,
+              `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in Paradev and archive what it started by hand`,
             ],
             listing,
           );
@@ -5828,7 +6121,7 @@ describe("sessions that ended badly", () => {
         assert.deepEqual(
           lines.filter((l) => l.startsWith("ATTENTION: ")),
           [
-            `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in T3 Code and archive that thread by hand`,
+            `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in Paradev and archive what it started by hand`,
           ],
         );
         assert.equal(report.attention, 1);
@@ -5883,7 +6176,7 @@ describe("sessions that ended badly", () => {
       assert.deepEqual(
         lines.filter((l) => l.startsWith("ATTENTION: ")),
         [
-          `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in T3 Code and archive that thread by hand`,
+          `ATTENTION: ${REPO}#12 the issue was closed, and a session may exist for ${run}: look for launch command id softfac:${run}:launch in Paradev and archive what it started by hand`,
         ],
       );
       assert.equal(report.attention, 1);

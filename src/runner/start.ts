@@ -429,7 +429,9 @@ const startFresh = Effect.fn("RunnerStart.startFresh")(function* (
 ): Effect.fn.Return<StartOutcome, StartError> {
   // Before the claim: nothing is written for an issue that is not approved except the
   // explanation.
-  const approval = yield* ctx.tracker.approval(issue, ctx.project.instructors);
+  // The factory's login, so a `factory:ready` the launch reaper put back is judged by the
+  // instructor's label it carries.
+  const approval = yield* ctx.tracker.approval(issue, ctx.project.instructors, ctx.trackerUser);
   if (approval.kind === "refused") return yield* refuseStart(ctx, issue, approval.refusal);
   const { labeledAt, labeledBy } = approval;
   // Also before the claim: with T3 out of reach nothing is claimed, so no issue is left in
@@ -736,6 +738,9 @@ const begin = Effect.fn("RunnerStart.begin")(function* (
   return { kind: "started", run, threadId };
 });
 
+/** The command id of a run's first launch: every resend of it uses the same one. */
+export const launchCommandId = (run: RunId): string => `softfac:${runIdToString(run)}:launch`;
+
 /** A launch not sent or refused. `reason` is the public line when it is not `LAUNCH_FAILED`. */
 type Launch =
   | { readonly ok: true; readonly threadId: string; readonly worktree: string | null }
@@ -756,7 +761,7 @@ const launchSession = Effect.fn("RunnerStart.launchSession")(function* (
   seen: Seen,
   found: FactoryProject | null | undefined,
 ): Effect.fn.Return<Launch, StartError> {
-  const commandId = `softfac:${runIdToString(run)}:launch`;
+  const commandId = launchCommandId(run);
   const target = launchable(
     found === undefined ? yield* ctx.sessions.findProject(ctx.repoPath) : found,
     ctx.repo,

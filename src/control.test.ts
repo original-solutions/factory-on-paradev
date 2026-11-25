@@ -19,6 +19,20 @@ const ID = "rawphp__softfac__10__1";
 
 const moved = (from: string, to: string): RunEvent =>
   ({ event: "state_changed", data: { from, to } }) as RunEvent;
+const step = (text: string): RunEvent => ({ event: "step_changed", data: { step: text } });
+const APPROVED = step("approved 2026-10-04T10:00:00Z");
+const LAUNCHED: RunEvent = {
+  event: "session_launched",
+  data: {
+    thread_id: "thread-1",
+    worktree: "/t3/wt",
+    branch: "t3code/abc",
+    model_instance: null,
+    model: null,
+    model_options: null,
+    resumed_from: null,
+  },
+};
 const CLAIMED: RunEvent = {
   event: "claimed",
   data: { machine: "mac-mini", github_user: "rawphp" },
@@ -151,7 +165,7 @@ describe("stopRun", () => {
     expect(bytesOf(dir)).toBe(bytes);
   });
 
-  it("refuses a finished run, and a run in triage with the way to end it", () => {
+  it("refuses a finished run, and a run in needs-info with the way to end it", () => {
     const finished = tempDir();
     seed(finished, [...BUILDING, FINISHED]);
     expect(stopRun(finished, ID)).toEqual({
@@ -159,12 +173,69 @@ describe("stopRun", () => {
       id: ID,
       message: `run ${ID} is not building: it is finished. Only a building run is stopped this way.`,
     });
-    const triage = tempDir();
-    seed(triage, [CLAIMED, moved("ready", "triage")]);
-    expect(stopRun(triage, ID)).toMatchObject({
+    const waiting = tempDir();
+    seed(waiting, [...BUILDING, moved("building", "needs-info")]);
+    const bytes = bytesOf(waiting);
+    expect(stopRun(waiting, ID)).toEqual({
       kind: "refused",
-      message: expect.stringContaining("To end it, close its issue."),
+      id: ID,
+      message: `run ${ID} is not building: its state is needs-info. Only a building run is stopped this way. To end it, close its issue.`,
     });
+    expect(bytesOf(waiting)).toBe(bytes);
+    expect(NodeFS.existsSync(stopRequestPath(waiting, run10))).toBe(false);
+  });
+
+  it.each<{ name: string; events: ReadonlyArray<RunEvent> }>([
+    { name: "in triage", events: [APPROVED, CLAIMED, moved("ready", "triage")] },
+    {
+      name: "in launch-sending with no thread id",
+      events: [APPROVED, CLAIMED, moved("ready", "triage"), step("launch-sending")],
+    },
+    {
+      name: "in launch-sending resumed-from a branch",
+      events: [
+        APPROVED,
+        CLAIMED,
+        moved("ready", "triage"),
+        step("launch-sending resumed-from t3code/abc"),
+      ],
+    },
+  ])("leaves a stop request for a run $name, and says the issue goes back to ready", ({ events }) => {
+    const dir = tempDir();
+    seed(dir, events);
+    const bytes = bytesOf(dir);
+    expect(stopRun(dir, ID)).toEqual({
+      kind: "stopped",
+      id: ID,
+      already: false,
+      message: `stop requested: ${ID}; the run ends on the next pass: with no thread id by then, its issue goes back to factory:ready, or to factory:stuck when its launch retries are used`,
+    });
+    expect(NodeFS.readFileSync(stopRequestPath(dir, run10), "utf8")).toBe("operator\n");
+    expect(bytesOf(dir)).toBe(bytes);
+    expect(stopRun(dir, ID)).toMatchObject({ kind: "stopped", already: true });
+  });
+
+  it("refuses a triage run with no approval and no thread with today's message", () => {
+    const dir = tempDir();
+    seed(dir, [CLAIMED, moved("ready", "triage"), step("launch-sending")]);
+    expect(stopRun(dir, ID)).toEqual({
+      kind: "refused",
+      id: ID,
+      message: `run ${ID} is not building: its state is triage. Only a building run is stopped this way. To end it, close its issue.`,
+    });
+    expect(NodeFS.existsSync(stopRequestPath(dir, run10))).toBe(false);
+  });
+
+  it("leaves a stop request for a triage run that has a thread, which goes stuck as a building stop does", () => {
+    const dir = tempDir();
+    seed(dir, [CLAIMED, moved("ready", "triage"), step("launch-sending"), LAUNCHED]);
+    expect(stopRun(dir, ID)).toEqual({
+      kind: "stopped",
+      id: ID,
+      already: false,
+      message: `stop requested: ${ID}; the issue goes to factory:stuck on the next pass`,
+    });
+    expect(NodeFS.existsSync(stopRequestPath(dir, run10))).toBe(true);
   });
 
   it("is not-found for an unknown run and invalid for a bad id", () => {

@@ -5,7 +5,7 @@ import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
 
 import { isState, type State } from "../domain/lifecycle.ts";
-import { readProgress, type Seen } from "../runner/progress.ts";
+import { isConfirmed, readProgress, type Seen } from "../runner/progress.ts";
 import { errnoCode, LedgerIoError, LedgerNotFoundError } from "./errors.ts";
 import type { PrEnd } from "./events.ts";
 import {
@@ -78,7 +78,7 @@ export const runInfoOf = (id: RunId, seen: Seen | null): RunInfo =>
         id,
         state: seen.state,
         unreadable: false,
-        confirmed: seen.approvedAt !== null || seen.threadId !== null,
+        confirmed: isConfirmed(seen),
         session: seen.threadId !== null || seen.launchSent,
         prReported: seen.prReported,
         base: seen.base,

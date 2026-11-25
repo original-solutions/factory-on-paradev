@@ -66,6 +66,8 @@ import {
 } from "./runner/start.ts";
 import type { ProxyAnswer } from "./paradev/proxy.ts";
 import { isNoTargetHasRoom, isPinnedNoTargetHasRoom, NO_TARGET_HAS_ROOM, type Model, type SessionsError } from "./sessions.ts";
+import type { LaunchEnd, LaunchReap } from "./runner/launchTimeout.ts";
+import { isStartingState } from "./runner/progress.ts";
 import type { StopRequestOutcome } from "./runner/stop.ts";
 import { sanitize } from "./text.ts";
 import {
@@ -279,6 +281,16 @@ export interface PassWorld {
    * ledger: `runner/stop.ts` `takeStopRequest`.
    */
   readonly takeStopRequest: (run: RunId) => Effect.Effect<StopRequestOutcome, LedgerError>;
+  /**
+   * The launch reaper for a run still starting: `runner/launchTimeout.ts` `reapLaunch`, with the
+   * machine's `launch_timeout_seconds` and `launch_timeout_retries`.
+   */
+  readonly reapLaunch: (
+    repo: Repo,
+    run: RunId,
+    base: string | null,
+    timeout: { readonly seconds: number; readonly retries: number },
+  ) => Effect.Effect<LaunchReap, StartError>;
   /**
    * The time limit: `runner/building.ts` `timeLimit`. This and every other step of a run take
    * `base`, the base its launch recorded (`RunInfo.base`), so the step is built for the run's base
@@ -530,6 +542,41 @@ export const stuckItem = (repo: string, issue: number, run: string): NewItem => 
 const abandonedText = (label: string): string =>
   `${label} Abandoned: the issue was closed, so the factory stopped the session and closed the run`;
 
+/** Where a person finds what a launch that recorded no thread id may have started, and what to do. */
+const lookForLaunch = (run: string): string =>
+  `look for launch command id softfac:${run}:launch in Paradev and archive what it started by hand`;
+
+/** The id of the item a run raises when its launch failed with no thread id and the issue had used its retries. */
+export const LAUNCH_TIMEOUT_ITEM = "launch-timeout";
+
+/**
+ * The item of a run that went `stuck` because its launch recorded no thread id once more after the
+ * issue had used `launch_timeout_retries`, by the timeout or by a stop by hand (`ended`). A `stuck`
+ * item: it stays until the issue is closed or a person dismisses it, as any stuck run's does. It
+ * points at Paradev only when a launch was sent (`mayHaveSession`).
+ */
+export const launchTimeoutItem = (
+  repo: string,
+  issue: number,
+  run: string,
+  ended: LaunchEnd,
+  mayHaveSession: boolean,
+): NewItem => {
+  const why =
+    ended === "timed-out"
+      ? "its launch never recorded a thread id"
+      : "it was stopped by hand before its launch recorded a thread id";
+  const todo = mayHaveSession ? `${lookForLaunch(run)}, then set factory:ready again` : "set factory:ready again";
+  return {
+    id: `${LAUNCH_TIMEOUT_ITEM}:${run}`,
+    kind: "stuck",
+    repo,
+    issue,
+    run,
+    message: `${plain(repo)}${mention(issue)} run ${run} is stuck: ${why}, and the issue has used its launch_timeout_retries: ${todo}`,
+  };
+};
+
 /**
  * The item `abandoned` raises for a run whose issue a person closed, which the background gate
  * raises too when it is the step that finds the issue closed.
@@ -713,6 +760,11 @@ class Pass {
    * whatever step sent it: their ready issues are not claimed this pass.
    */
   readonly noRoomRepos = new Set<string>();
+  /**
+   * The runs (by id) the launch reaper failed on this pass: they are not resumed, since a resume
+   * would send again a launch the reaper may have been ending.
+   */
+  readonly unreaped = new Set<string>();
   /** The machine's `model_fallbacks`. */
   fallbacks: Readonly<Record<string, string>> = {};
   readonly startedMs: number;
@@ -918,6 +970,8 @@ export const runPass = Effect.fn("Pass.runPass")(function* (
   const infos = yield* runs(world, pass);
   if (infos !== null) {
     const known = new Known(infos);
+    // First: a launch that never recorded a thread id holds a slot nothing else frees.
+    yield* reapLaunches(world, repos, known, machine, pass);
     yield* yieldedRuns(world, repos, known, pass);
     yield* workRuns(world, repos, known, pass);
     // The runs this machine holds go on above; a repo another machine owns gets nothing new.
@@ -1742,6 +1796,92 @@ const runs = Effect.fn("Pass.runs")(function* (world: PassWorld, pass: Pass) {
 });
 
 /**
+ * The attention line of a run ended while a session may exist that its ledger does not name
+ * (`mayHaveSession`): `why` says how it ended, then where to look.
+ */
+const sessionMayExistText = (label: string, run: string, why: string): string =>
+  `${label} ${why}, and a session may exist for ${run}: ${lookForLaunch(run)}`;
+
+/**
+ * The launch reaper, at the start of every pass, so the first pass after a restart reaps a launch
+ * a crash left mid-way. Each confirmed run still starting (`triage`, or no state) of a loaded repo
+ * has its stop request taken, then `reapLaunch` decides; a confirmed, unfinished run in `ready` or
+ * `stuck` goes to it too, so it can finish a reap that was cut short (no stop request is taken for
+ * it here): a launch with no thread id (or with one
+ * that is gone) past `launch_timeout_seconds`, or a stop by hand, finishes the run and frees its
+ * slot before any run is worked or issue claimed. A reap that fails leaves the run unresumed for
+ * the pass.
+ */
+const reapLaunches = Effect.fn("Pass.reapLaunches")(function* (
+  world: PassWorld,
+  repos: ReadonlyArray<Loaded>,
+  known: Known,
+  machine: MachineConfig,
+  pass: Pass,
+) {
+  const timeout = {
+    seconds: machine.launchTimeoutSeconds,
+    retries: machine.launchTimeoutRetries,
+  };
+  // A run a cut reap left in `ready` or `stuck` is the reaper's to finish too.
+  const reapable = (info: RunInfo) =>
+    inTriage(info) ||
+    (!info.unreadable && info.confirmed && (info.state === "ready" || info.state === "stuck"));
+  for (const info of known.infos.filter(reapable)) {
+    const loaded = repos.find(
+      (l) => l.kind === "ready" && sameRepo(l.repo.watched.repo, info.id.repo),
+    );
+    if (loaded === undefined || loaded.kind !== "ready") continue;
+    const repo = loaded.repo;
+    const name = repo.watched.repo;
+    const issue = Number(info.id.issue);
+    const run = runIdToString(info.id);
+    const notes = pass.notes(name, issue, info.state);
+    // A starting run's stop request is the reaper's; any other run's is taken where it is worked.
+    if (inTriage(info)) yield* takeStopRequest(world, pass, info, notes);
+    const reaped = yield* Effect.result(world.reapLaunch(repo, info.id, info.base, timeout));
+    if (reaped._tag === "Failure") {
+      pass.unreaped.add(run);
+      pass.failed(notes, "launch timeout", "pass", reaped.failure);
+    } else {
+      const outcome = reaped.success;
+      if (outcome.kind === "released") {
+        notes.parts.push(
+          `the issue was moved off factory:triage: run ${run} is finished and the issue is left as it is`,
+        );
+      } else if (outcome.kind === "yielded") {
+        notes.parts.push(claimedByLine(outcome.machine));
+      } else if (outcome.kind === "ready") {
+        const why =
+          outcome.ended === "timed-out"
+            ? `the launch recorded no thread id within ${timeout.seconds} seconds (launch timeout ${outcome.failures}, launch_timeout_retries ${timeout.retries})`
+            : "stopped by hand before its launch recorded a thread id";
+        notes.parts.push(`${why}: run ${run} is finished and the issue is factory:ready again`);
+      } else if (outcome.kind === "stuck" && outcome.limit) {
+        notes.parts.push(stuckLine(run));
+        notes.raises.push(launchTimeoutItem(name, issue, run, outcome.ended, outcome.mayHaveSession));
+        pass.report.attention += 1;
+        yield* pass.record({ event: "attention", data: { run, reason: LAUNCH_TIMEOUT_ITEM } });
+      } else if (outcome.kind === "stuck") {
+        pass.stuck(notes, run);
+      }
+      // The launch-timeout item names the launch command id already.
+      const limit = outcome.kind === "stuck" && outcome.limit;
+      if (outcome.kind !== "left" && outcome.mayHaveSession && !limit) {
+        yield* pass.attention(
+          notes,
+          sessionMayExistText(notes.label, run, "its launch recorded no thread id before the run was ended"),
+          run,
+          "session-may-exist",
+        );
+      }
+      if (outcome.kind !== "left") yield* known.refresh(world, pass, name, issue);
+    }
+    yield* pass.flush(notes, info.id);
+  }
+});
+
+/**
  * Finishes this machine's runs that another machine's newer claim beat (`yieldToClaim`), before
  * the runs are worked. Only on a repo with no `factory.owner`, and only for an issue now
  * `factory:triage` or `factory:building` while a run of it is in another state, so a pass reads
@@ -1823,7 +1963,14 @@ const workRuns = Effect.fn("Pass.workRuns")(function* (
       // The gate has the run: nothing else is done for it (softfac's `work_runs`). A stop
       // request waits, so the gate's own result decides the state first.
       notes.parts.push(GATE_RUNNING);
-    } else if (yield* takeStopRequestThenWithin(world, repo, info, notes, pass)) {
+    } else if (inTriage(info) && pass.unreaped.has(runIdToString(info.id))) {
+      // The reaper's error is on the run already; a resume could send its launch again.
+    } else if (
+      inTriage(info)
+        ? yield* withinLimit(world, repo, info, notes, pass)
+        : yield* takeStopRequestThenWithin(world, repo, info, notes, pass)
+    ) {
+      // A starting run's stop request was taken by `reapLaunches`.
       if (inTriage(info)) yield* resumeRun(world, repo, info, notes, pass);
       else if (info.state === "building") yield* followBuilding(world, repo, info, notes, pass);
       // A run left in `needs-info` or `stuck` has its end done by `advance` (softfac's `finishing`).
@@ -2442,7 +2589,7 @@ const abandoned = Effect.fn("Pass.abandoned")(function* (
     const name = runIdToString(id);
     yield* pass.attention(
       notes,
-      `${notes.label} the issue was closed, and a session may exist for ${name}: look for launch command id softfac:${name}:launch in T3 Code and archive that thread by hand`,
+      sessionMayExistText(notes.label, name, "the issue was closed"),
       name,
       "session-may-exist",
     );
@@ -2463,9 +2610,13 @@ const waitsOnItself = (pass: Pass, notes: Notes, run: string): Effect.Effect<voi
 
 const READY_AGAIN = "its issue is ready again, so it is left to the claim step";
 
-/** A confirmed run still in `triage` (or before any state): what `finishOlderRuns` would end. */
+/**
+ * A confirmed run still in `triage` (or before any state): what `finishOlderRuns` would end, and
+ * what the launch reaper looks at. `isStarting` in `runner/progress.ts`, over a run's ledger,
+ * where `confirmed` and the starting states come from.
+ */
 const inTriage = (run: RunInfo): boolean =>
-  !run.unreadable && run.confirmed && (run.state === null || run.state === "triage");
+  !run.unreadable && run.confirmed && isStartingState(run.state);
 
 /**
  * A confirmed run in `triage` that `resume` would not take, for `why`: a person moved or closed
