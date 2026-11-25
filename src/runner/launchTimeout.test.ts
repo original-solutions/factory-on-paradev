@@ -106,8 +106,14 @@ interface Rig {
     thread: Thread | ThreadNotFoundError | SessionsError;
     /** The machine whose claim comment holds the issue, when it is another machine's. */
     winner: string | null;
+    /** The next `unassign` fails, once, leaving the issue as it was. */
+    unassignFailsOnce: boolean;
+    /** The next `setState` lands on GitHub and still answers with an error, once. */
+    setStateErrsOnce: boolean;
+    /** The next `setState` fails, once, leaving the issue as it was. */
+    setStateFailsOnce: boolean;
   };
-  ctx: (over?: { seconds?: number; retries?: number }) => LaunchTimeoutContext;
+  ctx: (over?: { seconds?: number; retries?: number; owner?: string }) => LaunchTimeoutContext;
 }
 
 const rigFor = (): Rig => {
@@ -118,14 +124,20 @@ const rigFor = (): Rig => {
     issue: issueDetail("triage"),
     thread: { worktreePath: "/t3/wt", branch: "t3code/abc", archived: false },
     winner: null,
+    unassignFailsOnce: false,
+    setStateErrsOnce: false,
+    setStateFailsOnce: false,
   };
+  const boom = () => new GitHubFailed({ args: ["issue", "edit"], status: 1, stderr: "boom" });
   const notExpected = (name: string) => () => Effect.die(`${name} was not expected`);
-  const ctx = (over: { seconds?: number; retries?: number } = {}): LaunchTimeoutContext => ({
+  const ctx = (
+    over: { seconds?: number; retries?: number; owner?: string } = {},
+  ): LaunchTimeoutContext => ({
     trackerUser: "rawphp",
     hostLogins: new Map(),
     cloud: false,
     machine: "mac-mini",
-    project: { base: "main" },
+    project: { base: "main", owner: over.owner ?? null },
     dataDir,
     clock: () => clock.now,
     launchTimeout: {
@@ -145,12 +157,27 @@ const rigFor = (): Rig => {
       },
       setState: (n, state) => {
         calls.push(`setState ${n} ${state}`);
+        if (world.setStateFailsOnce) {
+          world.setStateFailsOnce = false;
+          return Effect.fail(boom());
+        }
         world.issue = { ...world.issue, state, labels: [`factory:${state}`] };
+        if (world.setStateErrsOnce) {
+          world.setStateErrsOnce = false;
+          return Effect.fail(boom());
+        }
         return Effect.void;
       },
       unassign: (n, user) => {
         calls.push(`unassign ${n} ${user}`);
-        world.issue = { ...world.issue, assignees: [] };
+        if (world.unassignFailsOnce) {
+          world.unassignFailsOnce = false;
+          return Effect.fail(boom());
+        }
+        world.issue = {
+          ...world.issue,
+          assignees: world.issue.assignees.filter((a) => a !== user),
+        };
         return Effect.void;
       },
       postComment: (n) => {
@@ -686,20 +713,21 @@ describe("reapLaunch: an issue that is no longer the run's", () => {
     { name: "moved to proposed", issue: issueDetail("proposed") },
     { name: "with no factory label", issue: issueDetail(null) },
     { name: "put back to ready by a person", issue: { ...issueDetail("ready"), assignees: [] } },
-    { name: "in triage assigned to someone else too", issue: { ...issueDetail("triage"), assignees: ["rawphp", "eve"] } },
-    { name: "in triage with nobody assigned", issue: { ...issueDetail("triage"), assignees: [] } },
   ])("finishes the run in the ledger only when the issue is $name, and moves no label", ({ issue }) =>
     Effect.gen(function* () {
       const rig = rigFor();
       seed(rig.dataDir, runOf(1), SENDING);
       rig.world.issue = issue;
       rig.clock.now = T0 + 16 * MINUTE;
-      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), { kind: "released" });
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), {
+        kind: "released",
+        mayHaveSession: true,
+      });
       assert.deepStrictEqual(rig.calls, ["issue 10"]);
       const seen = readProgress(readRun(rig.dataDir, runOf(1)).entries);
       assert.isTrue(seen.finished);
-      // Not a launch failure of this issue's: nothing is counted against its retries.
-      assert.strictEqual(seen.launchFailed, null);
+      // The timeout is recorded all the same, so a later run of the issue counts it.
+      assert.strictEqual(seen.launchFailed, "timed-out");
       assert.deepStrictEqual(listUnfinishedRuns(rig.dataDir), []);
     }),
   );
@@ -714,6 +742,7 @@ describe("reapLaunch: an issue that is no longer the run's", () => {
       assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), {
         kind: "yielded",
         machine: "mac-studio",
+        mayHaveSession: true,
       });
       assert.deepStrictEqual(rig.calls, ["issue 10", "yield 10"]);
       // `yieldToClaim` finishes this machine's runs itself; the reaper writes nothing.
@@ -726,7 +755,10 @@ describe("reapLaunch: an issue that is no longer the run's", () => {
       const rig = rigFor();
       seed(rig.dataDir, runOf(1), [...SENDING, LAUNCHED, STOP_LINE]);
       rig.world.issue = issueDetail("needs-info");
-      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), { kind: "released" });
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), {
+        kind: "released",
+        mayHaveSession: false,
+      });
       assert.deepStrictEqual(rig.calls, [
         "issue 10",
         "archive thread-1",
@@ -734,6 +766,118 @@ describe("reapLaunch: an issue that is no longer the run's", () => {
         "removeWorktree /t3/wt",
       ]);
       assert.isTrue(readProgress(readRun(rig.dataDir, runOf(1)).entries).finished);
+    }),
+  );
+
+  it.effect.each<{ name: string; assignees: ReadonlyArray<string> }>([
+    { name: "assigned to someone else too", assignees: ["rawphp", "eve"] },
+    { name: "assigned to someone else alone", assignees: ["eve"] },
+    { name: "with nobody assigned", assignees: [] },
+  ])("still puts an issue in factory:triage $name back to ready, as the run's", ({ assignees }) =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), SENDING);
+      rig.world.issue = { ...issueDetail("triage"), assignees };
+      rig.clock.now = T0 + 16 * MINUTE;
+      assert.strictEqual((yield* reapLaunch(rig.ctx(), runOf(1))).kind, "ready");
+      assert.deepStrictEqual(rig.calls, READY_CALLS);
+      assert.strictEqual(rig.world.issue.state, "ready");
+      assert.deepStrictEqual(
+        rig.world.issue.assignees,
+        assignees.filter((a) => a !== "rawphp"),
+      );
+    }),
+  );
+
+  it.effect("asks for no claim winner on a repo factory.owner gives to one machine", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), SENDING);
+      rig.world.winner = "mac-studio";
+      rig.clock.now = T0 + 16 * MINUTE;
+      assert.strictEqual((yield* reapLaunch(rig.ctx({ owner: "mac-mini" }), runOf(1))).kind, "ready");
+      assert.deepStrictEqual(rig.calls, ["issue 10", "setState 10 ready", "unassign 10 rawphp"]);
+    }),
+  );
+});
+
+describe("reapLaunch: a reap cut short", () => {
+  it.effect("finishes the move to ready when the unassign failed after the label landed", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), SENDING);
+      rig.clock.now = T0 + 16 * MINUTE;
+      rig.world.unassignFailsOnce = true;
+      const error = yield* Effect.flip(reapLaunch(rig.ctx(), runOf(1)));
+      assert.strictEqual(error._tag, "GitHubFailed");
+      assert.strictEqual(rig.world.issue.state, "ready");
+      assert.deepStrictEqual(rig.world.issue.assignees, ["rawphp"]);
+      rig.calls.length = 0;
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(1)), {
+        kind: "ready",
+        ended: "timed-out",
+        failures: 1,
+        mayHaveSession: true,
+      });
+      // The decision stands: no claim winner is asked again.
+      assert.deepStrictEqual(rig.calls, ["issue 10", "setState 10 ready", "unassign 10 rawphp"]);
+      assert.deepStrictEqual(rig.world.issue.assignees, []);
+      assert.deepStrictEqual(listUnfinishedRuns(rig.dataDir), []);
+    }),
+  );
+
+  it.effect("finishes it when the label landed and GitHub answered with an error", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), SENDING);
+      rig.clock.now = T0 + 16 * MINUTE;
+      rig.world.setStateErrsOnce = true;
+      yield* Effect.flip(reapLaunch(rig.ctx(), runOf(1)));
+      assert.strictEqual(rig.world.issue.state, "ready");
+      assert.strictEqual((yield* reapLaunch(rig.ctx(), runOf(1))).kind, "ready");
+      assert.strictEqual(rig.world.issue.state, "ready");
+      assert.deepStrictEqual(rig.world.issue.assignees, []);
+    }),
+  );
+
+  it.effect("finishes a stuck at the limit cut short after its comment, with no second comment", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), [...SENDING, step("launch-timed-out"), FINISHED]);
+      seed(rig.dataDir, runOf(2), SENDING);
+      rig.clock.now = T0 + 16 * MINUTE;
+      rig.world.setStateFailsOnce = true;
+      yield* Effect.flip(reapLaunch(rig.ctx(), runOf(2)));
+      // The stuck comment and the ledger's stuck line are in; the label did not move.
+      assert.strictEqual(
+        readProgress(readRun(rig.dataDir, runOf(2)).entries).stuck,
+        LAUNCH_TIMEOUT_REASON,
+      );
+      rig.calls.length = 0;
+      assert.deepStrictEqual(yield* reapLaunch(rig.ctx(), runOf(2)), {
+        kind: "stuck",
+        ended: "timed-out",
+        failures: 2,
+        limit: true,
+        mayHaveSession: true,
+      });
+      assert.deepStrictEqual(rig.calls, [
+        "issue 10",
+        "setState 10 stuck",
+        "unassign 10 rawphp",
+        "status 10 **Factory status:** stuck",
+      ]);
+      assert.deepStrictEqual(listUnfinishedRuns(rig.dataDir), []);
+    }),
+  );
+
+  it.effect("still releases an issue a person moved after the decision was recorded", () =>
+    Effect.gen(function* () {
+      const rig = rigFor();
+      seed(rig.dataDir, runOf(1), [...SENDING, step("launch-timed-out")]);
+      rig.world.issue = issueDetail("needs-info");
+      assert.strictEqual((yield* reapLaunch(rig.ctx(), runOf(1))).kind, "released");
+      assert.deepStrictEqual(rig.calls, ["issue 10"]);
     }),
   );
 });

@@ -141,6 +141,7 @@ vi.mock("./runner/launchTimeout.ts", async (importOriginal) => {
     ctx: {
       readonly project: { readonly base: string };
       readonly launchTimeout: { readonly seconds: number; readonly retries: number };
+      readonly yieldToClaim: (issue: number) => import("effect").Effect.Effect<unknown, unknown>;
     },
     ...rest: Array<unknown>
   ) => {
@@ -150,7 +151,13 @@ vi.mock("./runner/launchTimeout.ts", async (importOriginal) => {
     bases.push(
       `reapLaunch ${ctx.project.base} ${ctx.launchTimeout.seconds}s ${ctx.launchTimeout.retries}`,
     );
-    return E.succeed({ kind: "left" });
+    // The claim winner is read through the real `yieldToClaim`: with no gh it cannot answer.
+    return E.exit(ctx.yieldToClaim(10)).pipe(
+      E.map((exit) => {
+        bases.push(`yieldToClaim ${exit._tag}`);
+        return { kind: "left" };
+      }),
+    );
   };
   return { ...actual, reapLaunch: reapLaunch as unknown as typeof actual.reapLaunch };
 });
@@ -4383,7 +4390,12 @@ describe("liveWorld: a step of a run is built for the base the pass hands it", (
           stub.on = false;
         }),
       );
-      assert.deepStrictEqual(bases, ["reapLaunch feature/x 120s 0", "reapLaunch main 120s 0"]);
+      assert.deepStrictEqual(bases, [
+        "reapLaunch feature/x 120s 0",
+        "yieldToClaim Failure",
+        "reapLaunch main 120s 0",
+        "yieldToClaim Failure",
+      ]);
     }),
   );
 

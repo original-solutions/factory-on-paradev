@@ -2252,6 +2252,7 @@ describe("launches that recorded no thread id", () => {
       assert.deepEqual(starts(fake), [`start ${REPO}#12`]);
       const line = runLine(lines, `${REPO}#12 triage:`);
       assert.ok(line.includes(`the launch recorded no thread id within 900 seconds`), line);
+      assert.ok(line.includes("launch timeout 1, launch_timeout_retries 1"), line);
       assert.ok(line.includes(`run ${RUN12} is finished and the issue is factory:ready again`), line);
       assert.deepEqual(fake.items, []);
     }),
@@ -2274,7 +2275,8 @@ describe("launches that recorded no thread id", () => {
     Effect.gen(function* () {
       const fake = new Fake();
       fake.runIn(12, "triage");
-      fake.reaps[`${REPO}#12`] = [{ kind: "stuck", ended: "timed-out", failures: 2, limit: true, mayHaveSession: false }];
+      // A launch sent with no thread id: the item names the command id, so no second line is raised.
+      fake.reaps[`${REPO}#12`] = [{ kind: "stuck", ended: "timed-out", failures: 2, limit: true, mayHaveSession: true }];
       const { lines, report } = yield* pass(fake, [REPO], 3);
       assert.deepEqual(starts(fake), []);
       const line = runLine(lines, `${REPO}#12 triage:`);
@@ -2374,7 +2376,7 @@ describe("launches that recorded no thread id", () => {
     Effect.gen(function* () {
       const fake = new Fake();
       fake.runIn(12, "triage");
-      fake.reaps[`${REPO}#12`] = [{ kind: "released" }];
+      fake.reaps[`${REPO}#12`] = [{ kind: "released", mayHaveSession: false }];
       const { lines } = yield* pass(fake, [REPO], 3);
       assert.deepEqual(starts(fake), []);
       const line = runLine(lines, `${REPO}#12 triage:`);
@@ -2383,11 +2385,27 @@ describe("launches that recorded no thread id", () => {
     }),
   );
 
+  it.effect.each<{ name: string; reap: LaunchReap }>([
+    { name: "released", reap: { kind: "released", mayHaveSession: true } },
+    { name: "yielded", reap: { kind: "yielded", machine: "mac-studio", mayHaveSession: true } },
+  ])("a $name run whose launch was sent with no thread id says where to look for its session", ({ reap }) =>
+    Effect.gen(function* () {
+      const fake = new Fake();
+      fake.runIn(12, "triage", REPO, true);
+      fake.reaps[`${REPO}#12`] = [reap];
+      yield* pass(fake, [REPO], 3);
+      assert.deepEqual(
+        fake.events.filter((e) => e.event === "attention"),
+        [{ event: "attention", data: { run: RUN12, reason: "session-may-exist" } }],
+      );
+    }),
+  );
+
   it.effect("a run another machine's claim beat is left to that machine", () =>
     Effect.gen(function* () {
       const fake = new Fake();
       fake.runIn(12, "triage");
-      fake.reaps[`${REPO}#12`] = [{ kind: "yielded", machine: "mac-studio" }];
+      fake.reaps[`${REPO}#12`] = [{ kind: "yielded", machine: "mac-studio", mayHaveSession: false }];
       const { lines } = yield* pass(fake, [REPO], 3);
       assert.deepEqual(starts(fake), []);
       assert.ok(runLine(lines, `${REPO}#12 triage:`).includes("claimed by machine mac-studio"));
