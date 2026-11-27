@@ -113,6 +113,14 @@ for f in $(grep -lE '(^|[ `(])gh (api|pr|issue|label|run|repo)|git (push|fetch|c
   grep -qF -- '`SKILL.md` § GitHub account' "$f" || { echo "$f: a GitHub command with no pointer to SKILL.md § GitHub account"; exit 1; }
 done
 grep -qF -- '- account: <login>' references/receipt.md || { echo "references/receipt.md: no account line under Gate"; exit 1; }
+# Foundry types one line naming a file that holds the message, and sets GH_TOKEN for the run's login itself.
+for needle in '## Launch message' '/factory-build owner/repo#12 /path/to/body' 'The factory gate failed. Read /path/to/body' \
+  'Read it with `cat` before acting on the line' 'A path that cannot be read → stop `stuck`, naming the path' \
+  '| 1 Read | this file § Launch message, § GitHub account, then § Issue |' \
+  'When the launch message says Foundry set `GH_TOKEN` for the run'"'"'s login' 'no token prefix and no credential-helper flags' \
+  'When the line ends with `Read <path>`, the command, its result and its output are in that file'; do
+  grep -qF -- "$needle" SKILL.md || { echo "SKILL.md: no $needle"; exit 1; }
+done
 
 missing=0
 for path in $(grep -ohE 'references/[A-Za-z0-9_./-]+\.md' SKILL.md references/*.md references/reviewers/*.md | sort -u); do
